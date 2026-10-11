@@ -162,6 +162,8 @@ void pc_gfx_clear_mat_color_tint(void);
 // (tinte del HUD de J2 en coop). (1,1,1) lo quita.
 void pc_gfx_set_out_tint(float r, float g, float b);
 void pc_gfx_clear_out_tint(void);
+// Vacía la profundidad del destino actual (3D sobre un frame ya terminado).
+void pc_gfx_clear_depth(void);
 void pc_gfx_set_chan_amb_color(GXChannelID chan, GXColor color);
 void pc_gfx_init_light_pos(void* ltObj, f32 x, f32 y, f32 z);
 void pc_gfx_init_light_dir(void* ltObj, f32 x, f32 y, f32 z);

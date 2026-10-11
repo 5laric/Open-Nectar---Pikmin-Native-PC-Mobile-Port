@@ -54,6 +54,10 @@
 #endif
 #include "pc_achievements.h"
 #include "pc_speedrun.h"
+#if PIKI_P2_HOST
+#include "pc_p2_captains.h"
+#include "pc_p2_captain_preview.h"
+#endif
 #include "pc_livesplit.h"
 #if PIKI_PC_TOUCH
 #include "touch/pc_touch.h"
@@ -218,6 +222,10 @@ struct PcConfig {
     int pikiLimit = 100;
     // Minutes of play per in-game day, as shown in the menu. 10 is the original.
     int dayMinutes = 10;
+    // Pikmin 2: personaje de cada capitán (selector de capitanes,
+    // pc_p2_captains.h). -1 en el capitán 2 es el original (Louie o el Presidente).
+    int p2Captain1 = 0;
+    int p2Captain2 = -1;
     // Última elección del selector 1P/2P, solo para preseleccionarla. La
     // partida en sí no la guarda (PLAN_COOP).
     int coopPlayers = 1;
@@ -328,6 +336,8 @@ struct PcConfig {
         mouseWheelAction = 0;
         pikiLimit = 100;
         dayMinutes = 0;
+        p2Captain1 = 0;
+        p2Captain2 = -1;
         coopPlayers = 1;
 #if PIKI_PC_TOUCH
         coopSplit = 1;
@@ -1202,6 +1212,10 @@ void saveConfig() {
     out << "mouseWheelAction = " << sConfig.mouseWheelAction << "\n";
     out << "pikiLimit = " << sConfig.pikiLimit << "\n";
     out << "dayLength = " << sConfig.dayMinutes << "\n";
+#if PIKI_P2_HOST
+    out << "p2Captain1 = " << sConfig.p2Captain1 << "\n";
+    out << "p2Captain2 = " << sConfig.p2Captain2 << "\n";
+#endif
     out << "coopPlayers = " << sConfig.coopPlayers << "\n";
     out << "coopSplit = " << sConfig.coopSplit << "\n";
     out << "coopMergeCamera = " << sConfig.coopMergeCamera << "\n";
@@ -1475,6 +1489,16 @@ void loadConfig() {
             sConfig.saturation = (float)atof(val.c_str());
             if (!(sConfig.saturation >= 0.0f && sConfig.saturation <= 2.0f)) sConfig.saturation = 1.0f;
         }
+#if PIKI_P2_HOST
+        else if (key == "p2Captain1") {
+            sConfig.p2Captain1 = atoi(val.c_str());
+            if (sConfig.p2Captain1 < 0 || sConfig.p2Captain1 >= PC_P2_CHAR_COUNT) sConfig.p2Captain1 = 0;
+        }
+        else if (key == "p2Captain2") {
+            sConfig.p2Captain2 = atoi(val.c_str());
+            if (sConfig.p2Captain2 < -1 || sConfig.p2Captain2 >= PC_P2_CHAR_COUNT) sConfig.p2Captain2 = -1;
+        }
+#endif
         else if (key == "dayLength") {
             sConfig.dayMinutes = atoi(val.c_str());
             if (sConfig.dayMinutes < 0 || sConfig.dayMinutes > 120) sConfig.dayMinutes = 0;
@@ -1565,6 +1589,10 @@ void loadConfig() {
         }
     }
     in.close();
+#if PIKI_P2_HOST
+    pc_p2_captain_set_choice(0, sConfig.p2Captain1);
+    pc_p2_captain_set_choice(1, sConfig.p2Captain2);
+#endif
     if (sConfig.windowWidth <= 0) sConfig.windowWidth = 1280;
     if (sConfig.windowHeight <= 0) sConfig.windowHeight = 720;
     printf("[PC Settings] Loaded %s: %dx%d mode=%d vsync=%d refresh=%.0f\n",
@@ -1664,6 +1692,9 @@ void latchKeys() {
 // prompt has to read input from inside this function: keys are latched right
 // after it returns, so anything polling later in the frame sees no edges.
 void pcNewGamePromptInput();
+#if PIKI_P2_HOST
+void pcCaptainSelectInput();
+#endif
 void pcSpeedrunMenuInput();
 void pcErasedNoticeInput();
 void pcPlayerCountPromptInput();
@@ -1886,6 +1917,13 @@ void pollMenuInput() {
         return;
     }
 #if PIKI_P2_HOST
+    if (pc_captain_select_active()) {
+#if PIKI_PC_TOUCH
+        pc_touch_claim_game_menu();
+#endif
+        pcCaptainSelectInput();
+        return;
+    }
     if (pc_speedrun_menu_active()) {
 #if PIKI_PC_TOUCH
         pc_touch_claim_game_menu();
@@ -4858,6 +4896,399 @@ void pc_newgame_prompt_draw(void)
     }
 
     drawHelpLine(panelX + panelW / 2, panelY + panelH - 46, "Arrows: move    A: select    B: back", dim, panelW - 60);
+}
+
+// ─── Selector de capitanes de Pikmin 2 ───
+//
+// Como la selección de un juego de lucha: en el centro, una rejilla 3x3 con
+// los personajes (cada uno una vez, con su modelo 3D animado,
+// pc_p2_captain_preview.h); a la izquierda el panel del capitán 1 (rojo) y a
+// la derecha el del 2 (azul), con su modelo grande girando y su nombre. La
+// burbuja del capitán activo recorre la rejilla; la del otro queda sobre su
+// elección. A elige y pasa al otro capitán, L/R (Q/E) cambian de capitán,
+// Start sigue y B vuelve. Los modelos se dibujan después de las placas
+// (pc_captain_select_draw_3d), que se pintan al final del frame.
+namespace {
+bool sCapSelOpen   = false;
+bool sCapSelArmed  = false;
+int  sCapSelResult = PC_CAPSEL_PENDING;
+int  sCapSelActive = 0;     // capitán que elige: 0 = rojo, 1 = azul
+int  sCapSelIndex  = 0;     // tarjeta bajo la burbuja activa
+bool sCapSelStart  = false; // foco en el botón Start
+int  sCapSelChoice[2] = { PC_P2_CHAR_OLIMAR, -1 }; // -1 = original (solo capitán 2)
+
+const int kCsPanelW = 636;
+const int kCsPanelH = 456;
+const int kCsCols   = 3;
+const int kCsCardW  = 92;
+const int kCsCardH  = 88;
+const int kCsGap    = 4;
+const int kCsGridW  = kCsCols * kCsCardW + (kCsCols - 1) * kCsGap;
+const int kCsGridH  = 3 * kCsCardH + 2 * kCsGap;
+const int kCsSideW  = 150;
+const int kCsSideH  = kCsGridH;
+const int kCsSpace  = 14;
+const int kCsStartW = 220;
+const int kCsStartH = 38;
+
+const Colour kCsRed(235, 70, 60, 255);
+const Colour kCsBlue(70, 130, 245, 255);
+
+int csCardIndex(int character) { return character < 0 ? PC_P2_CHAR_LOUIE : character; }
+// El original del capitán 2 (-1: Louie, o el Presidente con la deuda pagada)
+// se marca en la tarjeta de Louie y se conserva mientras no se elija otra.
+bool csCardChosen(int captain, int character)
+{
+    return character == sCapSelChoice[captain] || (sCapSelChoice[captain] < 0 && character == PC_P2_CHAR_LOUIE);
+}
+
+int csLeft(int panelX) { return panelX + (kCsPanelW - (2 * kCsSideW + kCsGridW + 2 * kCsSpace)) / 2; }
+int csSideX(int panelX, int captain) { return csLeft(panelX) + captain * (kCsSideW + kCsGridW + 2 * kCsSpace); }
+int csGridX(int panelX) { return csLeft(panelX) + kCsSideW + kCsSpace; }
+int csTop(int panelY) { return panelY + 70; }
+int csCardX(int panelX, int index) { return csGridX(panelX) + (index % kCsCols) * (kCsCardW + kCsGap); }
+int csCardY(int panelY, int index) { return csTop(panelY) + (index / kCsCols) * (kCsCardH + kCsGap); }
+int csStartX(int panelX) { return panelX + kCsPanelW / 2 - kCsStartW / 2; }
+int csStartY(int panelY) { return csTop(panelY) + kCsGridH + 14; }
+
+const char* csShortName(int character)
+{
+    static const char* const kNames[PC_P2_CHAR_COUNT] = { "Olimar", "Louie", "Pres.", "Red", "Yellow", "Blue", "Purple", "White", "Bulbmin" };
+    return kNames[csCardIndex(character)];
+}
+
+const char* csLongName(int character)
+{
+    static const char* const kNames[PC_P2_CHAR_COUNT] = { "Olimar", "Louie", "President", "Red Pikmin", "Yellow Pikmin",
+                                                          "Blue Pikmin", "Purple Pikmin", "White Pikmin", "Bulbmin" };
+    return kNames[csCardIndex(character)];
+}
+
+// Personaje que verá de verdad el capitán (Original del capitán 2 es Louie
+// o el Presidente; para la vista previa basta con Louie).
+int csResolved(int captain) { return sCapSelChoice[captain] >= 0 ? sCapSelChoice[captain] : (captain == 0 ? PC_P2_CHAR_OLIMAR : PC_P2_CHAR_LOUIE); }
+
+// El capitán 2 repetido (salvo Pikmin) se tiñe: azul, o rojo si ya es azul.
+bool csTinted(Colour* tint)
+{
+    const int c = csResolved(1);
+    if (c != csResolved(0) || pc_p2_character_is_pikmin(c)) return false;
+    const bool blueAlready = c == PC_P2_CHAR_LOUIE || c == PC_P2_CHAR_BLUE;
+    if (tint) *tint = blueAlready ? Colour(255, 120, 110, 255) : Colour(90, 150, 255, 255);
+    return true;
+}
+
+void csFill(DGXGraphics* gfx, int x, int y, int w, int h, const Colour& c)
+{
+    gfx->setColour(c, true);
+    gfx->setAuxColour(c);
+    gfx->fillRectangle(RectArea(x, y, x + w, y + h));
+}
+
+// Texto centrado que se encoge si no cabe en width.
+void csCenteredText(int cx, int y, int width, const char* text, const Colour& colour, int fontW, int fontH)
+{
+    while (fontW > 7 && f1TextW(text, fontW) > width) fontW--;
+    f1Text(cx - f1TextW(text, fontW) / 2, y, text, colour, fontW, fontH);
+}
+
+// Modelos del último dibujo, para pc_captain_select_draw_3d.
+struct CsCard {
+    int character;
+    int x, y, w, h;
+    bool spin;
+    bool tinted;
+};
+CsCard sCsCards[PC_P2_CHAR_COUNT + 2];
+int sCsCardCount = 0;
+int sCsScreenW = 640, sCsScreenH = 480;
+float sCsTint[3] = { 1.0f, 1.0f, 1.0f };
+
+void csSetActive(int captain)
+{
+    sCapSelActive = captain;
+    sCapSelIndex  = csCardIndex(sCapSelChoice[captain]);
+}
+
+// A sobre una tarjeta: es del capitán activo y la burbuja pasa al otro.
+void csAssign(int index)
+{
+    if (!csCardChosen(sCapSelActive, index)) sCapSelChoice[sCapSelActive] = index;
+    csSetActive(1 - sCapSelActive);
+}
+
+void pcCaptainSelectInput()
+{
+    if (!sCapSelOpen) return;
+    if (!sCapSelArmed) {
+        SDL_GameController* pad = pc_window_get_controller();
+        const bool padHeld = pad && (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_A)
+                                     || SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_B));
+        const Uint8* keys = SDL_GetKeyboardState(nullptr);
+        const bool keyHeld = keys && (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_ESCAPE]);
+        sTouchTapPending = false;
+        if (padHeld || keyHeld || sTouchFrameButtons != 0) return;
+        sCapSelArmed = true;
+        pc_menu_edge_reset();
+        return;
+    }
+
+    bool left   = keyWentDown(SDL_SCANCODE_LEFT)  || keyWentDown(SDL_SCANCODE_A);
+    bool right  = keyWentDown(SDL_SCANCODE_RIGHT) || keyWentDown(SDL_SCANCODE_D);
+    bool up     = keyWentDown(SDL_SCANCODE_UP)    || keyWentDown(SDL_SCANCODE_W);
+    bool down   = keyWentDown(SDL_SCANCODE_DOWN)  || keyWentDown(SDL_SCANCODE_S);
+    bool accept = keyWentDown(SDL_SCANCODE_RETURN) || keyWentDown(SDL_SCANCODE_SPACE);
+    bool cancel = keyWentDown(SDL_SCANCODE_ESCAPE);
+    bool prevCaptain = keyWentDown(SDL_SCANCODE_Q);
+    bool nextCaptain = keyWentDown(SDL_SCANCODE_E);
+
+    left   |= (sTouchFrameButtons & PAD_BUTTON_LEFT) != 0;
+    right  |= (sTouchFrameButtons & PAD_BUTTON_RIGHT) != 0;
+    up     |= (sTouchFrameButtons & PAD_BUTTON_UP) != 0;
+    down   |= (sTouchFrameButtons & PAD_BUTTON_DOWN) != 0;
+    accept |= (sTouchFrameButtons & PAD_BUTTON_A) != 0;
+    cancel |= (sTouchFrameButtons & PAD_BUTTON_B) != 0;
+
+    if (sTouchTapPending) {
+        sTouchTapPending = false;
+        int sw, sh;
+        ngScreen(&sw, &sh);
+        const float x = sTouchTapX * sw;
+        const float y = sTouchTapY * sh;
+        const int panelX = sw / 2 - kCsPanelW / 2;
+        const int panelY = sh / 2 - kCsPanelH / 2;
+        // Un toque en una tarjeta la asigna al capitán activo; en un panel de
+        // capitán, ese pasa a ser el activo; el de Start empieza.
+        for (int i = 0; i < PC_P2_CHAR_COUNT; ++i) {
+            const float cx = float(csCardX(panelX, i)), cy = float(csCardY(panelY, i));
+            if (x >= cx && x <= cx + kCsCardW && y >= cy && y <= cy + kCsCardH) {
+                sCapSelStart = false;
+                csAssign(i);
+            }
+        }
+        for (int captain = 0; captain < 2; ++captain) {
+            const float px = float(csSideX(panelX, captain)), py = float(csTop(panelY));
+            if (x >= px && x <= px + kCsSideW && y >= py && y <= py + kCsSideH) {
+                sCapSelStart = false;
+                csSetActive(captain);
+            }
+        }
+        const float sx = float(csStartX(panelX)), sy = float(csStartY(panelY));
+        if (x >= sx && x <= sx + kCsStartW && y >= sy && y <= sy + kCsStartH) {
+            sCapSelStart = true;
+            accept       = true;
+        }
+    }
+
+    SDL_GameController* ctl = pc_window_get_controller();
+    bool start = keyWentDown(SDL_SCANCODE_TAB);
+    if (ctl) {
+        if (padNavLeft(ctl))  left   = true;
+        if (padNavRight(ctl)) right  = true;
+        if (padNavUp(ctl))    up     = true;
+        if (padNavDown(ctl))  down   = true;
+        if (promptPadA(ctl))  accept = true;
+        if (promptPadB(ctl))  cancel = true;
+    }
+    // Start, L y R del mando: flancos propios (pc_menu_edge no tiene huecos libres).
+    static bool sStartWasHeld = true, sLWasHeld = true, sRWasHeld = true;
+    const bool startHeld = ctl && SDL_GameControllerGetButton(ctl, SDL_CONTROLLER_BUTTON_START);
+    const bool lHeld     = ctl && SDL_GameControllerGetButton(ctl, SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
+    const bool rHeld     = ctl && SDL_GameControllerGetButton(ctl, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+    if (startHeld && !sStartWasHeld) start = true;
+    if (lHeld && !sLWasHeld) prevCaptain = true;
+    if (rHeld && !sRWasHeld) nextCaptain = true;
+    sStartWasHeld = startHeld;
+    sLWasHeld     = lHeld;
+    sRWasHeld     = rHeld;
+
+    if (prevCaptain || nextCaptain) {
+        sCapSelStart = false;
+        csSetActive(prevCaptain ? 0 : 1);
+    }
+
+    if (sCapSelStart) {
+        if (up) {
+            // A la fila de abajo, en la columna de la tarjeta que tenía el foco.
+            sCapSelStart = false;
+            sCapSelIndex = 2 * kCsCols + sCapSelIndex % kCsCols;
+        }
+    } else {
+        const int row = sCapSelIndex / kCsCols, col = sCapSelIndex % kCsCols;
+        if (left)  sCapSelIndex = row * kCsCols + (col + kCsCols - 1) % kCsCols;
+        if (right) sCapSelIndex = row * kCsCols + (col + 1) % kCsCols;
+        if (up && row > 0) sCapSelIndex -= kCsCols;
+        if (down) {
+            if (row < 2) sCapSelIndex += kCsCols;
+            else sCapSelStart = true;
+        }
+    }
+
+    if (accept && !sCapSelStart) {
+        csAssign(sCapSelIndex);
+    } else if (accept || start) {
+        sConfig.p2Captain1 = sCapSelChoice[0];
+        sConfig.p2Captain2 = sCapSelChoice[1];
+        pc_p2_captain_set_choice(0, sCapSelChoice[0]);
+        pc_p2_captain_set_choice(1, sCapSelChoice[1]);
+        saveConfig();
+        sCapSelResult = PC_CAPSEL_START;
+        sCapSelOpen   = false;
+    } else if (cancel) {
+        sCapSelResult = PC_CAPSEL_BACK;
+        sCapSelOpen   = false;
+    }
+}
+} // namespace
+
+void pc_captain_select_open(void)
+{
+    sCapSelOpen      = true;
+    sCapSelArmed     = false;
+    sCapSelResult    = PC_CAPSEL_PENDING;
+    sCapSelChoice[0] = sConfig.p2Captain1 >= 0 && sConfig.p2Captain1 < PC_P2_CHAR_COUNT ? sConfig.p2Captain1 : PC_P2_CHAR_OLIMAR;
+    sCapSelChoice[1] = sConfig.p2Captain2 >= -1 && sConfig.p2Captain2 < PC_P2_CHAR_COUNT ? sConfig.p2Captain2 : -1;
+    // El cursor empieza sobre Start: lo normal es repetir la última elección.
+    sCapSelStart     = true;
+    csSetActive(0);
+    sCsCardCount     = 0;
+    pc_menu_edge_reset();
+}
+
+bool pc_captain_select_active(void) { return sCapSelOpen; }
+
+int pc_captain_select_result(void) { return sCapSelResult; }
+
+void pc_captain_select_draw(void)
+{
+    PC_SETTINGS_HOST_ALLOC();
+    sCsCardCount = 0;
+    if (!sCapSelOpen) return;
+    if (!gsys || !gsys->mDGXGfx) return;
+    DGXGraphics* gfx = static_cast<DGXGraphics*>(gsys->mDGXGfx);
+    ensureFont();
+    if (!sFont) return;
+
+    int screenW, screenH;
+    ngScreen(&screenW, &screenH);
+    sCsScreenW = screenW;
+    sCsScreenH = screenH;
+    PcSettingsP2DFrame nativeFrame(screenW, screenH);
+    Matrix4f ortho;
+    gfx->setOrthogonal(ortho.mMtx, RectArea(0, 0, screenW, screenH));
+
+    const int panelX = screenW / 2 - kCsPanelW / 2;
+    const int panelY = screenH / 2 - kCsPanelH / 2;
+    drawPikminPanel(gfx, panelX, panelY, kCsPanelW, kCsPanelH, 22);
+    drawPikminHeader(gfx, panelX, panelY, kCsPanelW, "Captains");
+
+    const Colour gold(255, 207, 75, 255);
+    const Colour white(255, 255, 255, 255);
+    const Colour dim(150, 170, 190, 255);
+    Colour tint;
+    const bool tinted = csTinted(&tint);
+    sCsTint[0] = tint.r / 255.0f;
+    sCsTint[1] = tint.g / 255.0f;
+    sCsTint[2] = tint.b / 255.0f;
+    const float angle = SDL_GetTicks() * 0.004f;
+    const bool atlas  = pc_settings_p2d_active();
+
+    // Paneles de los capitanes: el activo se ilumina con su color.
+    for (int captain = 0; captain < 2; ++captain) {
+        const int px = csSideX(panelX, captain), py = csTop(panelY);
+        const bool active = !sCapSelStart && captain == sCapSelActive;
+        const Colour colour = captain == 0 ? kCsRed : kCsBlue;
+        if (atlas) {
+            const u8 alpha = active ? 200 : 90;
+            const Colour top(colour.r, colour.g, colour.b, alpha);
+            const Colour bottom(colour.r * 2 / 3, colour.g * 2 / 3, colour.b * 2 / 3, alpha);
+            pc_settings_p2d_tinted_plate(px + 3, py + 3, kCsSideW - 6, kCsSideH - 6, top, bottom);
+            pc_settings_p2d_plate(px, py, kCsSideW, kCsSideH, 1);
+        } else {
+            csFill(gfx, px, py, kCsSideW, kCsSideH, Colour(colour.r / 3, colour.g / 3, colour.b / 3, 230));
+        }
+        csCenteredText(px + kCsSideW / 2, py + 18, kCsSideW - 16, captain == 0 ? "Captain 1" : "Captain 2", active ? gold : white, 15,
+                       21);
+        csCenteredText(px + kCsSideW / 2, py + kCsSideH - 30, kCsSideW - 16, csLongName(csResolved(captain)), white, 12, 17);
+        if (sCsCardCount < int(sizeof(sCsCards) / sizeof(sCsCards[0]))) {
+            CsCard& card = sCsCards[sCsCardCount++];
+            card.character = csResolved(captain);
+            card.x = px + 8, card.y = py + 46, card.w = kCsSideW - 16, card.h = kCsSideH - 84;
+            card.spin   = true;
+            card.tinted = captain == 1 && tinted;
+        }
+    }
+
+    // Rejilla: el fondo de la tarjeta elegida, rojo (1), azul (2) o morado (los dos).
+    for (int i = 0; i < PC_P2_CHAR_COUNT; ++i) {
+        const bool by1 = csCardChosen(0, i), by2 = csCardChosen(1, i);
+        const int cx = csCardX(panelX, i), cy = csCardY(panelY, i);
+        if (atlas) {
+            if (by1 || by2) {
+                const Colour top = by1 && by2 ? Colour(170, 90, 200, 235) : by1 ? Colour(240, 95, 80, 235) : Colour(80, 140, 245, 235);
+                const Colour bottom(top.r * 3 / 4, top.g * 3 / 4, top.b * 3 / 4, 235);
+                pc_settings_p2d_tinted_plate(cx + 3, cy + 3, kCsCardW - 6, kCsCardH - 6, top, bottom);
+            }
+            // La tarjeta bajo el cursor se tiñe con el color del capitán que elige.
+            if (!sCapSelStart && i == sCapSelIndex) {
+                const Colour hover = sCapSelActive == 0 ? Colour(255, 120, 105, 170) : Colour(110, 165, 255, 170);
+                const Colour hoverBottom(hover.r * 3 / 4, hover.g * 3 / 4, hover.b * 3 / 4, 170);
+                pc_settings_p2d_tinted_plate(cx + 3, cy + 3, kCsCardW - 6, kCsCardH - 6, hover, hoverBottom);
+            }
+            pc_settings_p2d_plate(cx, cy, kCsCardW, kCsCardH, 1);
+        } else {
+            csFill(gfx, cx, cy, kCsCardW, kCsCardH, by1 || by2 ? Colour(48, 60, 96, 230) : Colour(26, 30, 48, 220));
+        }
+        csCenteredText(cx + kCsCardW / 2, cy + kCsCardH - 22, kCsCardW - 8, csShortName(i), by1 || by2 ? white : dim, 11, 15);
+        if (sCsCardCount < int(sizeof(sCsCards) / sizeof(sCsCards[0]))) {
+            CsCard& card = sCsCards[sCsCardCount++];
+            card.character = i;
+            card.x = cx + 10, card.y = cy + 4, card.w = kCsCardW - 20, card.h = kCsCardH - 26;
+            card.spin   = false;
+            card.tinted = false;
+        }
+    }
+
+    // Burbujas en las esquinas de arriba de la tarjeta: la roja (capitán 1) a
+    // la izquierda y la azul (2) a la derecha. La del capitán activo va con el
+    // cursor y gira; la otra queda quieta sobre su elección.
+    if (atlas) {
+        for (int captain = 0; captain < 2; ++captain) {
+            const bool moving = captain == sCapSelActive && !sCapSelStart;
+            const int card    = moving ? sCapSelIndex : csCardIndex(sCapSelChoice[captain]);
+            const int bx      = csCardX(panelX, card) + (captain == 0 ? 12 : kCsCardW - 12);
+            pc_settings_p2d_cursor_tinted(bx, csCardY(panelY, card) + 12, moving ? 17 : 13, moving ? angle : 0.0f,
+                                          captain == 0 ? kCsRed : kCsBlue);
+        }
+    }
+
+    // Botón Start.
+    {
+        const int bx = csStartX(panelX), by = csStartY(panelY);
+        if (sCapSelStart) f1Text(bx - 16, by + 9, ">", gold, 14, 20);
+        if (atlas) {
+            if (sCapSelStart) pc_settings_p2d_plate(bx, by, kCsStartW, kCsStartH, 2);
+            pc_settings_p2d_plate(bx, by, kCsStartW, kCsStartH, 1);
+        } else {
+            csFill(gfx, bx, by, kCsStartW, kCsStartH, sCapSelStart ? Colour(70, 92, 150, 240) : Colour(26, 30, 48, 220));
+        }
+        f1Text(bx + kCsStartW / 2 - f1TextW("Start", 14) / 2, by + 9, "Start", sCapSelStart ? white : dim, 14, 20);
+    }
+
+    drawHelpLine(panelX + kCsPanelW / 2, panelY + kCsPanelH - 46, "A: pick    L/R: switch captain    Start: go    B: back", dim,
+                 kCsPanelW - 60);
+}
+
+void pc_captain_select_draw_3d(void)
+{
+    if (!sCapSelOpen || sCsCardCount == 0) return;
+    if (!pc_p2_captain_preview_begin()) return;
+    for (int i = 0; i < sCsCardCount; ++i) {
+        const CsCard& card = sCsCards[i];
+        pc_p2_captain_preview_draw(card.character, card.x, card.y, card.w, card.h, sCsScreenW, sCsScreenH, card.spin,
+                                   card.tinted ? sCsTint : nullptr);
+    }
+    pc_p2_captain_preview_end();
 }
 
 // ─── Menú del modo Speedrun de Pikmin 2 ───

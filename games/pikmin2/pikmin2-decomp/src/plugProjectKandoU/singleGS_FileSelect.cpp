@@ -18,6 +18,7 @@ extern "C" void pc_gfx_p2_sides_static(int capture);
 extern "C" void pc_gfx_p2_sides_static_reset(void);
 static int sPcSidesFrames = 0;
 static bool sPcSpeedrunRestart = false; // reset rápido: otra run sin el menú del modo
+static bool sPcCaptainSelect   = false; // selector de capitanes abierto antes de la selección de partida
 #endif
 #include "Game/GameConfig.h"
 #include "Game/AIConstants.h"
@@ -116,7 +117,9 @@ void FileState::exec(SingleGameSection* game)
 		if (pc_speedrun_active() && !sPcSpeedrunRestart) {
 			pc_speedrun_menu_open();
 		} else if (!pc_speedrun_active()) {
-			mFSMgr->start();
+			// Selector de capitanes antes de la selección de partida.
+			pc_captain_select_open();
+			sPcCaptainSelect = true;
 		}
 #else
 		mFSMgr->start();
@@ -143,6 +146,18 @@ void FileState::exec(SingleGameSection* game)
 		game->BaseHIOSection::doUpdate();
 #ifdef PIKI_PC_PORT
 		if (pc_erased_notice_active()) {
+			return;
+		}
+		if (sPcCaptainSelect) {
+			if (pc_captain_select_active()) {
+				return;
+			}
+			sPcCaptainSelect = false;
+			if (pc_captain_select_result() == PC_CAPSEL_START) {
+				mFSMgr->start();
+			} else {
+				game->flow_goto_title();
+			}
 			return;
 		}
 		if (pc_speedrun_active()) {

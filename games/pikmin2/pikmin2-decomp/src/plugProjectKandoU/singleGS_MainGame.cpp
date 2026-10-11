@@ -3,6 +3,7 @@ extern "C" {
 int pc_p2_permadeath_active(void);
 void pc_p2_rules_erase_current_save(void);
 }
+#include "pc_p2_captains.h"
 #include "pc_speedrun.h"
 #endif
 #include "Game/DeathMgr.h"
@@ -729,6 +730,10 @@ void GameState::onMovieStart(SingleGameSection* game, MovieConfig* config, u32, 
 			    = playData->isStoryFlag(STORY_DebtPaid) ? Screen::Game2DMgr::GOTITLE_PresidentDown : Screen::Game2DMgr::GOTITLE_LouieDown;
 			game->setPlayerMode(NAVIID_Louie);
 		}
+#ifdef PIKI_PC_PORT
+		// Selector de capitanes: el título sigue al personaje, no al índice.
+		naviType = (Screen::Game2DMgr::GameOverTitle)pc_p2_captain_down_title(naviID);
+#endif
 		Screen::gGame2DMgr->open_GameOver(naviType);
 	}
 

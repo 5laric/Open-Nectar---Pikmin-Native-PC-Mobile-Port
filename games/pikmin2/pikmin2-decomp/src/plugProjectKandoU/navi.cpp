@@ -1,3 +1,4 @@
+#include "pc_p2_captains.h"
 #include <chrono>
 #include <cmath>
 #include "Game/Navi.h"
@@ -809,6 +810,15 @@ void Navi::onInit(Game::CreatureInitArg* arg)
 	               "ザンーー（・д・）−−ネン\n"); // 'disappointttttt D: ?? ment' (lol)
 #endif
 	mCollTree->attachModel(mModel);
+#ifdef PIKI_PC_PORT
+	// Selector de capitanes: el Bulbmin no tiene manos (9 articulaciones, sin
+	// lhandjnt/rhandjnt). La parte de la mano de naviColl.txt ('rhnd',
+	// articulación 10) leería una matriz que no existe: pasa al cuerpo.
+	CollPart* handPart = mCollTree->getCollPart('rhnd');
+	if (handPart && (int)handPart->mJointIndex >= (int)mModel->mJointCount) {
+		handPart->mJointIndex = 4;
+	}
+#endif
 
 	mFsm->start(this, NSID_Walk, nullptr);
 
@@ -821,7 +831,7 @@ void Navi::onInit(Game::CreatureInitArg* arg)
 
 	SysShape::Joint* headJnt = mModel->getJoint("headjnt");
 	mEffectsObj->mHeadMtx    = headJnt->getWorldMatrix();
-	mEffectsObj->setNaviType((efx::TNaviEffect::enumNaviType)(bool)mNaviIndex);
+	mEffectsObj->setNaviType((efx::TNaviEffect::enumNaviType)pc_p2_captain_light_type(mNaviIndex));
 
 	mEffectsObj->createLight();
 
@@ -831,14 +841,11 @@ void Navi::onInit(Game::CreatureInitArg* arg)
 	mUnusedFlag      = 0;
 
 	Vector3f modelScale;
-	modelScale = Vector3f(OLIMAR_SCALE);
-	if (mNaviIndex == NAVIID_Louie) {
-		modelScale = Vector3f(LOUIE_SCALE);
-	}
+	modelScale = Vector3f(pc_p2_captain_scale(mNaviIndex));
 
 	mScale = modelScale;
 
-	int id = mNaviIndex;
+	int id = pc_p2_captain_cursor_anim(mNaviIndex);
 	mCursorMatAnim->start(&naviMgr->mCursorAnims[id]);
 	mArrowMatAnim->start(&naviMgr->mMarkerAnims[id]);
 }
@@ -1294,7 +1301,7 @@ SysShape::Model* Navi::viewGetShape()
  */
 f32 Navi::viewGetBaseScale()
 {
-	return mNaviIndex == NAVIID_Olimar ? OLIMAR_SCALE : LOUIE_SCALE;
+	return pc_p2_captain_scale(mNaviIndex);
 }
 
 /**

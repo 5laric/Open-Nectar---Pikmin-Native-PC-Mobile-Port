@@ -1066,11 +1066,13 @@ void VIWaitForRetrace()
 	pc_settings_draw_idle_counter();
 	pc_speedrun_draw();
 	pc_newgame_prompt_draw();
+	pc_captain_select_draw();
 	pc_speedrun_menu_draw();
 	pc_erased_notice_draw();
 	pc_settings_draw();
 	pc_settings_draw_achievement_toast();
 	pc_settings_p2_flush();
+	pc_captain_select_draw_3d();
 	pc_gfx_present();
 #if PIKI_PC_TOUCH
 	pc_touch_draw(); // controles táctiles encima de todo, como en Pikmin 1

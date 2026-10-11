@@ -2539,6 +2539,11 @@ static const char* fShaderTail =
     "uniform float uAlphaRef0;\n"
     "uniform float uAlphaRef1;\n"
     "uniform vec3 uOutTint;\n" // multiplicador final (HUD de J2 en coop)
+    "// uOutTint negativo: gris y luego el color (cursores del selector de capitanes de P2).\n"
+    "vec3 applyOutTint(vec3 c) {\n"
+    "    if (uOutTint.r < 0.0) return vec3(dot(c, vec3(0.299, 0.587, 0.114))) * -uOutTint;\n"
+    "    return c * uOutTint;\n"
+    "}\n"
     "uniform ivec4 uTevCSel[16];\n"
     "uniform ivec4 uTevASel[16];\n"
     "uniform ivec4 uTevCOps[16];\n"
@@ -2663,7 +2668,7 @@ static const char* fShaderTail =
     "                        (uAlphaOp == 1) ? (fastTest0 || fastTest1) :\n"
     "                        (uAlphaOp == 2) ? (fastTest0 != fastTest1) : (fastTest0 == fastTest1);\n"
     "        if (!fastPass) discard;\n"
-    "        fragColor = vec4(fastCol.rgb * uOutTint, fastCol.a);\n"
+    "        fragColor = vec4(applyOutTint(fastCol.rgb), fastCol.a);\n"
     "        return;\n"
     "    }\n"
     // TEVPREV is a real programmable TEV register (BP E0/E1), not an
@@ -2734,7 +2739,7 @@ static const char* fShaderTail =
     "                (uAlphaOp == 1) ? (test0 || test1) :\n"
     "                (uAlphaOp == 2) ? (test0 != test1) : (test0 == test1);\n"
     "    if (!pass) discard;\n"
-    "    fragColor = vec4(col.rgb * uOutTint, col.a);\n"
+    "    fragColor = vec4(applyOutTint(col.rgb), col.a);\n"
     "}\n";
 
 static const std::string& fragment_shader_source() {
@@ -2819,6 +2824,22 @@ void pc_gfx_set_out_tint(float r, float g, float b) {
 }
 
 void pc_gfx_clear_out_tint(void) { pc_gfx_set_out_tint(1.0f, 1.0f, 1.0f); }
+
+// Profundidad del destino actual a vacío, entera (sin tijera). Para dibujar
+// en 3D encima de un frame ya terminado (modelos del selector de capitanes).
+void pc_gfx_clear_depth(void) {
+    pc_gfx_flush_batch();
+    glDisable(GL_SCISSOR_TEST);
+    glDepthMask(GL_TRUE);
+#if PIKI_USE_GLES
+    glClearDepthf(sReplayClearDepth);
+#else
+    glClearDepth(sReplayClearDepth);
+#endif
+    glClear(GL_DEPTH_BUFFER_BIT);
+    state_touched();
+    invalidate_gl_pipeline_guards();
+}
 
 void pc_gfx_set_proj_offset(float ndcX, float ndcY) {
     if (ndcX != sProjOffX || ndcY != sProjOffY) {

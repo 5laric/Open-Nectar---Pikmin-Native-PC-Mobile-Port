@@ -321,6 +321,7 @@ struct NaviMgr : public MonoObjectMgr<Navi>, public JKRDisposer {
 	virtual void doSimulation(f32 rate); // _74 (thunk at _44)
 	virtual Navi* birth();               // _7C
 	virtual void resetMgr();             // _80 (thunk at _54)
+	virtual void doSimpleDraw(Viewport* vp); // selector de capitanes: hoja de los capitanes Pikmin
 
 	// vtable 3 (JKRDisposer + self, _30)
 	virtual void killAll();                          // _98

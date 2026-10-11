@@ -1,3 +1,4 @@
+#include "pc_p2_captains.h"
 #include "IDelegate.h"
 #ifdef PIKI_PC_PORT
 extern "C" float pc_settings_get_throw_speed_scale(void);
@@ -55,6 +56,10 @@ SoundID se_jumps[3]     = { PSSE_PL_WAIT_JUMP_ORIMA, PSSE_PL_WAIT_JUMP_LUGI, PSS
 SoundID se_kyoros[3]    = { PSSE_PL_WAIT_KYORO_ORIMA, PSSE_PL_WAIT_KYORO_LUGI, PSSE_PL_WAIT_KYORO_SHACHO };
 } // namespace
 
+// Selector de capitanes: la voz sigue al personaje (mRappa, fijado en
+// NaviMgr::birth), no al índice ni a la deuda: 0 Olimar, 1 Louie, 2 Presidente.
+static inline int pcNaviVoice(Game::Navi* navi) { return navi->mSoundObj->getManType(); }
+
 namespace Game {
 
 /**
@@ -89,20 +94,27 @@ void NaviState::draw2d(J2DGrafContext& graf, int& a2)
  */
 void NaviState::playChangeVoice(Navi* navi)
 {
-	if (navi->mNaviIndex == NAVIID_Olimar) { // OLIMAR
+	// Selector de capitanes: el capitán Pikmin solo dice "¡Pikmin!" (PIKON
+	// traducido), sin el grito de sistema del capitán original.
+	if (pc_p2_character_is_pikmin(pc_p2_captain_loaded_character(navi->mNaviIndex))) {
+		navi->mSoundObj->startSound(PSSE_PL_PIKON_ORIMA, 0);
+		return;
+	}
+
+	if (pcNaviVoice(navi) == PSM::Navi::ManType_Olimar) { // OLIMAR
 		PSSystem::spSysIF->playSystemSe(PSSE_SY_CHANGE_ORIMA, 0);
 
-	} else if (playData->isStoryFlag(STORY_DebtPaid)) { // PRESIDENT
+	} else if (pcNaviVoice(navi) == PSM::Navi::ManType_President) { // PRESIDENT
 		PSSystem::spSysIF->playSystemSe(PSSE_SY_CHANGE_SHACHO, 0);
 
 	} else { // LOUIE
 		PSSystem::spSysIF->playSystemSe(PSSE_SY_CHANGE_LUI, 0);
 	}
 
-	if (navi->mNaviIndex == NAVIID_Olimar) { // OLIMAR
+	if (pcNaviVoice(navi) == PSM::Navi::ManType_Olimar) { // OLIMAR
 		navi->mSoundObj->startSound(PSSE_PL_PIKON_ORIMA, 0);
 
-	} else if (playData->isStoryFlag(STORY_DebtPaid)) { // PRESIDENT
+	} else if (pcNaviVoice(navi) == PSM::Navi::ManType_President) { // PRESIDENT
 		navi->mSoundObj->startSound(PSSE_PL_PIKON_SHACHO, 0);
 
 	} else { // LOUIE
@@ -665,10 +677,10 @@ void NaviWalkState::onKeyEvent(Navi* navi, SysShape::KeyEvent const& event)
 	}
 
 	if (event.mAnimIdx == IPikiAnims::JUMP && event.mType == KEYEVENT_200) {
-		if (navi->mNaviIndex == NAVIID_Olimar) { // olimar
+		if (pcNaviVoice(navi) == PSM::Navi::ManType_Olimar) { // olimar
 			navi->mSoundObj->startSound(PSSE_PL_WAIT_LAND_ORIMA, 0);
 
-		} else if (playData->isStoryFlag(STORY_DebtPaid)) { // president
+		} else if (pcNaviVoice(navi) == PSM::Navi::ManType_President) { // president
 			navi->mSoundObj->startSound(PSSE_PL_WAIT_LAND_SHACHO, 0);
 
 		} else { // louie
@@ -759,14 +771,7 @@ void NaviWalkState::initAI_animation(Navi* navi)
 		return;
 	}
 
-	int naviIdx = navi->mNaviIndex;
-#if defined(VERSION_JP)
-	if (gameSystem->isStoryMode() && playData->isStoryFlag(STORY_DebtPaid)) {
-#else
-	if (naviIdx == NAVIID_Louie && gameSystem->isStoryMode() && playData->isStoryFlag(STORY_DebtPaid)) {
-#endif
-		naviIdx++; // president!
-	}
+	int naviIdx = pcNaviVoice(navi);
 
 	switch (animIdx) {
 	case IPikiAnims::FURIMUKU:
@@ -980,10 +985,10 @@ void NaviFollowState::init(Navi* navi, StateArg* stateArg)
 		navi->startMotion(IPikiAnims::KIZUKU, IPikiAnims::KIZUKU, navi, nullptr);
 		mFollowState = FOLLOW_AlertJump;
 
-		if (navi->mNaviIndex == NAVIID_Olimar) {
+		if (pcNaviVoice(navi) == PSM::Navi::ManType_Olimar) {
 			navi->mSoundObj->startSound(PSSE_PL_BIKU_ORIMA, 0);
 
-		} else if (playData->isStoryFlag(STORY_DebtPaid)) {
+		} else if (pcNaviVoice(navi) == PSM::Navi::ManType_President) {
 			navi->mSoundObj->startSound(PSSE_PL_BIKU_SHACHO, 0);
 
 		} else {
@@ -1027,10 +1032,10 @@ void NaviFollowState::onKeyEvent(Navi* navi, SysShape::KeyEvent const& event)
 	}
 
 	if (event.mAnimIdx == IPikiAnims::JUMP && event.mType == KEYEVENT_200) {
-		if (navi->mNaviIndex == NAVIID_Olimar) { // OLIMAR
+		if (pcNaviVoice(navi) == PSM::Navi::ManType_Olimar) { // OLIMAR
 			navi->mSoundObj->startSound(PSSE_PL_WAIT_LAND_ORIMA, 0);
 
-		} else if (playData->isStoryFlag(STORY_DebtPaid)) { // PRESIDENT
+		} else if (pcNaviVoice(navi) == PSM::Navi::ManType_President) { // PRESIDENT
 			navi->mSoundObj->startSound(PSSE_PL_WAIT_LAND_SHACHO, 0);
 
 		} else { // LOUIE
@@ -1165,14 +1170,7 @@ void NaviFollowState::exec(Navi* navi)
 		if (gameSystem && !gameSystem->mIsFrozen) {
 			// get right id for each navi for sounds
 			// 0 for olimar, 1 for louie, or 2 for president
-			int naviID = navi->mNaviIndex;
-#if defined(VERSION_JP)
-			if (gameSystem->isStoryMode() && playData->isStoryFlag(STORY_DebtPaid)) {
-#else
-			if (naviID == NAVIID_Louie && gameSystem->isStoryMode() && playData->isStoryFlag(STORY_DebtPaid)) {
-#endif
-				naviID++;
-			}
+			int naviID = pcNaviVoice(navi);
 
 			// make appropriate sound
 			switch (animIdx) {
@@ -3609,9 +3607,9 @@ void NaviPelletState::init(Navi* navi, StateArg* stateArg)
 	mDoForceWakeup = false;
 	navi->startMotion(IPikiAnims::JKOKE, IPikiAnims::JKOKE, navi, nullptr);
 
-	if (navi->mNaviIndex == NAVIID_Olimar) {
+	if (pcNaviVoice(navi) == PSM::Navi::ManType_Olimar) {
 		navi->mSoundObj->startSound(PSSE_PL_SLEEP_ORIMA, 0);
-	} else if (playData->isStoryFlag(STORY_DebtPaid)) {
+	} else if (pcNaviVoice(navi) == PSM::Navi::ManType_President) {
 		navi->mSoundObj->startSound(PSSE_PL_SLEEP_SHACHO, 0);
 	} else {
 		navi->mSoundObj->startSound(PSSE_PL_SLEEP_LUGI, 0);
@@ -3625,11 +3623,7 @@ void NaviPelletState::init(Navi* navi, StateArg* stateArg)
 	arg.mPosition  = pos;
 	arg.mEnemy     = navi;
 	arg.mMatrix    = &navi->mBaseTrMatrix;
-	if (navi->mNaviIndex == NAVIID_Olimar) {
-		arg.mScale = OLIMAR_SCALE;
-	} else {
-		arg.mScale = LOUIE_SCALE;
-	}
+	arg.mScale     = pc_p2_captain_scale(navi->mNaviIndex);
 	navi->becomePellet(&arg);
 	navi->setAtari(false);
 	mSubState = PELLET_LayDown;
@@ -3671,9 +3665,9 @@ void NaviPelletState::exec(Navi* navi)
 					navi->finishMotion();
 				} else {
 					navi->startMotion(IPikiAnims::GETUP, IPikiAnims::GETUP, navi, nullptr);
-					if (navi->mNaviIndex == NAVIID_Olimar) {
+					if (pcNaviVoice(navi) == PSM::Navi::ManType_Olimar) {
 						navi->mSoundObj->startSound(PSSE_PL_WAKEUP_ORIMA, 0);
-					} else if (playData->isStoryFlag(STORY_DebtPaid)) {
+					} else if (pcNaviVoice(navi) == PSM::Navi::ManType_President) {
 						navi->mSoundObj->startSound(PSSE_PL_WAKEUP_SHACHO, 0);
 					} else {
 						navi->mSoundObj->startSound(PSSE_PL_WAKEUP_LUGI, 0);
@@ -3710,7 +3704,9 @@ void NaviPelletState::onKeyEvent(Navi* navi, SysShape::KeyEvent const& key)
 	if (mDoForceWakeup) {
 		if (key.mType == KEYEVENT_LOOP_END) {
 			if (navi->mAnimator.mSelfAnimator.isFlag(SysShape::Animator::AnimFinishMotion)) {
-				if (playData->isStoryFlag(STORY_DebtPaid)) {
+				if (pcNaviVoice(navi) == PSM::Navi::ManType_Olimar) {
+					navi->mSoundObj->startSound(PSSE_PL_WAKEUP_ORIMA, 0);
+				} else if (pcNaviVoice(navi) == PSM::Navi::ManType_President) {
 					navi->mSoundObj->startSound(PSSE_PL_WAKEUP_SHACHO, 0);
 				} else {
 					navi->mSoundObj->startSound(PSSE_PL_WAKEUP_LUGI, 0);

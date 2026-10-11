@@ -2,6 +2,33 @@
 #ifdef PIKI_PC_PORT
 extern "C" void pc_gfx_set_post_allowed(int allowed);
 #include "pc_speedrun.h"
+#ifdef PIKI_PC_PORT
+#include "settings/pc_settings.h"
+
+// Selector de capitanes antes de la selección de nivel (Desafío) o de arena
+// (VS), para que sus iconos ya muestren a los personajes elegidos. Start
+// sigue; B vuelve al título como la cancelación de la selección.
+enum PcCaptainStep { PCCAP_None, PCCAP_Open, PCCAP_Done, PCCAP_Cancelled };
+static PcCaptainStep sPcCaptainStep = PCCAP_None;
+
+// PCCAP_Open mientras el selector tiene la pantalla; PCCAP_Cancelled si se
+// cerró con B (vuelta al título); PCCAP_Done para seguir.
+static PcCaptainStep pcCaptainGate()
+{
+	if (sPcCaptainStep == PCCAP_None) {
+		sPcCaptainStep = PCCAP_Open;
+		pc_captain_select_open();
+		return PCCAP_Open;
+	}
+	if (sPcCaptainStep == PCCAP_Open) {
+		if (pc_captain_select_active()) {
+			return PCCAP_Open;
+		}
+		sPcCaptainStep = pc_captain_select_result() == PC_CAPSEL_START ? PCCAP_Done : PCCAP_Cancelled;
+	}
+	return sPcCaptainStep;
+}
+#endif
 #include "Game/Data.h"
 #include "System.h"
 #include "stream.h"
@@ -122,6 +149,9 @@ void TitleState::init(VsGameSection* section, StateArg* arg)
 
 	mTitleStage = VSTITLE_PrepareInfo;
 	_2C         = 0;
+#ifdef PIKI_PC_PORT
+	sPcCaptainStep = PCCAP_None;
+#endif
 
 	mCaveInfoType = VSCAVEINFO_Default;
 	strcpy(section->mCaveInfoFilename, cMaps[mCaveInfoType]);
@@ -254,6 +284,15 @@ void TitleState::execChallenge(VsGameSection* section)
 
 	case VSTITLE_PrepareDisp:
 		if (section->mDvdThreadCommand.mMode == DvdThreadCommand::CM_Completed) {
+#ifdef PIKI_PC_PORT
+			const PcCaptainStep captainStep = pcCaptainGate();
+			if (captainStep != PCCAP_Done) {
+				if (captainStep == PCCAP_Cancelled) {
+					section->mIsMenuRunning = true; // B: al título, como cancelar la selección
+				}
+				return;
+			}
+#endif
 			mTitleStage = VSTITLE_Display;
 
 			Morimura::DispMemberChallengeSelect select;
@@ -342,6 +381,15 @@ void TitleState::execVs(VsGameSection* section)
 
 	case VSTITLE_PrepareDisp:
 		if (section->mDvdThreadCommand.mMode == DvdThreadCommand::CM_Completed) {
+#ifdef PIKI_PC_PORT
+			const PcCaptainStep captainStep = pcCaptainGate();
+			if (captainStep != PCCAP_Done) {
+				if (captainStep == PCCAP_Cancelled) {
+					section->mIsMenuRunning = true; // B: al título, como cancelar la selección
+				}
+				return;
+			}
+#endif
 			mTitleStage = VSTITLE_Display;
 
 			Morimura::DispMemberVsSelect select;

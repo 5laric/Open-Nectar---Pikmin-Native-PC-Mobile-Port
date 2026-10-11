@@ -1,3 +1,6 @@
+#ifdef PIKI_PC_PORT
+#include "pc_p2_captain_preview.h"
+#endif
 #include "Morimura/VsSelect.h"
 #ifdef PIKI_PC_PORT
 extern "C" void pc_gfx_p2_extend_shade(float gxY0, float gxY1, float stripW);
@@ -1208,6 +1211,11 @@ void TVsSelect::doCreate(JKRArchive* arc)
 		changePaneInfo();
 	}
 	changeFaceTexture();
+#ifdef PIKI_PC_PORT
+	// Selector de capitanes: caras de los personajes elegidos.
+	pc_p2_captain_icons_apply(mMainScreen->getScreenObj());
+	pc_p2_captain_icons_apply(mRulesWindow->getScreenObj());
+#endif
 	backup->becomeCurrentHeap();
 }
 

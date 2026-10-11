@@ -1,3 +1,4 @@
+#include "pc_p2_captains.h"
 #include "Game/VsGame.h"
 #include "Game/DeathMgr.h"
 #include "Game/MoviePlayer.h"
@@ -660,6 +661,10 @@ void GameState::onMovieStart(VsGameSection* section, MovieConfig* movie, u32 p1,
 				section->setPlayerMode(NAVIID_Louie);
 			}
 		}
+#ifdef PIKI_PC_PORT
+		// Selector de capitanes: el título sigue al personaje, no al índice.
+		gameOverTitle = (Screen::Game2DMgr::GameOverTitle)pc_p2_captain_down_title(p2);
+#endif
 		Screen::gGame2DMgr->open_GameOver(gameOverTitle);
 	}
 

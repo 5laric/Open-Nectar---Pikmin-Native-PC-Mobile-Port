@@ -192,6 +192,19 @@ void pc_speedrun_menu_open(void);
 bool pc_speedrun_menu_active(void);
 int  pc_speedrun_menu_result(void);
 void pc_speedrun_menu_draw(void);
+
+// Pikmin 2: selector de capitanes (docs/PLAN_SELECTOR_CAPITANES.md §6). Se abre
+// antes de la selección de partida y antes de cargar un nivel de Desafío o VS.
+// Start guarda la elección (pikmin_settings.conf, pc_p2_captains.h); B vuelve.
+#define PC_CAPSEL_PENDING (-1)
+#define PC_CAPSEL_BACK    (0)
+#define PC_CAPSEL_START   (1)
+void pc_captain_select_open(void);
+bool pc_captain_select_active(void);
+int  pc_captain_select_result(void);
+void pc_captain_select_draw(void);
+// Modelos de las tarjetas: después de pc_settings_p2_flush, antes de presentar.
+void pc_captain_select_draw_3d(void);
 int  pc_settings_get_speedrun_category(void);
 int  pc_settings_get_speedrun_splits_shown(void);
 // LiveSplit Server (pc_livesplit.cpp): encendido, ocultar el reloj propio con

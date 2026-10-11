@@ -1,3 +1,4 @@
+#include "pc_p2_captains.h"
 #include "og/newScreen/Cave.h"
 #ifdef PIKI_PC_PORT
 void pcHudWideBegin(J2DPerspGraph*);
@@ -175,12 +176,10 @@ void ObjCave::commonUpdate()
 			mTotalPoko->closeTotalPoko();
 		}
 
-		if (mDisp->mPayDebt) {
-			mLifeGauge2->setType(og::Screen::CallBack_LifeGauge::LIFEGAUGE_PRESIDENT);
-
-		} else {
-			mLifeGauge2->setType(og::Screen::CallBack_LifeGauge::LIFEGAUGE_LOUIE);
-		}
+		// Selector de capitanes: retrato del personaje de cada capitán (el
+		// original del capitán 2 ya sigue la deuda en pc_p2_captain_character).
+		mLifeGauge1->pcSetCharacter(pc_p2_captain_loaded_character(0), 0);
+		mLifeGauge2->pcSetCharacter(pc_p2_captain_loaded_character(1), 1);
 	}
 
 	u16 width  = System::getRenderModeObj()->fbWidth;

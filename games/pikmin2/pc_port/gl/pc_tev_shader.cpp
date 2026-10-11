@@ -498,6 +498,11 @@ std::string pc_tev_build_fragment_source(const PcTevShaderKey& key)
 	if (needsRef0) out += "uniform float uAlphaRef0;\n";
 	if (needsRef1) out += "uniform float uAlphaRef1;\n";
 	out += "uniform vec3 uOutTint;\n"; // multiplicador final (HUD de J2 en coop)
+	// uOutTint negativo: gris y luego el color (cursores del selector de capitanes de P2).
+	out += "vec3 applyOutTint(vec3 c) {\n";
+	out += "\tif (uOutTint.r < 0.0) return vec3(dot(c, vec3(0.299, 0.587, 0.114))) * -uOutTint;\n";
+	out += "\treturn c * uOutTint;\n";
+	out += "}\n";
 	if (usesIndMtx) {
 		// Filas de las tres matrices indirectas, ya multiplicadas por 2^escala,
 		// y la escala sola para las matrices dinámicas.
@@ -602,7 +607,7 @@ std::string pc_tev_build_fragment_source(const PcTevShaderKey& key)
 		out += "\tprev.rgb = mix(prev.rgb, uFogColour.rgb, fogAmount);\n";
 	}
 
-	out += "\tfragColor = vec4(prev.rgb * uOutTint, prev.a);\n";
+	out += "\tfragColor = vec4(applyOutTint(prev.rgb), prev.a);\n";
 	out += "}\n";
 	return out;
 }
