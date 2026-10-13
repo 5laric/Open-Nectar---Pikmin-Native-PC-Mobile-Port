@@ -53,9 +53,9 @@ set(PC_PORT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/pc_port")
 # pasar con -fpermissive: el especificador `register` y tomar la dirección de
 # un temporal (stack_new). Ambas se relajan sólo en Clang.
 set(CLANG_LEGACY_RELAXATIONS
-    $<$<CXX_COMPILER_ID:Clang>:-Wno-register>
-    $<$<CXX_COMPILER_ID:Clang>:-Wno-address-of-temporary>
-    $<$<CXX_COMPILER_ID:Clang>:-Wno-unknown-warning-option>
+    $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wno-register>
+    $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wno-address-of-temporary>
+    $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wno-unknown-warning-option>
 )
 set(LEGACY_COMPILE_OPTIONS
     -include "${PC_PORT_DIR}/pc_types.h"
@@ -578,9 +578,9 @@ elseif (ANDROID)
     target_link_options(${NECTAR_GAME} PRIVATE "-Wl,-z,max-page-size=16384")
 else()
     if(PIKMIN_GLES)
-        target_link_libraries(${NECTAR_GAME} PRIVATE m ${SDL2_LIBRARIES} OpenGL::GLES3 X11)
+        target_link_libraries(${NECTAR_GAME} PRIVATE m ${SDL2_LIBRARIES} OpenGL::GLES3 $<$<NOT:$<PLATFORM_ID:Darwin>>:X11>)
     else()
-        target_link_libraries(${NECTAR_GAME} PRIVATE m ${SDL2_LIBRARIES} OpenGL::GL X11)
+        target_link_libraries(${NECTAR_GAME} PRIVATE m ${SDL2_LIBRARIES} OpenGL::GL $<$<NOT:$<PLATFORM_ID:Darwin>>:X11>)
     endif()
 endif()
 # Export symbol names so the diagnostic backtrace in pc_gfx.cpp prints function
@@ -627,6 +627,9 @@ if((PIKMIN_BUILD_LAUNCHER OR ANDROID) AND NOT TARGET pikmin_disc_image)
         ${CMAKE_CURRENT_SOURCE_DIR}/pc_port/launcher)
     target_compile_options(pikmin_disc_image PRIVATE ${NATIVE_COMPILE_OPTIONS})
     set_property(TARGET pikmin_disc_image PROPERTY POSITION_INDEPENDENT_CODE ON)
+    # macOS keeps iconv in its own library. gamecube_image.cpp converts disc
+    # names from Shift-JIS with it.
+    target_link_libraries(pikmin_disc_image PUBLIC $<$<PLATFORM_ID:Darwin>:iconv>)
 endif()
 
 # Instalador Android: la misma biblioteca de extracción, con un puente JNI
