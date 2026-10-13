@@ -4,10 +4,15 @@
 
 #include "launcher_platform.h"
 
+#include <cstdint>
 #include <cstdlib>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#if defined(__APPLE__)
+#include <climits>
+#include <mach-o/dyld.h>
+#endif
 #include <iostream>
 #include <string>
 #include <sys/types.h>
@@ -89,11 +94,22 @@ fs::path executablePath()
     if (env != nullptr) {
         return fs::path(env);
     }
+#if defined(__APPLE__)
+    // macOS has no /proc. _NSGetExecutablePath returns the path as it was
+    // invoked, which can be relative, so resolve it to an absolute path.
+    std::vector<char> invoked(4096);
+    std::uint32_t invokedSize = static_cast<std::uint32_t>(invoked.size());
+    if (_NSGetExecutablePath(invoked.data(), &invokedSize) != 0) return {};
+    char resolved[PATH_MAX];
+    if (realpath(invoked.data(), resolved) == nullptr) return {};
+    return fs::path(resolved);
+#else
     std::vector<char> path(4096);
     const ssize_t count = readlink("/proc/self/exe", path.data(), path.size() - 1);
     if (count <= 0) return {};
     path[static_cast<std::size_t>(count)] = '\0';
     return fs::path(path.data());
+#endif
 }
 
 fs::path defaultDataRoot()
