@@ -2,7 +2,7 @@
 
 <img width="2172" height="476" alt="opennectarlogo (1)" src="https://github.com/user-attachments/assets/71283101-1be5-4ca4-9b16-488320343cc8" />
 
-Native, experimental, and open-source port of *Pikmin* (GameCube, 2001) for **Linux, Windows and Android**. Runs the game code directly on the host system and translates GX to OpenGL; does not use Dolphin or any emulator.
+Native, experimental, and open-source port of *Pikmin* (GameCube, 2001) for **Linux, Windows, macOS and Android**. Runs the game code directly on the host system and translates GX to OpenGL; does not use Dolphin or any emulator.
 
 This project builds upon the decompilation by [projectPiki/pikmin](https://github.com/projectPiki/pikmin) and adds a native PC port layer.
 
@@ -260,6 +260,16 @@ cmake --build build -j"$(nproc)"
 ctest --test-dir build --output-on-failure
 ```
 
+### macOS
+
+```sh
+brew install cmake sdl2-compat
+cmake -S games/pikmin1 -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target pikmin_pc pikmin_launcher -j"$(sysctl -n hw.ncpu)"
+```
+
+The compiler comes from the Xcode command-line tools (`xcode-select --install`). The port requests an OpenGL 4.1 core context, the newest core profile macOS provides.
+
 ### Choosing which release to build
 
 The game's own code is compiled here, and it is conditional on which retail
@@ -383,9 +393,9 @@ This port includes significant improvements over the original GameCube game, des
 
 | Action | Key |
 |--------|-----|
-| Movement (left stick) | Arrow keys |
+| Movement (left stick) | W A S D |
 | Pikmin formation (C-stick) | T (up) F (left) G (down) H (right) |
-| D-Pad | W A S D |
+| D-Pad | Arrow keys |
 | A — throw / confirm | Space |
 | B — whistle / cancel | Left Shift |
 | X — dismiss | X |

@@ -27,7 +27,7 @@ enum {
 // PC Control Modes
 enum {
     PC_CONTROL_CLASSIC      = 0,  // Original GameCube behavior
-    PC_CONTROL_MOUSE_CURSOR = 1,  // Mouse controls cursor, the arrow keys move Olimar
+    PC_CONTROL_MOUSE_CURSOR = 1,  // Mouse controls cursor, WASD moves Olimar
 };
 
 // Keyboard remapping actions (PC only).
