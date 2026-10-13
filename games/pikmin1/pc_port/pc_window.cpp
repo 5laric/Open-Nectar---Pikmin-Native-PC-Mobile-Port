@@ -187,6 +187,9 @@ static int sLogicalRetraceInterval = 1;
 // like the pad's edge-shaped buttons.
 static Uint32 sMousePressedMask = 0; // buttons pressed since the last take
 static int sMouseWheelSteps = 0;
+// Steps that nothing consumes (title, pause, menus) must not pile up. Otherwise a
+// long scroll there changes the captain or the camera zoom once play resumes.
+constexpr int kMaxPendingWheelSteps = 8;
 static float sTouchZoomDelta = 0.0f;
 static float sTouchCameraDrag = 0.0f;
 static float sCameraPitchDrag = 0.0f;
@@ -1122,7 +1125,7 @@ void pc_window_poll_events(PADStatus* pad) {
                 if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
                     steps = -steps;
                 }
-                sMouseWheelSteps += steps;
+                sMouseWheelSteps = std::clamp(sMouseWheelSteps + steps, -kMaxPendingWheelSteps, kMaxPendingWheelSteps);
                 break;
             }
             case SDL_WINDOWEVENT:
