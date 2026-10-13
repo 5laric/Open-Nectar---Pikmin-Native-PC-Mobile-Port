@@ -1261,7 +1261,7 @@ static void pcVsSetupBases(MapMgr* map)
 	PcVsPieceSpot pieces[16];
 	const int np = pc_vs_arena_piece_spots(pieces, 16);
 	for (int i = 0; i < np; i++) {
-		pcVsSpawnPellet(map, sVsPieceIds[pieces[i].kind], pieces[i].x, pieces[i].z);
+		pcVsSpawnPellet(map, pieces[i].part ? pieces[i].part : sVsPieceIds[pieces[i].kind], pieces[i].x, pieces[i].z);
 	}
 
 	// Compuerta de roca-bomba en cada base y un montón de bombas para abrirla.
@@ -1306,6 +1306,75 @@ static void pcVsSetupBases(MapMgr* map)
 		teki->reset();
 		teki->startAI(0);
 		teki->mSRT.r.set(0.0f, pers.mFaceDirection, 0.0f);
+	}
+
+	// Enemigos y jefes puestos en el editor.
+	PcVsEnemySpot enemies[48];
+	const int ne = pc_vs_arena_enemy_spots(enemies, 48);
+	for (int i = 0; i < ne; i++) {
+		Vector3f pos(enemies[i].x, 0.0f, enemies[i].z);
+		pos.y = map->getMinY(pos.x, pos.z, true);
+		if (enemies[i].boss >= 0) {
+			GenObjectBoss gen; // sin generador de verdad: no suelta nada
+			gen.mBossID          = enemies[i].boss;
+			gen.mItemCount       = 0;
+			gen.mPelletConfigIdx = -1;
+			BirthInfo info;
+			info.set(pos, Vector3f(0.0f, enemies[i].face, 0.0f), Vector3f(1.0f, 1.0f, 1.0f), nullptr);
+			bossMgr->create(enemies[i].boss, info, &gen);
+			continue;
+		}
+		Teki* teki = tekiMgr->newTeki(enemies[i].teki);
+		if (!teki) continue;
+		TekiPersonality pers;
+		pers.mPosition      = pos;
+		pers.mNestPosition  = pos;
+		pers.mFaceDirection = enemies[i].face;
+		pers.setF(TekiPersonality::FLT_TerritoryRange, 250.0f);
+		teki->mPersonality->input(pers);
+		teki->reset();
+		teki->startAI(0);
+		teki->mSRT.r.set(0.0f, enemies[i].face, 0.0f);
+	}
+
+	// Construcciones: puentes y rampas que construyen los Pikmin, bloques que
+	// se empujan y puertas que se derriban.
+	PcVsObjectSpot objects[32];
+	const int no = pc_vs_arena_object_spots(objects, 32);
+	for (int i = 0; i < no; i++) {
+		const PcVsObjectSpot& o = objects[i];
+		Vector3f pos(o.x, 0.0f, o.z);
+		pos.y = map->getMinY(pos.x, pos.z, true);
+		if (o.kind >= PC_VS_OBJ_GATE_SOFT) {
+			const int type = o.kind == PC_VS_OBJ_GATE_SOFT ? OBJTYPE_SluiceSoft : o.kind == PC_VS_OBJ_GATE_HARD ? OBJTYPE_SluiceHard : OBJTYPE_SluiceBomb;
+			if (BuildingItem* gate = static_cast<BuildingItem*>(itemMgr->birth(type))) {
+				gate->mNumStages = o.kind == PC_VS_OBJ_GATE_BOMB ? 2 : 3;
+				gate->init(pos);
+				gate->mFaceDirection = o.face;
+				gate->mSRT.r.set(0.0f, o.face, 0.0f);
+				gate->startAI(0);
+				if (gate->mWayPoint) gate->mWayPoint->setFlag(false);
+			}
+			continue;
+		}
+		// Forma del WorkObjectMgr: 0 puente, 1 rampa de subida, 2 de bajada, 3 bloque, 4 puente largo.
+		static const int kShape[] = { 0, 4, 1, 2, 3 };
+		const bool rock = o.kind == PC_VS_OBJ_PUSH_ROCK;
+		Creature* obj   = workObjectMgr->birth(rock ? 1 : 0, kShape[o.kind]);
+		if (!obj) continue;
+		obj->init(pos);
+		obj->mSRT.r.set(0.0f, o.face, 0.0f);
+		obj->mFaceDirection = o.face;
+		if (rock) {
+			HinderRock* box            = static_cast<HinderRock*>(obj);
+			box->mDestinationPosition  = Vector3f(pos.x + sinf(o.face) * o.push, pos.y, pos.z + cosf(o.face) * o.push);
+			box->mAmountPushersToStart = 10;
+			box->mPushSpeed            = 50.0f;
+		}
+		// Trabajo por tramo del puente (en el juego, de 1 a 4).
+		obj->mHealth    = f32(o.work);
+		obj->mMaxHealth = obj->mHealth;
+		obj->startAI(0);
 	}
 }
 #endif
@@ -1575,6 +1644,35 @@ void GameCoreSection::initStage()
 		}
 		tekiMgr->mUsingType[TEKI_Swallow] = true; // Bulborbs custodios
 		itemMgr->addUseList(OBJTYPE_SluiceBomb);   // compuertas de roca-bomba
+		// Piezas concretas elegidas en el editor: puntos según lo que pesan.
+		PcVsPieceSpot pieces[16];
+		const int np = pc_vs_arena_piece_spots(pieces, 16);
+		for (int i = 0; i < np; i++) {
+			if (!pieces[i].part) continue;
+			pelletMgr->addUseList(pieces[i].part);
+			PelletConfig* c = pelletMgr->getConfigFromIdx(pelletMgr->getConfigIndex(pieces[i].part));
+			const int carry       = c ? c->mCarryMinPikis() : 20;
+			pc_vs_set_piece_points(pieces[i].part, carry <= 15 ? 1 : carry <= 25 ? 2 : carry <= 35 ? 3 : 5);
+		}
+		// Enemigos, jefes y construcciones del editor: sus modelos.
+		PcVsEnemySpot enemies[48];
+		const int ne = pc_vs_arena_enemy_spots(enemies, 48);
+		for (int i = 0; i < ne; i++) {
+			if (enemies[i].teki >= 0) tekiMgr->mUsingType[enemies[i].teki] = true;
+			if (enemies[i].boss >= 0) {
+				GenObjectBoss gen;
+				gen.mBossID = enemies[i].boss;
+				gen.updateUseList(nullptr, 1);
+			}
+		}
+		PcVsObjectSpot objects[32];
+		const int no = pc_vs_arena_object_spots(objects, 32);
+		for (int i = 0; i < no; i++) {
+			static const int kShape[] = { 0, 4, 1, 2, 3 };
+			if (objects[i].kind <= PC_VS_OBJ_PUSH_ROCK) workObjectMgr->addUseList(kShape[objects[i].kind]);
+			else if (objects[i].kind == PC_VS_OBJ_GATE_SOFT) itemMgr->addUseList(OBJTYPE_SluiceSoft);
+			else if (objects[i].kind == PC_VS_OBJ_GATE_HARD) itemMgr->addUseList(OBJTYPE_SluiceHard);
+		}
 	}
 #endif
 	generatorList->updateUseList();

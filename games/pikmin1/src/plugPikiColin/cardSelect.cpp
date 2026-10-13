@@ -20,6 +20,7 @@
 #include "pc_gfx.h"
 #include "pc_permadeath.h"
 #include "pc_coop.h"
+#include "pc_vs.h"
 #include "pc_speedrun.h"
 #include "pc_day_history.h"
 #include "randomizer/pc_randomizer.h"
@@ -92,13 +93,29 @@ struct CardSelectSetupSection : public Node {
 		// Venimos de perder una partida Permadeath: el aviso va primero y el
 		// resto del flujo espera debajo hasta que se cierra.
 		pc_erased_notice_open_if_queued();
-		// El selector 1P/2P va antes del slot (PLAN_COOP fase 0b). Challenge
-		// mode se lo salta: siempre 1 jugador.
+		// El selector 1P/2P va antes del slot (PLAN_COOP fase 0b). En el
+		// Challenge Mode es 1 jugador / Cooperativo / 1 vs 1.
 		if (pc_speedrun_take_restart()) {
 			// Speedrun: reset rápido, otra run de la misma categoría sin menús.
 			pc_window_input_reset_assignment();
 			pc_coop_set_captain(0, PC_CAPTAIN_OLIMAR);
 			pcStartSpeedrunRun();
+		} else if (gameflow.mIsChallengeMode && pc_vs_pending() && pc_vs_direct_take_setup()) {
+			// Editor de mapas (--vs-map): sin reglas ni mandos (las reglas
+			// guardadas; J1 teclado + mando 1, J2 mando 2). Si el mapa no se
+			// puede montar, se dice en la consola y se vuelve al título.
+			pc_coop_take_chosen_at_title();
+			pc_window_input_reset_assignment();
+			pc_coop_set_captain(0, PC_CAPTAIN_OLIMAR);
+			pc_coop_set_captain(1, PC_CAPTAIN_LOUIE);
+			if (const char* why = pc_vs_arena_prepare()) {
+				fprintf(stderr, "[VS] --vs-map: el mapa no se puede jugar: %s\n", why);
+				pc_vs_set_pending(false);
+				pc_coop_set_pending(false);
+				mNextSectionsFlag = PACK_NEXT_ONEPLAYER(ONEPLAYER_GameExit);
+			}
+			mState = Exit;
+			gsys->setFade(0.0f);
 		} else if (gameflow.mIsChallengeMode && pc_vs_pending() && pc_coop_take_chosen_at_title()) {
 			// VS: primero la explicación y las reglas; luego mandos y
 			// capitanes de los dos jugadores; sin fichero.
@@ -132,9 +149,10 @@ struct CardSelectSetupSection : public Node {
 				pc_captain_prompt_open();
 			}
 		} else if (gameflow.mIsChallengeMode) {
-			pc_coop_set_captain(0, PC_CAPTAIN_OLIMAR);
-			memcardWindow = new zen::ogScrFileChkSelMgr();
-			memcardWindow->start(gameflow.mIsChallengeMode);
+			// Desafío: cuántos juegan; con 2, mandos y capitanes antes de la
+			// comprobación de la tarjeta (PLAN_CHALLENGE_COOP).
+			mAwaitingPlayerCount = true;
+			pc_playercount_prompt_open_challenge();
 		} else if (!gameflow.mIsChallengeMode && pc_speedrun_active()) {
 			// Salir de la partida a mitad de run: el speedrun no tiene
 			// pantalla de slots, así que vuelve al título.
@@ -359,6 +377,7 @@ struct CardSelectSetupSection : public Node {
 				return;
 			}
 			pc_coop_set_pending(choice == PC_PLAYERCOUNT_TWO);
+			if (choice == PC_PLAYERCOUNT_ONE) pc_coop_set_captain(0, PC_CAPTAIN_OLIMAR);
 			if (choice == PC_PLAYERCOUNT_TWO) {
 				// Con 2 jugadores, cada uno elige su mando antes del slot.
 				mAwaitingDevAssign = true;

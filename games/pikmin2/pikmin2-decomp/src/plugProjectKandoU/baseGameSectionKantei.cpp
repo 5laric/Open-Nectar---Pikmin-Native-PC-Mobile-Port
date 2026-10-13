@@ -1,4 +1,5 @@
 #include <cstdio>
+#include "Game/pcCoop.h"
 #include <cstdlib>
 #include "Game/pelletMgr.h"
 #include "og/Screen/DispMember.h"
@@ -120,7 +121,7 @@ void BaseGameSection::startKantei2D()
 			disp.mTotalPokosCave = cavemoney;
 			disp.mTotalPokos     = totalmoney + cavemoney;
 			disp.mPelletOffset   = PelletList::Mgr::getOffsetFromDictionaryNo(obj->mConfig->mParams.mDictionary.mData - 1);
-			if (gameSystem->isMultiplayerMode()) {
+			if (PC_TWO_CAPTAIN_PLAY()) {
 				disp.mSecondaryController = mControllerP2;
 			} else {
 				disp.mSecondaryController = nullptr;

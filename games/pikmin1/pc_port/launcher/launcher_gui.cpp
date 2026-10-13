@@ -870,11 +870,13 @@ struct Hub {
             const bool comingSoon = false;
             // Ya instalado solo tiene sentido actualizar: un botón a lo ancho.
             const bool installed = state.games[i].installed;
-            const float buttonW = installed ? cardW : (cardW - 12.0f) * 0.5f;
+            // Pikmin 1 instalado y con editor: Actualizar y Editor de mapas.
+            const bool editor = installed && !isPikmin2 && !state.mapEditor.empty();
+            const float buttonW = installed && !editor ? cardW : (cardW - 12.0f) * 0.5f;
             ImGui::PushID(i);
             ImGui::SetCursorScreenPos(ImVec2(x, below + 38.0f));
             if (!installed && glassButton("Install", ImVec2(buttonW, 44.0f), false, comingSoon)) choose(HubAction::Install, HubGame(i));
-            ImGui::SetCursorScreenPos(ImVec2(installed ? x : x + buttonW + 12.0f, below + 38.0f));
+            ImGui::SetCursorScreenPos(ImVec2(installed && !editor ? x : x + (installed ? 0.0f : buttonW + 12.0f), below + 38.0f));
             // Con versión nueva en GitHub el botón lo dice ("Update to 1.0").
             std::string updateLabel = isPikmin2 ? "Fusion build" : "Update";
             if (!isPikmin2 && installed && releaseCheck && releaseCheck->done) {
@@ -884,6 +886,10 @@ struct Hub {
             if (glassButton(updateLabel.c_str(), ImVec2(buttonW, 44.0f), updateLabel != "Update",
                             comingSoon || isPikmin2)) {
                 choose(HubAction::Update, HubGame(i));
+            }
+            if (editor) {
+                ImGui::SetCursorScreenPos(ImVec2(x + buttonW + 12.0f, below + 38.0f));
+                if (glassButton("Map editor", ImVec2(buttonW, 44.0f))) choose(HubAction::MapEditor, HubGame(i));
             }
             ImGui::PopID();
         }

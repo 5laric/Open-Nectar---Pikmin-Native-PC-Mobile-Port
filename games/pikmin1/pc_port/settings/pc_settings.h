@@ -237,6 +237,10 @@ void pc_tutorial_skip_clear_pending(void);
 #define PC_PLAYERCOUNT_TWO       (2)
 
 void pc_playercount_prompt_open(void);
+/// Variante del Modo Desafío: 1 jugador / Cooperativo / 1 vs 1 (este aún
+/// deshabilitado). Devuelve ONE, TWO (cooperativo) o, en el futuro, VS.
+#define PC_PLAYERCOUNT_VS        (3)
+void pc_playercount_prompt_open_challenge(void);
 bool pc_playercount_prompt_active(void);
 void pc_playercount_prompt_draw(void);
 int  pc_playercount_prompt_result(void);

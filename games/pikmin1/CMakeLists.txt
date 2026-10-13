@@ -138,6 +138,7 @@ else()
 endif()
 option(PIKMIN_BUILD_LAUNCHER "Build the standalone first-run launcher" ${PIKMIN_DESKTOP_DEFAULT})
 option(PIKMIN_BUILD_TESTS "Build the host-run test executables" ${PIKMIN_DESKTOP_DEFAULT})
+option(NECTAR_BUILD_MAPMAKER "Build the VS map editor (tools/mapmaker)" ${PIKMIN_DESKTOP_DEFAULT})
 
 if(PIKMIN_BUILD_TESTS)
     enable_testing()
@@ -176,6 +177,9 @@ add_compile_definitions(
     # In-game settings menu (F1). Remove this to disable the overlay entirely.
     PIKI_PC_SETTINGS_MENU=1
 )
+
+# Librerías compartidas con el editor de mapas (raíz del repo).
+set(NECTAR_LIBS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../libs")
 
 # ─── Include paths ───
 include_directories(
@@ -283,6 +287,13 @@ set(PC_PORT_SOURCES
     pc_port/mods/pc_hd_models.cpp
     pc_port/mods/pc_hd_model_convert.cpp
     pc_port/mods/pc_vs_arena.cpp
+    pc_port/mods/pc_vs_map.cpp
+    # Mapas VS: formato y compilador compartidos con el editor de mapas.
+    ${NECTAR_LIBS_DIR}/nectar_mapcore/src/map_json.cpp
+    ${NECTAR_LIBS_DIR}/nectar_mapcore/src/compile.cpp
+    ${NECTAR_LIBS_DIR}/nectar_assets/src/mod.cpp
+    ${NECTAR_LIBS_DIR}/nectar_assets/src/image.cpp
+    ${PC_PORT_DIR}/launcher/bti_decode.cpp
     pc_port/pc_vs.cpp
     pc_port/pc_achievements.cpp
     pc_port/pc_file_dialog.cpp
@@ -334,7 +345,23 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/bcdec
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/xxhash
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann/include
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
+    ${NECTAR_LIBS_DIR}/nectar_mapcore/include
+    ${NECTAR_LIBS_DIR}/nectar_assets/include
 )
+# Cabeceras internas de nectar_assets solo para sus fuentes.
+set_source_files_properties(
+    ${NECTAR_LIBS_DIR}/nectar_assets/src/mod.cpp
+    ${NECTAR_LIBS_DIR}/nectar_assets/src/image.cpp
+    PROPERTIES INCLUDE_DIRECTORIES
+    "${NECTAR_LIBS_DIR}/nectar_assets/src;${NECTAR_LIBS_DIR}/nectar_assets/third_party;${PC_PORT_DIR}/launcher")
+
+# Mapa VS de serie incrustado en el ejecutable (así también vale en Android).
+set(PC_VS_DEFAULT_MAP_JSON "${CMAKE_CURRENT_SOURCE_DIR}/maps/vs/impact_arena/map.json")
+file(READ "${PC_VS_DEFAULT_MAP_JSON}" PC_VS_DEFAULT_MAP)
+configure_file(pc_port/mods/pc_vs_default_map.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/pc_vs_default_map.h" @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PC_VS_DEFAULT_MAP_JSON}")
 
 # ─── System Common (platform-independent game engine) ───
 file(GLOB SYSCOMMON_SOURCES "src/sysCommon/*.cpp")
@@ -985,4 +1012,10 @@ if(PIKMIN_NATIVE_JAUDIO AND PIKMIN_BUILD_TESTS)
     set_tests_properties(pc_jaudio_integration_test PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" TIMEOUT 30
         SKIP_RETURN_CODE 77 LABELS "game-assets")
+endif()
+
+# Editor de mapas VS (tools/mapmaker): sale en bin/ junto al juego, que es
+# donde busca el ejecutable para "Probar". Usa la ImGui del launcher.
+if (NECTAR_BUILD_MAPMAKER AND NOT ANDROID)
+    add_subdirectory("${NECTAR_LIBS_DIR}/../tools/mapmaker" "${CMAKE_CURRENT_BINARY_DIR}/mapmaker")
 endif()

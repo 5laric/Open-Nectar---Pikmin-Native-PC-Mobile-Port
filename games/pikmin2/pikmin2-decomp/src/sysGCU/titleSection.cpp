@@ -1,5 +1,6 @@
 #ifdef PIKI_PC_PORT
 #include "pc_speedrun.h"
+#include "pc_p2_coop.h"
 #endif
 #include "Title.h"
 #include "ebi/title/TTitle.h"
@@ -176,6 +177,7 @@ void Section::init()
 	// como en una partida nueva.
 	pc_speedrun_challenge_progress_restore();
 	pc_speedrun_set_active(0);
+	pc_p2_coop_set_pending(0);
 #endif
 
 	sys->heapStatusStart("JMANewSinTable", nullptr);
@@ -462,6 +464,12 @@ void Section::doUpdateMainTitle()
 		case ebi::TMainTitleMgr::Select_Speedrun:
 			// Modo Speedrun: el menú del modo sale en la selección de partida.
 			pc_speedrun_set_active(1);
+			GameFlow::mActiveSectionFlag = GameFlow::SN_SingleGame;
+			break;
+		case ebi::TMainTitleMgr::Select_Coop:
+			// Co-op: la historia, con la asignación de mandos antes de la
+			// selección de partida (docs/PLAN_COOP.md §5).
+			pc_p2_coop_set_pending(1);
 			GameFlow::mActiveSectionFlag = GameFlow::SN_SingleGame;
 			break;
 #endif

@@ -7,6 +7,7 @@
 #include "JSystem/J3D/J3DModelLoader.h"
 #include "Game/PikiMgr.h"
 #include "pc_p2_captains.h"
+#include "Game/pcCoop.h"
 
 extern "C" void pc_gfx_set_out_tint(float r, float g, float b);
 extern "C" void pc_gfx_clear_out_tint(void);
@@ -181,6 +182,53 @@ Navi* NaviMgr::getActiveNavi()
 	}
 	return nullptr;
 }
+
+#ifdef PIKI_PC_PORT
+Navi* NaviMgr::getNearestNavi(Vector3f& pos)
+{
+	if (!pc_p2_coop_active()) {
+		return getActiveNavi();
+	}
+	Navi* nearest = nullptr;
+	f32 minDist   = 0.0f;
+	for (int i = 0; i < 2; i++) {
+		Navi* navi = getAt(i);
+		if (!navi || !navi->isAlive() || !navi->mController1) {
+			continue;
+		}
+		Vector3f naviPos = navi->getPosition();
+		const f32 dist   = pos.sqrDistance(naviPos);
+		if (!nearest || dist < minDist) {
+			nearest = navi;
+			minDist = dist;
+		}
+	}
+	return nearest ? nearest : getActiveNavi();
+}
+
+Navi* NaviMgr::getMenuNavi()
+{
+	if (!pc_p2_coop_active()) {
+		return getActiveNavi();
+	}
+	Navi* navi = getAt(pc_p2_coop_menu_player());
+	return navi && navi->mController1 ? navi : getActiveNavi();
+}
+
+Navi* NaviMgr::getMovieNavi()
+{
+	if (!pc_p2_coop_active()) {
+		return getActiveNavi();
+	}
+	for (int i = 0; i < 2; i++) {
+		Navi* navi = getAt(i);
+		if (navi && navi->isAlive() && navi->mController1) {
+			return navi;
+		}
+	}
+	return getActiveNavi();
+}
+#endif
 
 /**
  * @note Address: 0x8015ACBC
@@ -565,6 +613,17 @@ void NaviMgr::doSimulation(f32 rate)
 	PSM::ActorDirector_TempoChange* psm = PSMGetLifeD();
 	if (psm) {
 		Navi* navi = naviMgr->getActiveNavi();
+#ifdef PIKI_PC_PORT
+		// Co-op: suena por el capitán vivo con menos vida.
+		if (pc_p2_coop_active()) {
+			for (int i = 0; i < 2; i++) {
+				Navi* other = getAt(i);
+				if (other && other->isAlive() && (!navi || other->getLifeRatio() < navi->getLifeRatio())) {
+					navi = other;
+				}
+			}
+		}
+#endif
 		if (navi) {
 			if (navi->getLifeRatio() <= 0.5f) {
 				psm->directOn();

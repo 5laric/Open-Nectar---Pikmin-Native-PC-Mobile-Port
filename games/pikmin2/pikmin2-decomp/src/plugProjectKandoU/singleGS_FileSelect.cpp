@@ -2,6 +2,7 @@
 extern "C" void pc_p2_rules_begin_new_run(void);
 extern "C" void pc_p2_rules_set_pending(int permadeath, int hard);
 #include "pc_speedrun.h"
+#include "pc_p2_coop.h"
 #include "Game/MemoryCard/Mgr.h"
 #include "stream.h"
 #include "GameFlow.h"
@@ -19,6 +20,8 @@ extern "C" void pc_gfx_p2_sides_static_reset(void);
 static int sPcSidesFrames = 0;
 static bool sPcSpeedrunRestart = false; // reset rápido: otra run sin el menú del modo
 static bool sPcCaptainSelect   = false; // selector de capitanes abierto antes de la selección de partida
+static bool sPcCoopAssign      = false; // co-op: asignación de mandos antes del selector de capitanes
+extern "C" void pc_window_input_reset_assignment(void);
 #endif
 #include "Game/GameConfig.h"
 #include "Game/AIConstants.h"
@@ -116,6 +119,10 @@ void FileState::exec(SingleGameSection* game)
 		sPcSpeedrunRestart = pc_speedrun_active() && pc_speedrun_take_restart();
 		if (pc_speedrun_active() && !sPcSpeedrunRestart) {
 			pc_speedrun_menu_open();
+		} else if (pc_p2_coop_pending()) {
+			// Co-op (opción del título): mandos de cada jugador, luego capitanes.
+			pc_devassign_prompt_open();
+			sPcCoopAssign = true;
 		} else if (!pc_speedrun_active()) {
 			// Selector de capitanes antes de la selección de partida.
 			pc_captain_select_open();
@@ -146,6 +153,20 @@ void FileState::exec(SingleGameSection* game)
 		game->BaseHIOSection::doUpdate();
 #ifdef PIKI_PC_PORT
 		if (pc_erased_notice_active()) {
+			return;
+		}
+		if (sPcCoopAssign) {
+			if (pc_devassign_prompt_active()) {
+				return;
+			}
+			sPcCoopAssign = false;
+			if (pc_devassign_prompt_result() == PC_DEVASSIGN_OK) {
+				pc_captain_select_open();
+				sPcCaptainSelect = true;
+			} else {
+				pc_window_input_reset_assignment();
+				game->flow_goto_title();
+			}
 			return;
 		}
 		if (sPcCaptainSelect) {

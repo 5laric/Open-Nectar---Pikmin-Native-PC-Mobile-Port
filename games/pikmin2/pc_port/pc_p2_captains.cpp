@@ -160,6 +160,25 @@ int pc_p2_captain_cursor_anim(int naviIndex)
 	return character == PC_P2_CHAR_LOUIE || character == PC_P2_CHAR_PRESIDENT ? 1 : 0;
 }
 
+void pc_p2_captain_cursor_colour(int naviIndex, unsigned char rgb[3])
+{
+	float tint[3];
+	const int character = pc_p2_captain_loaded_character(naviIndex);
+	if (pc_p2_captain_tint(naviIndex, tint)) {
+		for (int c = 0; c < 3; c++) {
+			rgb[c] = (unsigned char)(tint[c] * 255.0f);
+		}
+	} else if (pc_p2_character_is_pikmin(character)) {
+		for (int c = 0; c < 3; c++) {
+			rgb[c] = (unsigned char)kCharacters[character].color[c];
+		}
+	} else if (pc_p2_captain_cursor_anim(naviIndex) == 1) {
+		rgb[0] = 60, rgb[1] = 130, rgb[2] = 255; // Louie y el presidente
+	} else {
+		rgb[0] = 235, rgb[1] = 70, rgb[2] = 235; // Olimar
+	}
+}
+
 bool pc_p2_captain_tint_for_model(const void* j3dModel, float rgb[3])
 {
 	if (!j3dModel) {

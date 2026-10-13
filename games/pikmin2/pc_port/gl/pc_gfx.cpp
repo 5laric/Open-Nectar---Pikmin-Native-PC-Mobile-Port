@@ -4600,6 +4600,14 @@ static bool sPostRanThisFrame = false;
 static PcGfxPipelineState sPipelineState = { GX_TRUE, GX_LEQUAL, GX_TRUE, GX_BM_NONE, GX_BL_ONE, GX_BL_ZERO, GX_LO_COPY, GX_CULL_BACK };
 static constexpr int kPaletteSlots = 21;
 static int sPaletteSlotsNeeded = kPaletteSlots;
+// Último viewport GX aplicado, en píxeles del render target (origen abajo).
+// Las sombras lo usan para separar las vistas de la pantalla partida.
+static GLint sLastViewportX = 0, sLastViewportY = 0;
+static GLsizei sLastViewportW = 0, sLastViewportH = 0;
+// Último scissor GX aplicado, igual: con la cámara fusionada del co-op las dos
+// vistas comparten viewport (pantalla completa) y solo las separa el recorte.
+static GLint sLastScissorX = 0, sLastScissorY = 0;
+static GLsizei sLastScissorW = 0, sLastScissorH = 0;
 #include "pc_gfx_shadows.inc"
 
 static GLuint post_apply(bool allowDof)
@@ -5382,10 +5390,6 @@ void pc_gfx_set_current_mtx(u32 id) {
     if (id < 64) sCurrentPosMtxId = id;
 }
 
-// Último viewport GX aplicado, en píxeles del render target (origen abajo).
-static GLint sLastViewportX = 0, sLastViewportY = 0;
-static GLsizei sLastViewportW = 0, sLastViewportH = 0;
-
 bool pc_gfx_project_current(float x, float y, float z, float* winX, float* winY)
 {
     // Igual que un vértice del juego: matriz de posición actual, proyección,
@@ -5729,6 +5733,7 @@ void pc_gfx_set_scissor(u32 xOrig, u32 yOrig, u32 wd, u32 ht) {
     p2_widen_scissor(scX, scW);
 #endif
     map_gx_rect(scX, scY, scW, scH, x, y, width, height);
+    sLastScissorX = x; sLastScissorY = y; sLastScissorW = width; sLastScissorH = height;
     static GLint lastX = -1, lastY = -1;
     static GLsizei lastWidth = -1, lastHeight = -1;
     static uint32_t seenSerial = 0;

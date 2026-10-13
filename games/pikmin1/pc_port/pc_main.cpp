@@ -55,6 +55,8 @@ __declspec(dllexport) int           AmdPowerXpressRequestHighPerformance = 1;
 #endif
 #include "settings/pc_settings.h"
 #include "mods/pc_hd_model_convert.h"
+#include "mods/pc_vs_map.h"
+#include "pc_vs.h"
 #include "settings/pc_settings_p2d.h"
 
 int main(int argc, char* argv[])
@@ -102,6 +104,11 @@ int main(int argc, char* argv[])
         // línea de comandos es la única puerta al pack.
         if (std::strcmp(argv[i], "--texture-pack") == 0)
             pc_texpack_request_enable();
+        // Editor de mapas: "Probar" abre el juego directo en una partida VS.
+        if (std::strcmp(argv[i], "--vs-map") == 0 && i + 1 < argc) {
+            pc_vs_map_select_file(argv[++i]);
+            pc_vs_direct_request();
+        }
     }
     (void)argc;
     (void)argv;

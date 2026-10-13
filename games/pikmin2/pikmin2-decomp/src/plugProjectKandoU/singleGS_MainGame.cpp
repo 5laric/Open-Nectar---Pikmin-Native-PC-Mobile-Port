@@ -4,6 +4,7 @@ int pc_p2_permadeath_active(void);
 void pc_p2_rules_erase_current_save(void);
 }
 #include "pc_p2_captains.h"
+#include "Game/pcCoop.h"
 #include "pc_speedrun.h"
 #endif
 #include "Game/DeathMgr.h"
@@ -349,7 +350,11 @@ void GameState::on_demo_timer(SingleGameSection* game, u32 id)
 		gameSystem->mSection->disableTimer(DEMOTIMER_YouAppearLost);
 	}
 	if (id == DEMOTIMER_Reds_Purples_Tutorial) {
+#ifdef PIKI_PC_PORT
+		Navi* navi = naviMgr->getMovieNavi(); // co-op: Olimar o, si no, Louie
+#else
 		Navi* navi = naviMgr->getActiveNavi();
+#endif
 		if (!navi) {
 			int id = 1;
 			if (!gameSystem->mSection->mPrevNaviIdx)
@@ -365,7 +370,11 @@ void GameState::on_demo_timer(SingleGameSection* game, u32 id)
 		gameSystem->mSection->disableTimer(DEMOTIMER_Reds_Purples_Tutorial);
 	}
 	if (id == DEMOTIMER_Meet_Red_Pikmin) {
+#ifdef PIKI_PC_PORT
+		Navi* navi = naviMgr->getMovieNavi(); // co-op: Olimar o, si no, Louie
+#else
 		Navi* navi = naviMgr->getActiveNavi();
+#endif
 		if (!navi) {
 			int id = 1;
 			if (!gameSystem->mSection->mPrevNaviIdx)
@@ -387,7 +396,11 @@ void GameState::on_demo_timer(SingleGameSection* game, u32 id)
 		gameSystem->mSection->disableTimer(DEMOTIMER_Meet_Red_Pikmin);
 	}
 	if (id == DEMOTIMER_Unlock_Switch_To_Louie) {
+#ifdef PIKI_PC_PORT
+		Navi* navi = naviMgr->getMovieNavi(); // co-op: Olimar o, si no, Louie
+#else
 		Navi* navi = naviMgr->getActiveNavi();
+#endif
 		if (!navi) {
 			int id = 1;
 			if (!gameSystem->mSection->mPrevNaviIdx)
@@ -494,7 +507,11 @@ void GameState::exec(SingleGameSection* game)
 				target = hole;
 			}
 		}
+#ifdef PIKI_PC_PORT
+		Navi* navi = naviMgr->getMovieNavi(); // co-op: Olimar o, si no, Louie
+#else
 		Navi* navi = naviMgr->getActiveNavi();
+#endif
 		if (target && navi) {
 			Vector3f pos = target->getPosition();
 			pos.x += 40.0f;
@@ -568,7 +585,11 @@ void GameState::exec(SingleGameSection* game)
 		return;
 	}
 
+#ifdef PIKI_PC_PORT
+	Screen::gGame2DMgr->setGamePad(game->pcMenuController());
+#else
 	Screen::gGame2DMgr->setGamePad(game->mControllerP1);
+#endif
 
 	// Check status of opened pause menu
 	int menustate = Screen::gGame2DMgr->check_SMenu();
@@ -609,8 +630,13 @@ void GameState::exec(SingleGameSection* game)
 		break;
 			}	default: {
 		// Check open pause menu
+#ifdef PIKI_PC_PORT
+		if (!gameSystem->isFlag(GAMESYS_DisablePause) && moviePlayer->mDemoState == DEMOSTATE_Inactive && !gameSystem->paused()
+		    && game->pcPausePressed()) {
+#else
 		if (!gameSystem->isFlag(GAMESYS_DisablePause) && moviePlayer->mDemoState == DEMOSTATE_Inactive && !gameSystem->paused()
 		    && game->mControllerP1->getButtonDown() & Controller::PRESS_START) {
+#endif
 			og::Screen::DispMemberSMenuAll disp;
 			game->setDispMemberSMenu(disp);
 			if (Screen::gGame2DMgr->open_SMenu(disp)) {
@@ -634,7 +660,11 @@ void GameState::exec(SingleGameSection* game)
 		if (GameStat::getAllPikmins(AllPikminCalcs) - GameStat::getZikatuPikmins(AllPikminCalcs) == 0 && playData->hasBootContainer(Red)) {
 			gameSystem->resetFlag(GAMESYS_IsGameWorldActive);
 			MoviePlayArg moviePlayArg("s05_pikminzero", nullptr, game->mMovieFinishCallback, 0);
+#ifdef PIKI_PC_PORT
+			Navi* navi = naviMgr->getMovieNavi(); // co-op: Olimar o, si no, Louie
+#else
 			Navi* navi = naviMgr->getActiveNavi();
+#endif
 			if (!navi) {
 				int id = 1;
 				if (!gameSystem->mSection->mPrevNaviIdx)

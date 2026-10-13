@@ -10,9 +10,10 @@ struct Vector3f;
  * Arena del modo VS: un rectángulo llano con muretes, una base en cada
  * extremo del eje X y el centro libre para la pieza gorda.
  *
- * No hay archivos nuevos. Cuando el juego pide una de las rutas virtuales de
- * abajo, se monta en memoria a partir de los datos extraídos del propio juego
- * (Impact Site: courses/practice/practice.mod y stages/chal0.ini): texturas y
+ * La disposición se lee de un map.json (pc_vs_map). Cuando el juego pide una
+ * de las rutas virtuales de abajo, se monta en memoria a partir de esa
+ * descripción y de los datos extraídos del propio juego (los de serie, de
+ * Impact Site: courses/practice/practice.mod y stages/chal0.ini): texturas y
  * materiales se copian tal cual; geometría, colisión y caminos se generan.
  * Sin esos archivos en assets/ la arena no existe.
  */
@@ -22,6 +23,11 @@ struct Vector3f;
 /// Flujo en memoria para una ruta de la arena; nullptr si la ruta no es de la
 /// arena o faltan los datos del juego.
 RandomAccessStream* pc_vs_arena_open(const char* path);
+
+/// Lee y compila ya el mapa elegido (pc_vs_map_select) para empezar la
+/// partida sin sorpresas. nullptr si está listo; si no, el motivo, para
+/// enseñarlo en el menú.
+const char* pc_vs_arena_prepare(void);
 
 /// Posición y orientación inicial del capitán de cada jugador (0 = J1, 1 = J2).
 void pc_vs_arena_base(int player, Vector3f& pos, f32& faceDirection);
@@ -51,6 +57,7 @@ enum PcVsPieceKind {
 struct PcVsPieceSpot {
 	f32 x, z;
 	int kind;
+	u32 part; ///< pieza concreta elegida en el editor; 0 = la que toque por `kind`
 };
 /// Piezas que están desde el principio (la gorda va aparte).
 int pc_vs_arena_piece_spots(PcVsPieceSpot* out, int max);
@@ -61,5 +68,30 @@ int pc_vs_arena_guard_spots(Vector3f* out, int max);
 void pc_vs_arena_gate(int player, Vector3f& pos, f32& faceDirection);
 /// Montón de rocas-bomba de cada base (para los amarillos).
 void pc_vs_arena_bomb_pile(int player, Vector3f& pos);
+
+/// Enemigos y jefes puestos en el editor (teki o boss >= 0).
+struct PcVsEnemySpot {
+	f32 x, z, face;
+	int teki, boss;
+};
+int pc_vs_arena_enemy_spots(PcVsEnemySpot* out, int max);
+
+/// Construcciones: puentes y rampas (las construyen los Pikmin), bloques que
+/// se empujan y puertas que se derriban.
+enum {
+	PC_VS_OBJ_BRIDGE,
+	PC_VS_OBJ_BRIDGE_LONG,
+	PC_VS_OBJ_SLOPE_UP,
+	PC_VS_OBJ_SLOPE_DOWN,
+	PC_VS_OBJ_PUSH_ROCK,
+	PC_VS_OBJ_GATE_SOFT,
+	PC_VS_OBJ_GATE_HARD,
+	PC_VS_OBJ_GATE_BOMB,
+};
+struct PcVsObjectSpot {
+	f32 x, z, face, push;
+	int kind, work;
+};
+int pc_vs_arena_object_spots(PcVsObjectSpot* out, int max);
 
 #endif

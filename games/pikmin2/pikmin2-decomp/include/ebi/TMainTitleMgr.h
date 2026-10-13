@@ -28,7 +28,8 @@ struct TMainTitleMgr {
 		Select_HiScore,
 		Select_Bonus,
 #ifdef PIKI_PC_PORT
-		Select_Speedrun, // opción del port (TTitleMenu::pcAddSpeedrunEntry)
+		Select_Speedrun, // opciones del port (TTitleMenu::pcAddWordEntry)
+		Select_Coop,
 #endif
 	};
 

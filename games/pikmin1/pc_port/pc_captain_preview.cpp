@@ -35,11 +35,11 @@ struct PreviewModel {
 };
 
 // 0 = Olimar (y Louie HD encima de su esqueleto), 1..3 = Pikmin rojo/amarillo/azul.
-PreviewModel* sModels[4] = { nullptr, nullptr, nullptr, nullptr };
+PreviewModel* sModels[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
 AnimMgr* sAnimMgr         = nullptr;
 PaniMotionTable* sTable   = nullptr; // propia: la global del juego no se toca
 Shape* sLeaf              = nullptr;
-bool sTried[4]            = { false, false, false, false };
+bool sTried[5]            = { false, false, false, false, false };
 Light sKeyLight;
 Light sFillLight;
 
@@ -56,13 +56,15 @@ int modelSlot(int captain)
 	case PC_CAPTAIN_PIKMIN_RED: return 1;
 	case PC_CAPTAIN_PIKMIN_YELLOW: return 2;
 	case PC_CAPTAIN_PIKMIN_BLUE: return 3;
+	case PC_CAPTAIN_PUFFMIN: return 4;
 	default: return -1;
 	}
 }
 
 immut char* modelPath(int slot)
 {
-	static immut char* const kPaths[4] = { "pikis/nv3Model.mod", "pikis/redModel.mod", "pikis/yelModel.mod", "pikis/bluModel.mod" };
+	static immut char* const kPaths[5] = { "pikis/nv3Model.mod", "pikis/redModel.mod", "pikis/yelModel.mod", "pikis/bluModel.mod",
+		                                       "pikis/kinModel.mod" };
 	return kPaths[slot];
 }
 
@@ -242,10 +244,13 @@ void pc_captain_preview_draw(int captain, int x, int y, int w, int h, int virtW,
 	} else if (color >= 0) {
 		// La textura del Pikmin es gris: la pinta el color de su especie.
 		m->shape->mMaterialList->setColour(Piki::pikiColors[color]);
+	} else if (captain == PC_CAPTAIN_PUFFMIN) {
+		m->shape->mMaterialList->setColour(Piki::kinokoColors[Red]);
 	}
 	if (!drawn) m->shape->drawshape(gfx, sCam, nullptr);
 
-	if (pc_captain_is_pikmin(captain)) {
+	// El Puffmin lleva la seta en el modelo, sin hoja.
+	if (pc_captain_is_pikmin(captain) && captain != PC_CAPTAIN_PUFFMIN) {
 		if (!sLeaf) sLeaf = loadPreviewShape("pikis/happas/leaf.mod");
 		if (sLeaf) {
 			gfx.useMatrix(m->shape->getAnimMatrix(6), 0);
@@ -269,7 +274,7 @@ void pc_captain_preview_release(void)
 {
 	// La memoria es del heap de la sección: al cerrarse se libera con él y
 	// resetHeap expulsa los Shape de la caché. Aquí solo se olvidan.
-	for (int i = 0; i < 4; i++) {
+	for (int i = 0; i < 5; i++) {
 		sModels[i] = nullptr;
 		sTried[i]  = false;
 	}

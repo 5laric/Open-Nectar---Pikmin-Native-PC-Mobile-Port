@@ -15,6 +15,7 @@ enum class HubAction {
     Play,    // clic en la portada de un juego instalado
     Install, // botón Instalar (pide la ISO)
     Update,  // botón Actualizar (pide la carpeta de la instalación anterior)
+    MapEditor, // botón del editor de mapas VS (Pikmin 1 instalado)
 };
 
 // Juegos que muestra la pantalla principal; los dos se instalan desde su disco.
@@ -41,6 +42,9 @@ struct HubState {
     // que decoran la ventana. Vacío = decoración dibujada.
     std::string gameDataDirectory;
     GameInstall games[kHubGameCount]; // índice = HubGame
+    // Editor de mapas VS (nectar-mapmaker) junto al launcher o en la
+    // instalación de Pikmin 1. Vacío = no hay: sin botón.
+    std::string mapEditor;
 };
 
 struct HubResult {

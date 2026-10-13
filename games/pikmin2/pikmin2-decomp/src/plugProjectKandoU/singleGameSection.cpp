@@ -1,5 +1,6 @@
 #ifdef PIKI_PC_PORT
 #include "pc_speedrun.h"
+#include "Game/pcCoop.h"
 #endif
 #include "GameFlow.h"
 #include "Game/BaseGameSection.h"
@@ -1056,7 +1057,11 @@ void SingleGameSection::createFallPikmins(PikiContainer& container, int mapIndex
 void SingleGameSection::setDispMemberSMenu(og::Screen::DispMemberSMenuAll& disp)
 {
 	// General data
+#ifdef PIKI_PC_PORT
+	Navi* navi = naviMgr->getMenuNavi(); // co-op: el de quien abrió la pausa
+#else
 	Navi* navi = naviMgr->getActiveNavi();
+#endif
 	int id     = NAVIID_Olimar;
 	if (navi) {
 		id = navi->mNaviIndex;
@@ -1147,6 +1152,21 @@ Radar::Mgr::RadarSearchResult SingleGameSection::calcOtakaraLevel(f32& treasureD
 		Vector3f playerPosition = navi->getPosition();
 		Vector3f treasurePosition;
 		treasureSearchResult = Radar::mgr->calcNearestTreasure(playerPosition, 900.0f, treasurePosition, treasureDistance);
+#ifdef PIKI_PC_PORT
+		// Co-op: el radar es compartido y marca el tesoro más cercano a cualquiera de los dos.
+		Navi* louie = naviMgr->getAt(NAVIID_Louie);
+		if (pc_p2_coop_active() && louie && louie != navi && louie->isAlive()) {
+			Vector3f louiePosition = louie->getPosition();
+			Vector3f louieTreasure;
+			f32 louieDistance                           = 900.0f;
+			Radar::Mgr::RadarSearchResult louieResult = Radar::mgr->calcNearestTreasure(louiePosition, 900.0f, louieTreasure, louieDistance);
+			if (louieResult == Radar::Mgr::CLOSEST_TREASURE_FOUND
+			    && (treasureSearchResult != Radar::Mgr::CLOSEST_TREASURE_FOUND || louieDistance < treasureDistance)) {
+				treasureSearchResult = louieResult;
+				treasureDistance     = louieDistance;
+			}
+		}
+#endif
 
 		if (treasureSearchResult == Radar::Mgr::CLOSEST_TREASURE_FOUND) {
 			// If the distance is within the range (0 - 900.0f)
@@ -1258,6 +1278,13 @@ void SingleGameSection::updateMainMapScreen()
 		disp.mOlimarData.mActiveNaviID = TRUE;
 		disp.mLouieData.mActiveNaviID  = FALSE;
 	}
+#ifdef PIKI_PC_PORT
+	// Co-op: cada capitán, el activo de su mitad del HUD (pcDrawHudCoop).
+	if (pc_p2_coop_active() && pc_p2_coop_split()) {
+		disp.mOlimarData.mActiveNaviID = TRUE;
+		disp.mLouieData.mActiveNaviID  = TRUE;
+	}
+#endif
 
 	setDispMemberNavi(disp.mLouieData, NAVIID_Louie);
 
@@ -1352,6 +1379,13 @@ void SingleGameSection::updateCaveScreen()
 		disp.mOlimarData.mActiveNaviID = TRUE;
 		disp.mLouieData.mActiveNaviID  = FALSE;
 	}
+#ifdef PIKI_PC_PORT
+	// Co-op: cada capitán, el activo de su mitad del HUD (pcDrawHudCoop).
+	if (pc_p2_coop_active() && pc_p2_coop_split()) {
+		disp.mOlimarData.mActiveNaviID = TRUE;
+		disp.mLouieData.mActiveNaviID  = TRUE;
+	}
+#endif
 
 	setDispMemberNavi(disp.mLouieData, NAVIID_Louie);
 

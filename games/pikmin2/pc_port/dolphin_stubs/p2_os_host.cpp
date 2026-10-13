@@ -1062,10 +1062,10 @@ void VIWaitForRetrace()
 	// frame terminado y antes de presentarlo.
 	pc_speedrun_frame();
 	pc_settings_p2_begin_frame();
-	pc_settings_draw_lock_on();
 	pc_settings_draw_idle_counter();
 	pc_speedrun_draw();
 	pc_newgame_prompt_draw();
+	pc_devassign_prompt_draw();
 	pc_captain_select_draw();
 	pc_speedrun_menu_draw();
 	pc_erased_notice_draw();
@@ -1108,6 +1108,9 @@ void VIWaitForRetrace()
 				char title[96];
 				snprintf(title, sizeof(title), "Open Nectar 2 - juego %u fps / pantalla %u fps", gPcSectionTicks - sLastTicks, sSwaps);
 				SDL_SetWindowTitle(window, title);
+				// También en la terminal: a pantalla completa el título no se ve.
+				printf("[FPS] juego %u / pantalla %u\n", gPcSectionTicks - sLastTicks, sSwaps);
+				fflush(stdout);
 				sLastTicks = gPcSectionTicks;
 				sSwaps     = 0;
 				sLastMs    = nowMs;

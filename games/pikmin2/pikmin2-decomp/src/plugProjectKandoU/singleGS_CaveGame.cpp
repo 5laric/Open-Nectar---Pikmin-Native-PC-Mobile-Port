@@ -4,6 +4,7 @@ int pc_p2_permadeath_active(void);
 void pc_p2_rules_erase_current_save(void);
 }
 #include "pc_p2_captains.h"
+#include "Game/pcCoop.h"
 #include "pc_speedrun.h"
 #endif
 #include "Game/Entities/BlackMan.h"
@@ -165,6 +166,14 @@ void CaveState::exec(SingleGameSection* game)
 			Vector3f naviPos = navi->getPosition();
 			Cave::randMapMgr->radarMapPartsOpen(naviPos);
 		}
+#ifdef PIKI_PC_PORT
+		// Co-op: el mapa del radar se descubre también por donde pasa Louie.
+		Navi* louie = naviMgr->getAt(NAVIID_Louie);
+		if (pc_p2_coop_active() && louie && louie != navi && louie->isAlive()) {
+			Vector3f louiePos = louie->getPosition();
+			Cave::randMapMgr->radarMapPartsOpen(louiePos);
+		}
+#endif
 	}
 
 	if (game->mCurrentState->mId != mId) {
@@ -194,7 +203,11 @@ void CaveState::exec(SingleGameSection* game)
 		if (GameStat::getMapPikmins(AllPikminCalcs) == 0) {
 			gameSystem->resetFlag(GAMESYS_IsGameWorldActive);
 			MoviePlayArg moviearg("s05_pikminzero", nullptr, game->mMovieFinishCallback, 0);
+#ifdef PIKI_PC_PORT
+			Navi* navi = naviMgr->getMovieNavi(); // co-op: Olimar o, si no, Louie
+#else
 			Navi* navi = naviMgr->getActiveNavi();
+#endif
 			if (!navi) {
 				int id = NAVIID_Louie;
 				if (gameSystem->mSection->mPrevNaviIdx == NAVIID_Olimar) {
@@ -252,7 +265,11 @@ void CaveState::draw(SingleGameSection* game, Graphics& gfx)
  */
 void CaveState::check_SMenu(SingleGameSection* game)
 {
+#ifdef PIKI_PC_PORT
+	Screen::gGame2DMgr->setGamePad(game->pcMenuController());
+#else
 	Screen::gGame2DMgr->setGamePad(game->mControllerP1);
+#endif
 	int state = Screen::gGame2DMgr->check_SMenu();
 	switch (state) {
 	case Screen::Game2DMgr::CHECK2D_SMenu_Cancel: { // unpause and resume gameplay
@@ -295,8 +312,13 @@ void CaveState::check_SMenu(SingleGameSection* game)
 		return;
 			}	case Screen::Game2DMgr::CHECK2D_SMenu_Error: {
 		// Conditions to open pause menu
+#ifdef PIKI_PC_PORT
+		if (!(gameSystem->isFlag(GAMESYS_DisablePause)) && moviePlayer->mDemoState == DEMOSTATE_Inactive && !gameSystem->paused()
+		    && game->pcPausePressed()) {
+#else
 		if (!(gameSystem->isFlag(GAMESYS_DisablePause)) && moviePlayer->mDemoState == DEMOSTATE_Inactive && !gameSystem->paused()
 		    && game->mControllerP1->getButtonDown() & Controller::PRESS_START) {
+#endif
 			og::Screen::DispMemberSMenuAll disp;
 			game->setDispMemberSMenu(disp);
 			if (!Screen::gGame2DMgr->open_SMenu(disp)) {

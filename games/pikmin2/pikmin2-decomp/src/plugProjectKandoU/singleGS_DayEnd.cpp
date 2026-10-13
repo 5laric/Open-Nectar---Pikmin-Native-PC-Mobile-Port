@@ -1,5 +1,6 @@
 #ifdef PIKI_PC_PORT
 #include "pc_speedrun.h"
+#include "Game/pcCoop.h"
 #endif
 #include "Game/Entities/ItemOnyon.h"
 #include "Game/GameSystem.h"
@@ -131,7 +132,11 @@ void DayEndState::exec(SingleGameSection* game)
 				}
 
 				JUT_ASSERTLINE(222, naviMgr->getAliveOrima(ALIVEORIMA_Active), "no alive:s01_dayend");
+#ifdef PIKI_PC_PORT
+				Navi* navi = naviMgr->getMovieNavi(); // co-op: Olimar o, si no, Louie
+#else
 				Navi* navi = naviMgr->getActiveNavi();
+#endif
 				int id     = 0;
 				if (navi) {
 					id = navi->mNaviIndex;

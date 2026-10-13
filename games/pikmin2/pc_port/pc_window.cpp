@@ -168,8 +168,13 @@ static int sLogicalRetraceInterval = 1;
 static Uint32 sMousePressedMask = 0; // buttons pressed since the last take
 static int sMouseWheelSteps = 0;
 static float sTouchZoomDelta = 0.0f;
-static float sTouchCameraDrag = 0.0f;
-static float sCameraPitchDrag = 0.0f;
+// Co-op: giro y cabeceo de la cámara de cada jugador (docs/PLAN_COOP.md §6.7).
+// sInputPlayer es el jugador de lo que se está leyendo: el teclado y el ratón
+// son de quien tenga el teclado, cada mando de su jugador, la pantalla táctil
+// del 1.
+static float sCameraDragP[2]  = { 0.0f, 0.0f };
+static float sCameraPitchP[2] = { 0.0f, 0.0f };
+static int sInputPlayer       = 0;
 static double sTargetRefreshRate = 60.0;
 static std::chrono::steady_clock::time_point sNextPresentDeadline;
 
@@ -188,12 +193,13 @@ static bool sSwarmHeld = false; // PC_KEY_ACT_SWARM sampled by the last poll
 // Lock-On y Charge se consumen como flanco: el bucle sondea el mando muchas
 // veces entre ticks lógicos, así que la pulsación se guarda hasta que alguien
 // la lee, y el estado anterior evita que se repita mientras se mantiene.
-static bool sLockOnWasDown = false;
-static bool sFirstPersonWasDown = false;
+// Por jugador (co-op): cada uno con su teclado o su mando.
+static bool sLockOnWasDown[2]      = { false, false };
+static bool sFirstPersonWasDown[2] = { false, false };
 static bool sGyroRecenterWasDown = false;
-static bool sSwarmWasDown  = false;
-static bool sLockOnPending = false;
-static bool sSwarmPending  = false;
+static bool sSwarmWasDown[2]  = { false, false };
+static bool sLockOnPending[2] = { false, false };
+static bool sSwarmPending[2]  = { false, false };
 
 bool pc_window_swarm_held(void) { return sSwarmHeld; }
 static bool sKeyBindingsInitialized = false;
@@ -897,8 +903,9 @@ bool pc_window_init(const char* title, int width, int height) {
 // se está usando (para decidir entre iconos de teclado y de mando).
 // Free Camera se queda el stick derecho, pero el mapa lo necesita para el
 // zoom (issue #76): se guarda aquí el eje vertical aunque no llegue al pad.
-static float sFreeCamSubY = 0.0f;
-extern "C" float pc_window_free_camera_sub_y(void) { return sFreeCamSubY; }
+static float sFreeCamSubY[2] = { 0.0f, 0.0f };
+extern "C" float pc_window_free_camera_sub_y_for(int player) { return sFreeCamSubY[player == 1 ? 1 : 0]; }
+extern "C" float pc_window_free_camera_sub_y(void) { return sFreeCamSubY[0]; }
 
 static bool pc_window_read_gamepad(SDL_GameController* ctl, u16& button, s8& stickX, s8& stickY,
                                    s8& substickX, s8& substickY, u8& triggerL, u8& triggerR, bool& swarmHeld)
@@ -957,9 +964,9 @@ static bool pc_window_read_gamepad(SDL_GameController* ctl, u16& button, s8& sti
     // which has no default on the pad: every D-pad direction is already a
     // Pikmin 2 action (sprays, maturity and colour of the held Pikmin), so it
     // is left for the player to bind.
-    sFreeCamSubY = 0.0f;
+    sFreeCamSubY[sInputPlayer] = 0.0f;
     if (pc_settings_get_free_camera()) {
-        if (abs(ry) > axisDeadZone) sFreeCamSubY = pc_pad_axis_from_sdl(-ry) / 72.0f;
+        if (abs(ry) > axisDeadZone) sFreeCamSubY[sInputPlayer] = pc_pad_axis_from_sdl(-ry) / 72.0f;
         if (abs(rx) > axisDeadZone) {
             pc_window_add_camera_drag(-(float)rx / 32767.0f * 0.02f * pc_settings_get_free_camera_pad_scale());
         }
@@ -1262,15 +1269,26 @@ void pc_window_poll_events(PADStatus* pad) {
     sSwarmHeld = held(PC_KEY_ACT_SWARM);
 
     {
-        const bool lockDown = held(PC_KEY_ACT_LOCKON);
-        if (lockDown && !sLockOnWasDown) sLockOnPending = true;
-        sLockOnWasDown = lockDown;
-        if (sSwarmHeld && !sSwarmWasDown) sSwarmPending = true;
-        sSwarmWasDown = sSwarmHeld;
-        // Este no se encola: entra y sale de la vista en el acto.
-        const bool fpDown = held(PC_KEY_ACT_FIRSTPERSON);
-        if (fpDown && !sFirstPersonWasDown) pc_first_person_toggle();
-        sFirstPersonWasDown = fpDown;
+        // Por jugador: el teclado de quien lo tenga y el mando de cada uno.
+        bool lockDown[2] = { false, false }, swarmDown[2] = { false, false }, fpDown[2] = { false, false };
+        const int kb = sKeyboardOwner == 1 ? 1 : 0;
+        lockDown[kb]  = held(PC_KEY_ACT_LOCKON);
+        swarmDown[kb] = sSwarmHeld;
+        fpDown[kb]    = held(PC_KEY_ACT_FIRSTPERSON);
+        for (int p = 0; p < 2; p++) {
+            if (SDL_GameController* ctl = sControllers[p]) {
+                lockDown[p] |= pc_window_gamepad_bind_held(ctl, pc_window_get_gamepad_binding(PC_KEY_ACT_LOCKON));
+                swarmDown[p] |= pc_window_gamepad_bind_held(ctl, pc_window_get_gamepad_binding(PC_KEY_ACT_SWARM));
+                fpDown[p] |= pc_window_gamepad_bind_held(ctl, pc_window_get_gamepad_binding(PC_KEY_ACT_FIRSTPERSON));
+            }
+            if (lockDown[p] && !sLockOnWasDown[p]) sLockOnPending[p] = true;
+            sLockOnWasDown[p] = lockDown[p];
+            if (swarmDown[p] && !sSwarmWasDown[p]) sSwarmPending[p] = true;
+            sSwarmWasDown[p] = swarmDown[p];
+            // Este no se encola: entra y sale de la vista en el acto.
+            if (fpDown[p] && !sFirstPersonWasDown[p]) pc_first_person_toggle_for(p);
+            sFirstPersonWasDown[p] = fpDown[p];
+        }
     }
 
     // Si el teclado está asignado a P2, lo que se ha leído arriba es suyo:
@@ -1284,6 +1302,7 @@ void pc_window_poll_events(PADStatus* pad) {
     }
 
     // ── Gamepad Mapping (overrides / merges if controller connected) ──
+    sInputPlayer = 0;
     if (sController) {
         usedGamepad = pc_window_read_gamepad(sController, button, stickX, stickY, substickX, substickY,
                                              triggerL, triggerR, sSwarmHeld);
@@ -1298,6 +1317,8 @@ void pc_window_poll_events(PADStatus* pad) {
             || (sController && pc_window_gamepad_bind_held(sController, pc_window_get_gamepad_binding(PC_KEY_ACT_GYRO_RECENTER)));
         if (recenterDown && !sGyroRecenterWasDown && !sSettingsMenuOpen) pc_gyro_request_recenter();
         sGyroRecenterWasDown = recenterDown;
+        // Lo que sigue (ratón) es de quien tenga el teclado.
+        sInputPlayer = sKeyboardOwner == 1 ? 1 : 0;
     }
 #if PIKI_PC_TOUCH
     // La capa táctil se suma al mando: cualquier toque la enseña, y cualquier
@@ -1334,7 +1355,7 @@ void pc_window_poll_events(PADStatus* pad) {
 
             // Mod "First Person": the mouse always looks around (yaw and
             // pitch); the cursor is pinned in front of the view by Navi.
-            const bool firstPerson = pc_first_person_active() != 0;
+            const bool firstPerson = pc_first_person_active_for(sInputPlayer) != 0;
             if (firstPerson) {
                 int winW = sWindowWidth;
                 int winH = sWindowHeight;
@@ -1414,8 +1435,10 @@ void pc_window_poll_events(PADStatus* pad) {
     sSwarmHeldP2 = kbSwarm2;
     if (sControllers[1] || sKeyboardOwner == 1) {
         u16 b2 = kbButton2; s8 sx2 = kbStickX2, sy2 = kbStickY2, cx2 = kbSubX2, cy2 = kbSubY2; u8 tl2 = kbTrigL2, tr2 = kbTrigR2;
-        if (sControllers[1])
+        if (sControllers[1]) {
+            sInputPlayer = 1;
             pc_window_read_gamepad(sControllers[1], b2, sx2, sy2, cx2, cy2, tl2, tr2, sSwarmHeldP2);
+        }
         pad[1].err          = PAD_ERR_NONE;
         pad[1].button       = b2;
         pad[1].stickX       = sx2;
@@ -1425,6 +1448,7 @@ void pc_window_poll_events(PADStatus* pad) {
         pad[1].triggerLeft  = tl2;
         pad[1].triggerRight = tr2;
     }
+    sInputPlayer = 0; // fuera del sondeo (táctil), jugador 1
 #if defined(PIKI_PC_PORT) && defined(PIKI_PC_SETTINGS_MENU)
     // While the settings menu is open, consume the pad so the game underneath
     // does not react to the same input.
@@ -1671,12 +1695,26 @@ void pc_window_discard_button_presses(void) { sLastPressTaken = sLastPressSerial
 
 bool pc_window_swarm_held_p2(void) { return sSwarmHeldP2; }
 
-bool pc_window_take_lockon_press(void) { const bool v = sLockOnPending; sLockOnPending = false; return v; }
-bool pc_window_take_swarm_press(void) { const bool v = sSwarmPending; sSwarmPending = false; return v; }
+bool pc_window_take_lockon_press_for(int player)
+{
+    bool& pending  = sLockOnPending[player == 1 ? 1 : 0];
+    const bool v   = pending;
+    pending        = false;
+    return v;
+}
+bool pc_window_take_swarm_press_for(int player)
+{
+    bool& pending  = sSwarmPending[player == 1 ? 1 : 0];
+    const bool v   = pending;
+    pending        = false;
+    return v;
+}
+bool pc_window_take_lockon_press(void) { return pc_window_take_lockon_press_for(0); }
+bool pc_window_take_swarm_press(void) { return pc_window_take_swarm_press_for(0); }
 
-void pc_window_request_lockon_press(void) { sLockOnPending = true; }
+void pc_window_request_lockon_press(void) { sLockOnPending[0] = true; }
 void pc_window_request_firstperson_press(void) { pc_first_person_toggle(); }
-void pc_window_request_charge_press(void) { sSwarmPending = true; }
+void pc_window_request_charge_press(void) { sSwarmPending[0] = true; }
 
 // Control mode functions
 void pc_window_set_control_mode(int mode) {
@@ -1787,21 +1825,34 @@ extern "C" float pc_window_take_touch_zoom(void) {
 }
 
 extern "C" void pc_window_add_camera_drag(float normalizedDx) {
-    sTouchCameraDrag = std::clamp(sTouchCameraDrag + normalizedDx, -1.0f, 1.0f);
+    float& drag = sCameraDragP[sInputPlayer];
+    drag        = std::clamp(drag + normalizedDx, -1.0f, 1.0f);
+}
+
+extern "C" void pc_window_add_camera_drag_for(int player, float normalizedDx) {
+    float& drag = sCameraDragP[player == 1 ? 1 : 0];
+    drag        = std::clamp(drag + normalizedDx, -1.0f, 1.0f);
 }
 
 extern "C" void pc_window_add_camera_pitch(float normalizedDy) {
-    sCameraPitchDrag = std::clamp(sCameraPitchDrag + normalizedDy, -1.0f, 1.0f);
+    float& pitch = sCameraPitchP[sInputPlayer];
+    pitch        = std::clamp(pitch + normalizedDy, -1.0f, 1.0f);
 }
 
-extern "C" float pc_window_take_camera_pitch(void) {
-    const float delta = sCameraPitchDrag;
-    sCameraPitchDrag = 0.0f;
+extern "C" float pc_window_take_camera_pitch_for(int player) {
+    float& pitch      = sCameraPitchP[player == 1 ? 1 : 0];
+    const float delta = pitch;
+    pitch             = 0.0f;
     return delta;
 }
 
-extern "C" float pc_window_take_camera_drag(void) {
-    const float delta = sTouchCameraDrag;
-    sTouchCameraDrag = 0.0f;
+extern "C" float pc_window_take_camera_drag_for(int player) {
+    float& drag       = sCameraDragP[player == 1 ? 1 : 0];
+    const float delta = drag;
+    drag              = 0.0f;
     return delta;
 }
+
+extern "C" float pc_window_take_camera_pitch(void) { return pc_window_take_camera_pitch_for(0); }
+
+extern "C" float pc_window_take_camera_drag(void) { return pc_window_take_camera_drag_for(0); }

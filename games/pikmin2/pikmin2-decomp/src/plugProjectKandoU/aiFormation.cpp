@@ -1,4 +1,5 @@
 #include "PikiAI.h"
+#include "Game/pcCoop.h"
 #ifdef PIKI_PC_PORT
 extern "C" int pc_settings_get_no_trip(void);
 extern "C" int pc_settings_get_blues_only_water(void);
@@ -160,7 +161,12 @@ void ActFormation::setFormed()
 			piki->movie_begin(false);
 		}
 
+#ifdef PIKI_PC_PORT
+		// Co-op: la protagoniza el capitán cuyo grupo se ha formado.
+		Game::Navi* navi = pc_p2_coop_active() && mNavi ? mNavi : Game::naviMgr->getActiveNavi();
+#else
 		Game::Navi* navi = Game::naviMgr->getActiveNavi();
+#endif
 		P2ASSERTLINE(438, navi);
 
 		Game::playData->setDemoFlag(Game::DEMO_Meet_Red_Pikmin);

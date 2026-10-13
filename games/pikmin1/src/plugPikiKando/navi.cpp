@@ -3865,19 +3865,25 @@ bool Navi::pcDrawAsPikmin(Graphics& gfx)
 	gfx.mCamera->mLookAtMtx.multiplyTo(world, view);
 	obj->mShape->updateAnim(gfx, view, nullptr, this);
 
-	// La textura original es gris y la pinta el color del Pikmin.
-	obj->mShape->mMaterialList->setColour(Piki::pikiColors[color]);
-	static const PcHdModelId kHdPiki[PikiColorCount] = { PC_HD_MODEL_PIKI_BLUE, PC_HD_MODEL_PIKI_RED, PC_HD_MODEL_PIKI_YELLOW };
-	const bool p2Drawn = p2Model >= 0 && pc_hd_model_draw_skinned(gfx, obj->mShape, (PcHdModelId)p2Model, pcTint());
-	if (!p2Drawn && !pc_hd_model_draw_skinned(gfx, obj->mShape, kHdPiki[color], pcTint())) {
+	// Puffmin: su modelo ya lleva la seta y no hay versión HD; sin hoja.
+	if (color == PIKI_Kinoko) {
+		obj->mShape->mMaterialList->setColour(Piki::kinokoColors[Red]);
 		obj->mShape->drawshape(gfx, *gfx.mCamera, nullptr);
-	}
+	} else {
+		// La textura original es gris y la pinta el color del Pikmin.
+		obj->mShape->mMaterialList->setColour(Piki::pikiColors[color]);
+		static const PcHdModelId kHdPiki[PikiColorCount] = { PC_HD_MODEL_PIKI_BLUE, PC_HD_MODEL_PIKI_RED, PC_HD_MODEL_PIKI_YELLOW };
+		const bool p2Drawn = p2Model >= 0 && pc_hd_model_draw_skinned(gfx, obj->mShape, (PcHdModelId)p2Model, pcTint());
+		if (!p2Drawn && !pc_hd_model_draw_skinned(gfx, obj->mShape, kHdPiki[color], pcTint())) {
+			obj->mShape->drawshape(gfx, *gfx.mCamera, nullptr);
+		}
 
-	// Hoja, siempre hoja (no capullo ni flor); también a los de Pikmin 2.
-	gfx.useMatrix(obj->mShape->getAnimMatrix(6), 0);
-	const GXColor white = { 255, 255, 255, 255 };
-	if (!pc_hd_model_draw_rigid(gfx, obj->mShape->getAnimMatrix(6), PC_HD_MODEL_HAPPA_LEAF, white) && pikiMgr->mLeafModel[Leaf]) {
-		pikiMgr->mLeafModel[Leaf]->drawshape(gfx, *gfx.mCamera, nullptr);
+		// Hoja, siempre hoja (no capullo ni flor); también a los de Pikmin 2.
+		gfx.useMatrix(obj->mShape->getAnimMatrix(6), 0);
+		const GXColor white = { 255, 255, 255, 255 };
+		if (!pc_hd_model_draw_rigid(gfx, obj->mShape->getAnimMatrix(6), PC_HD_MODEL_HAPPA_LEAF, white) && pikiMgr->mLeafModel[Leaf]) {
+			pikiMgr->mLeafModel[Leaf]->drawshape(gfx, *gfx.mCamera, nullptr);
+		}
 	}
 
 	Vector3f tip(6.0f, 0.0f, 0.0f);

@@ -1,4 +1,5 @@
 #include "types.h"
+#include "Game/pcCoop.h"
 #include "Game/Entities/BlackMan.h"
 #include "Game/generalEnemyMgr.h"
 #include "efx/TKage.h"
@@ -358,7 +359,11 @@ void Obj::doUpdate()
 					mTyre->mIsShadowActive = true;
 				}
 
+#ifdef PIKI_PC_PORT
+				Navi* activeNavi = naviMgr->getNearestNavi(mPosition); // co-op: el más cercano
+#else
 				Navi* activeNavi = naviMgr->getActiveNavi();
+#endif
 				if (!mIsFallStart && activeNavi && activeNavi->isAlive()) {
 
 					Vector3f pos;
@@ -870,7 +875,11 @@ void Obj::walkFunc()
 	}
 
 	if (mEscapePhase == 2) {
+#ifdef PIKI_PC_PORT
+		Navi* targetNavi = naviMgr->getNearestNavi(mPosition); // co-op: el más cercano
+#else
 		Navi* targetNavi = naviMgr->getActiveNavi();
+#endif
 		f32 escapeSpeed  = C_PROPERPARMS.mEscapeSpeed();
 		if (targetNavi) {
 			Vector3f naviPosition = targetNavi->getPosition();
@@ -1182,7 +1191,11 @@ void Obj::findNextRoutePoint()
 					}
 				}
 
+#ifdef PIKI_PC_PORT
+				Navi* activeNavi = naviMgr->getNearestNavi(mPosition); // co-op: el más cercano
+#else
 				Navi* activeNavi = naviMgr->getActiveNavi();
+#endif
 				if (activeNavi && activeNavi->isAlive()) {
 					f32 sqrDist
 					    = sqrDistance2D(activeNavi->getPosition().x, activeNavi->getPosition().z, wp->getPosition().x, wp->getPosition().z);
@@ -1209,7 +1222,11 @@ void Obj::findNextRoutePoint()
 				s16 idx = indices[i];
 				if (mPreviousWaypointIndex != idx) {
 					WayPoint* wp     = routeMgr->getWayPoint(idx);
+#ifdef PIKI_PC_PORT
+					Navi* activeNavi = naviMgr->getNearestNavi(mPosition); // co-op: el más cercano
+#else
 					Navi* activeNavi = naviMgr->getActiveNavi();
+#endif
 					if (activeNavi) {
 						f32 dist = sqrDistance(activeNavi->getPosition().x, activeNavi->getPosition().y, activeNavi->getPosition().z,
 						                       wp->getPosition().x, wp->getPosition().y, wp->getPosition().z);

@@ -12,6 +12,9 @@ extern f64 gPcJStudioSubFrame;
 }
 extern "C" int pc_settings_get_hide_olimar_text(void);
 extern "C" int pc_speedrun_active(void);
+#include "Game/pcCoop.h"
+#include "Game/BaseGameSection.h"
+#include "Game/Navi.h"
 #endif
 #include "Screen/Game2DMgr.h"
 #include "Game/GameSystem.h"
@@ -34,6 +37,56 @@ extern "C" int pc_speedrun_active(void);
 
 static const u32 padding[]    = { 0, 0, 0 };
 static const char className[] = "moviePlayer";
+
+#ifdef PIKI_PC_PORT
+// Co-op (docs/PLAN_COOP.md §6.4): cada cinemática, a pantalla completa con el
+// capitán que la protagoniza (el del objeto que la dispara, si es un capitán;
+// si no, el de la cinemática o el primero vivo), con los dos mandos para
+// saltarla. Al acabar, vuelta a la pantalla partida.
+static bool pcCoopMovieNavis()
+{
+	return Game::gameSystem && Game::gameSystem->mSection && pc_p2_coop_active() && Game::naviMgr
+	    && Game::naviMgr->getAt(NAVIID_Olimar) && Game::naviMgr->getAt(NAVIID_Louie);
+}
+
+static void pcCoopMovieBegin(Game::MoviePlayer* player)
+{
+	if (!pcCoopMovieNavis()) {
+		return;
+	}
+	Game::Navi* navi = nullptr;
+	if (player->mTargetObject && player->mTargetObject->isNavi()) {
+		navi = static_cast<Game::Navi*>(player->mTargetObject);
+	}
+	if (!navi || !navi->isAlive()) {
+		navi = player->mTargetNavi;
+	}
+	if (!navi || !navi->isAlive()) {
+		navi = Game::naviMgr->getMovieNavi();
+	}
+	if (!navi || navi->mNaviIndex > NAVIID_Louie) {
+		return;
+	}
+	Game::BaseGameSection* section = Game::gameSystem->mSection;
+	pc_p2_coop_set_movie_full(1);
+	if (section->mPrevNaviIdx != navi->mNaviIndex) {
+		section->setPlayerMode(navi->mNaviIndex);
+		section->setCamController();
+	}
+}
+
+static void pcCoopMovieRestore()
+{
+	if (!pcCoopMovieNavis()) {
+		return;
+	}
+	Game::BaseGameSection* section = Game::gameSystem->mSection;
+	if (section->mPrevNaviIdx != NAVIID_Multiplayer) {
+		section->setPlayerMode(NAVIID_Multiplayer);
+		section->setCamController();
+	}
+}
+#endif
 
 #ifdef PIKI_PC_PORT
 /**
@@ -64,6 +117,12 @@ static bool pcIsDrakeTextDemo(Game::MovieConfig* config)
 		if (config->is(const_cast<char*>(sPcDrakeTextDemos[i]))) {
 			return true;
 		}
+	}
+	// Co-op: la llegada de Louie (el primer cambio con Y, que abre el co-op)
+	// también se salta; en un jugador se sigue viendo. El vaciado de
+	// Finishing ejecuta el resto del guion, así que Louie queda en su sitio.
+	if (pc_p2_coop_session() && config->is(const_cast<char*>("x05_louiestart"))) {
+		return true;
 	}
 	return false;
 }
@@ -213,6 +272,9 @@ int MoviePlayer::play(MovieConfig* config, MoviePlayArg& arg, bool flag)
 		if (Screen::gGame2DMgr) {
 			Screen::gGame2DMgr->stopFinalFloorSound();
 		}
+#ifdef PIKI_PC_PORT
+		pcCoopMovieBegin(this);
+#endif
 		mAltNavi   = mTargetNavi;
 		mAltCamera = mActingCamera;
 		cameraMgr->controllerLock(CAMNAVI_Both);
@@ -664,9 +726,24 @@ bool MoviePlayer::update(Controller* input1, Controller* input2)
 			if (Screen::gGame2DMgr) {
 				Screen::gGame2DMgr->restartFinalFloorSound();
 			}
+#ifdef PIKI_PC_PORT
+			// Co-op: si sigue otra en cola, se queda a pantalla completa. Si no,
+			// el delegado ya puede volver a la pantalla partida (setPlayerMode)
+			// y, si no lo hace, se vuelve aquí.
+			const bool pcChained = mStoreContextActive.getChild() != nullptr;
+			const bool pcWasFull = pc_p2_coop_movie_full();
+			if (!pcChained) {
+				pc_p2_coop_set_movie_full(0);
+			}
+#endif
 			if (mDelegate1) {
 				mDelegate1->invoke(config, 0, mNaviID);
 			}
+#ifdef PIKI_PC_PORT
+			if (pcWasFull && !pcChained && !isFlag(MVP_IsActive)) {
+				pcCoopMovieRestore();
+			}
+#endif
 			gameSystem->startFadein(1.0f);
 			if (mStoreContextActive.getChild()) {
 				PSMCancelToPauseOffMainBgm();

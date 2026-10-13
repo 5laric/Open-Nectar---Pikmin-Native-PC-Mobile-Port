@@ -137,9 +137,6 @@ bool pc_vs_end_screen_active(void);
 /// GameStat::freePikis conserva su valor al salir de la fase.
 void pc_settings_note_gameplay_frame(void);
 int pc_settings_in_gameplay(void);
-/// Estado del Lock-On para el HUD: lo fija Navi cada frame.
-void pc_settings_note_lock_on(int hasTarget);
-void pc_settings_draw_lock_on(void);
 
 // Returns 1 while hold-to-continue-plucking is enabled, 0 otherwise.
 //

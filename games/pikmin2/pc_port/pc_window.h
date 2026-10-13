@@ -86,6 +86,9 @@ bool pc_window_swarm_held_p2(void);
 bool pc_window_take_lockon_press(void);
 /// Flanco del botón de swarm: con el Charge activo es el que lanza la carga.
 bool pc_window_take_swarm_press(void);
+/// Co-op: las mismas, por jugador (0 = P1, 1 = P2). Las de arriba son del 1.
+bool pc_window_take_lockon_press_for(int player);
+bool pc_window_take_swarm_press_for(int player);
 /// Inyecta la pulsación desde la capa táctil, que no pasa por los bindings.
 void pc_window_request_lockon_press(void);
 void pc_window_request_firstperson_press(void);
@@ -204,6 +207,10 @@ extern "C" void pc_window_add_camera_drag(float normalizedDx);
 extern "C" float pc_window_take_camera_drag(void);
 extern "C" void pc_window_add_camera_pitch(float normalizedDy);
 extern "C" float pc_window_take_camera_pitch(void);
+extern "C" float pc_window_take_camera_drag_for(int player);
+extern "C" void pc_window_add_camera_drag_for(int player, float normalizedDx);
+extern "C" float pc_window_take_camera_pitch_for(int player);
+extern "C" float pc_window_free_camera_sub_y_for(int player);
 
 #ifdef __cplusplus
 }

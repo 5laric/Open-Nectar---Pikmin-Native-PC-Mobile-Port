@@ -69,6 +69,10 @@ int pc_p2_captain_down_title(int naviIndex);
 /// repetido (salvo Pikmin) lleva los contrarios a los del 1.
 int pc_p2_captain_light_type(int naviIndex);
 int pc_p2_captain_cursor_anim(int naviIndex);
+/// Color del cursor del capitán (el que ve el jugador): magenta o azul según
+/// el cursor del personaje, el tinte del capitán 2 repetido o el color del
+/// Pikmin. Para lo que acompaña al cursor (aro del Lock-On).
+void pc_p2_captain_cursor_colour(int naviIndex, unsigned char rgb[3]);
 
 /// Modelos J3D (J3DModel*) del capitán: cuerpo, cursor y marcador. El dibujo de
 /// paquetes J3D pregunta con pc_p2_captain_tint_for_model si tiene que teñirlos.

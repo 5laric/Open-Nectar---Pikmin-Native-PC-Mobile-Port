@@ -3,6 +3,7 @@
 #ifdef PIKI_PC_PORT
 void pcHudWideBegin(J2DPerspGraph*);
 void pcHudWideEnd(J2DPerspGraph*);
+#include "pc_p2_coop.h"
 #endif
 #include "og/Screen/DopingScreen.h"
 #include "og/Screen/NaviLifeGauge.h"
@@ -13,6 +14,15 @@ void pcHudWideEnd(J2DPerspGraph*);
 #include "trig.h"
 #include "System.h"
 #include "nans.h"
+#ifdef PIKI_PC_PORT
+namespace og {
+namespace newScreen {
+// HUD de historia con el co-op: vida y contador de cada capitán en su mitad
+// (ogObjGround.cpp). views[v] = { vida, contador } de la vista v.
+void pcDrawHudCoop(Graphics& gfx, og::Screen::BloGroup* group, P2DScreen::Mgr* views[2][2], P2DScreen::Mgr* extra);
+} // namespace newScreen
+} // namespace og
+#endif
 
 namespace og {
 namespace newScreen {
@@ -42,6 +52,9 @@ ObjCave::ObjCave(const char* name)
 	mTotalPokoTimer  = 0.0f;
 	mPaneChika       = nullptr;
 	mPaneFinalf      = nullptr;
+#ifdef PIKI_PC_PORT
+	mPcPikiCounter2 = nullptr;
+#endif
 }
 
 /**
@@ -76,11 +89,19 @@ void ObjCave::doCreate(JKRArchive* arc)
 	mTotalPoko    = new og::Screen::TotalPokoScreen;
 	mSensorScreen = new P2DScreen::Mgr_tuning;
 
+#ifdef PIKI_PC_PORT
+	mBloGroup = new og::Screen::BloGroup(7);
+#else
 	mBloGroup = new og::Screen::BloGroup(6);
+#endif
 	mBloGroup->addBlo("doping.blo", mDoping, 0x1040000, arc);
 	mBloGroup->addBlo("orima.blo", mLifeGauge1, 0x1040000, arc);
 	mBloGroup->addBlo("orima.blo", mLifeGauge2, 0x1040000, arc);
 	mBloGroup->addBlo("cave_pikmin.blo", mPikiCounter, 0x1040000, arc);
+#ifdef PIKI_PC_PORT
+	mPcPikiCounter2 = new og::Screen::PikminCounterCave;
+	mBloGroup->addBlo("cave_pikmin.blo", mPcPikiCounter2, 0x1040000, arc);
+#endif
 	mBloGroup->addBlo("grand_cave_poko.blo", mTotalPoko, 0x1040000, arc);
 	mBloGroup->addBlo("sensor.blo", mSensorScreen, 0x1040000, arc);
 
@@ -94,6 +115,9 @@ void ObjCave::doCreate(JKRArchive* arc)
 	}
 
 	mPikiCounter->setCallBack(arc);
+#ifdef PIKI_PC_PORT
+	mPcPikiCounter2->setCallBack(arc);
+#endif
 	mTotalPoko->setCallBack(arc, msVal.mTotalPokoXPos, msVal.mTotalPokoYPos, msVal.mTotalPokoXScale, msVal.mTotalPokoYScale);
 	mPaneChika  = og::Screen::TagSearch(mPikiCounter, MC8("Pchika"));
 	mPaneFinalf = og::Screen::TagSearch(mPikiCounter, MC8("Nfinalf"));
@@ -146,6 +170,13 @@ void ObjCave::commonUpdate()
 		} else {
 			mPikiCounter->setParam(disp->mDataGame, disp->mLouieData);
 		}
+#ifdef PIKI_PC_PORT
+		// Co-op: el contador de cada capitán, en su mitad (pcDrawHudCoop).
+		if (pc_p2_coop_active() && pc_p2_coop_split()) {
+			mPikiCounter->setParam(disp->mDataGame, disp->mOlimarData);
+			mPcPikiCounter2->setParam(disp->mDataGame, disp->mLouieData);
+		}
+#endif
 
 		if (mTotalPokoActive) {
 			mTotalPokoTimer += sys->mDeltaTime;
@@ -233,10 +264,15 @@ void ObjCave::doDraw(Graphics& gfx)
 {
 #ifdef PIKI_PC_PORT
 	pcHudWideBegin(&gfx.mPerspGraph);
-#endif
+	if (mBloGroup) {
+		P2DScreen::Mgr* views[2][2] = { { mLifeGauge1, mPikiCounter }, { mLifeGauge2, mPcPikiCounter2 } };
+		pcDrawHudCoop(gfx, mBloGroup, views, mPcPikiCounter2);
+	}
+#else
 	if (mBloGroup) {
 		mBloGroup->draw(&gfx.mPerspGraph);
 	}
+#endif
 
 	if (mDisp->mDrawSensor) {
 		mOtakara->draw(gfx.mPerspGraph);

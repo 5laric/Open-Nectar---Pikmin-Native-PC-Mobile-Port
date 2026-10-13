@@ -329,6 +329,13 @@ struct NaviTexCallBack : public P2DPaneCallBack {
 				// Pikmin 2 no tiene icono de Bulbmin: el del rojo, su color.
 				if (!sPikiPortrait[Red]) sPikiPortrait[Red] = zen::loadTexExp(kPikiPortrait[Red], true, true);
 				custom = sPikiPortrait[Red];
+			} else if (captain == PC_CAPTAIN_PUFFMIN) {
+				// Sin PNG propio, el icono del rojo.
+				custom = pc_art_texture("coop_portrait_puffmin");
+				if (!custom) {
+					if (!sPikiPortrait[Red]) sPikiPortrait[Red] = zen::loadTexExp(kPikiPortrait[Red], true, true);
+					custom = sPikiPortrait[Red];
+				}
 			}
 			Texture* want = custom ? custom : mOriginalTex;
 			if (want && pic->getTexture(0) != want) pic->setTexture(want, 0);

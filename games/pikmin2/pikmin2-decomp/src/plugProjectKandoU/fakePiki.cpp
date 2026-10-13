@@ -1,4 +1,5 @@
 #include "Game/FakePiki.h"
+#include "Game/pcCoop.h"
 #include "Game/BaseItem.h"
 #include "Game/gameStat.h"
 #include "Game/Navi.h"
@@ -788,7 +789,7 @@ void FakePiki::doEntry()
 		mModel->show();
 
 	} else {
-		if (BaseHIOParms::sEntryOpt && !gameSystem->isMultiplayerMode()) {
+		if (BaseHIOParms::sEntryOpt && !PC_TWO_CAPTAIN_PLAY()) {
 			return;
 		}
 

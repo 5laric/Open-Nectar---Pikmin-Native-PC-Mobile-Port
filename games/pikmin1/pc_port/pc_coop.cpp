@@ -38,12 +38,13 @@ int pc_captain_piki_color(int captain)
 bool pc_captain_is_pikmin(int captain)
 {
 	return pc_captain_piki_color(captain) >= 0 || captain == PC_CAPTAIN_PIKMIN_WHITE
-	    || captain == PC_CAPTAIN_PIKMIN_PURPLE || captain == PC_CAPTAIN_BULBMIN;
+	    || captain == PC_CAPTAIN_PIKMIN_PURPLE || captain == PC_CAPTAIN_BULBMIN || captain == PC_CAPTAIN_PUFFMIN;
 }
 int pc_captain_skeleton_color(int captain)
 {
 	const int color = pc_captain_piki_color(captain);
 	if (color >= 0) return color;
+	if (captain == PC_CAPTAIN_PUFFMIN) return PIKI_Kinoko;
 	return pc_captain_is_pikmin(captain) ? Red : -1;
 }
 int pc_captain_pikmin2_model(int captain)
@@ -59,7 +60,7 @@ int pc_captain_pikmin2_model(int captain)
 bool pc_captain_available(int captain)
 {
 	if (captain < 0 || captain >= PC_CAPTAIN_COUNT) return false;
-	if (captain < PC_CAPTAIN_FIRST_PIKMIN2) return true;
+	if (captain < PC_CAPTAIN_FIRST_PIKMIN2 || captain == PC_CAPTAIN_PUFFMIN) return true;
 	std::error_code ec;
 	return pc_pikmin2_detected()
 	    && std::filesystem::is_regular_file(pc_hd_model_path((PcHdModelId)pc_captain_pikmin2_model(captain)), ec);

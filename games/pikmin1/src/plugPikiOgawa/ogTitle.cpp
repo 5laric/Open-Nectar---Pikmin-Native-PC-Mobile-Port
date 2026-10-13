@@ -406,7 +406,9 @@ zen::ogScrTitleMgr::TitleStatus zen::ogScrTitleMgr::update(Controller* input)
 			break;
 		}
 		if (mCurrentSelection == 5) {
+			// 1P o cooperativo se elige luego, en CardSelect.
 			pc_vs_set_pending(false);
+			pc_coop_set_pending(false);
 			pc_speedrun_set_active(false);
 			mPendingExitStatus = STATUS_ExitToChallengeMode;
 			mStatus            = STATUS_Exiting;

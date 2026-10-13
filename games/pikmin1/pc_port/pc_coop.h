@@ -29,6 +29,9 @@ enum PcCaptain {
 	PC_CAPTAIN_PIKMIN_WHITE  = 6,
 	PC_CAPTAIN_PIKMIN_PURPLE = 7,
 	PC_CAPTAIN_BULBMIN       = 8,
+	// Puffmin (Pikmin seta de Pikmin 1): va en la segunda fila, pero no pide
+	// Pikmin 2; sin él es el único de esa fila.
+	PC_CAPTAIN_PUFFMIN = 9,
 	PC_CAPTAIN_COUNT
 };
 /// Primer capitán de la segunda fila (los de Pikmin 2).
@@ -38,7 +41,7 @@ int pc_captain_piki_color(int captain);
 /// True para cualquier capitán con forma de Pikmin (también los de Pikmin 2).
 bool pc_captain_is_pikmin(int captain);
 /// Color del Pikmin de Pikmin 1 cuyo esqueleto y animaciones usa un capitán
-/// Pikmin (los de Pikmin 2 van sobre el del rojo), o -1.
+/// Pikmin (los de Pikmin 2 van sobre el del rojo; el Puffmin, PIKI_Kinoko), o -1.
 int pc_captain_skeleton_color(int captain);
 /// Modelo NHM (PcHdModelId) que dibuja a un capitán de Pikmin 2, o -1.
 int pc_captain_pikmin2_model(int captain);

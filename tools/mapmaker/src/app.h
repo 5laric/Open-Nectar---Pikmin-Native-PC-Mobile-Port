@@ -1,0 +1,234 @@
+#pragma once
+
+// Nectar Map Maker: pantalla de inicio (pide la carpeta assets y prepara el
+// catálogo), bienvenida y el editor. Pensado para que cualquiera lo entienda:
+// herramientas con nombres claros, ayuda en pantalla, tutorial y una lista de
+// lo que falta para poder jugar.
+
+#include "config.h"
+#include "document.h"
+#include "math3d.h"
+#include "preview.h"
+#include "renderer.h"
+
+#include "nectar_assets/catalog.h"
+
+#include <array>
+#include <atomic>
+#include <map>
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
+
+struct ImVec2;
+
+namespace nm {
+
+class App {
+public:
+	App();
+	~App();
+	/// `openPath`: un map.json para abrir directamente (vacío = bienvenida).
+	bool init(const std::string& openPath, std::string& error);
+	/// Un fotograma de interfaz (entre NewFrame y Render de ImGui).
+	void frame();
+	/// La ventana pide cerrarse: true si se puede (si no, pregunta).
+	bool requestQuit();
+	bool wantsQuit() const { return quit_; }
+
+private:
+	enum class Screen { Setup, Building, Welcome, Editor };
+	enum class Tool { Move, Place, Floor, Height, Plateau, Paint, Water, Walls };
+	enum class HeightOp { Raise, Lower, Flatten, Smooth };
+
+	struct Rect {
+		float x = 0, y = 0, w = 0, h = 0;
+	};
+	struct Toast {
+		int level; // 0 bien, 1 aviso, 2 error
+		std::string text;
+		double until;
+	};
+	struct Issue {
+		bool blocking;
+		std::string text;
+		bool hasItem;
+		ItemRef item;
+	};
+	/// Lo que se coloca con «Poner cosas».
+	struct PlaceChoice {
+		ItemType type = ItemType::Piece;
+		std::string asset; // decoración
+		std::string label;
+	};
+
+	// ── Pantallas ──
+	void drawSetup();
+	void drawBuilding();
+	void drawWelcome();
+	void startCatalog();
+	void enterEditor();
+	bool shapeButton(const char* id, nectar::TerrainShape shape, const char* label, float size);
+
+	// ── Editor ──
+	void drawEditor();
+	void drawTopBar(const Rect& r);
+	void drawToolbox(const Rect& r);
+	void drawViewport(const Rect& r);
+	void drawSidePanel(const Rect& r);
+	void drawSelected();
+	void drawMapPanel();
+	void drawChecklist();
+	void drawModals();
+	void drawTutorial();
+	void drawHelp();
+	void drawMaterialBrowser();
+	void drawToolOptions();
+	void drawPlaceOptions();
+	void drawFloorOptions();
+	void drawHeightOptions();
+	void drawPlateauOptions();
+	void drawPaintOptions();
+	void drawWaterOptions();
+	void drawWallOptions();
+	void drawSwatches(bool allowAdd);
+	void handleShortcuts();
+	const char* toolHelp() const;
+
+	// ── Vista ──
+	void renderScene(int w, int h);
+	void drawItem(const ItemRef& r, bool ghost);
+	void drawSelection();
+	void drawSlopes();
+	void drawWater();
+	void drawLabels(const ImVec2& origin, const ImVec2& size);
+	void viewportMouse(const Ray& ray, const ImVec2& origin, const ImVec2& size);
+	bool pick(const Ray& ray, ItemRef& hit, float& t);
+	bool groundHit(const Ray& ray, V3& hit) const;
+	bool terrainRay(const Ray& ray, V3& hit) const;
+	float docHeight(float x, float z) const;
+	bool docSolid(float x, float z) const;
+	bool project(const V3& p, const ImVec2& origin, const ImVec2& size, ImVec2& out) const;
+
+	// ── Terreno ──
+	bool ensureTerrain();
+	void applyBrush(const V3& at, float dt);
+	void growMap(int dx, int dz);
+	std::shared_ptr<nectar::Model> courseModel(const std::string& source);
+	unsigned swatch(const std::string& source, int index);
+
+	// ── Recursos ──
+	std::shared_ptr<GpuModel> model(const std::string& asset);
+	std::string markerAsset(const ItemRef& r) const;
+	std::string placeAsset(const PlaceChoice& c) const;
+	Rgba markerTint(const ItemRef& r) const;
+	M4 itemMatrix(const ItemRef& r, bool twin) const;
+	unsigned thumb(const std::string& path);
+	unsigned assetThumb(const std::string& asset);
+
+	// ── Archivo ──
+	void newMap(nectar::TerrainShape shape);
+	void openMap(const std::string& path);
+	void openBuiltIn();
+	bool saveMap(const std::string& path);
+	void saveOrAsk(bool thenTest);
+	void testInGame();
+	void autosave();
+	void notify(int level, const std::string& text);
+	void refreshOpenList();
+
+	// ── Edición ──
+	void deleteSelection();
+	void duplicateSelection();
+	void copySelection();
+	void paste();
+	void focusSelection();
+	void rotateSelection(double degrees);
+	void placeAt(const V3& at);
+	std::vector<Issue> checkMap() const;
+	double snap(double v) const;
+
+	Config cfg_;
+	Renderer renderer_;
+	RenderTarget target_;
+	Camera cam_;
+	Screen screen_ = Screen::Setup;
+	bool quit_ = false, confirmQuit_ = false;
+
+	// Inicio
+	char assetsBuf_[1024] = {};
+	char gameBuf_[1024]   = {};
+
+	// Catálogo
+	nectar::Catalog catalog_;
+	std::thread catalogThread_;
+	std::atomic<int> catalogDone_ { 0 }, catalogTotal_ { 0 };
+	std::atomic<bool> catalogFinished_ { false };
+	std::string catalogError_;
+	std::map<std::string, unsigned> thumbs_;
+	int thumbLoadsThisFrame_ = 0;
+	char search_[128]        = {};
+
+	// Modelos ya subidos a la GPU (marcadores y decoración).
+	std::map<std::string, std::shared_ptr<GpuModel>> models_;
+	std::map<std::string, std::string> modelErrors_;
+
+	// Documento
+	EditorDoc ed_;
+	nectar::MapDoc clipboard_;
+	bool hasClipboard_ = false;
+	Preview preview_;
+	PreviewResult compiled_;
+	std::shared_ptr<GpuModel> baseGpu_;
+	std::vector<V3> waterTris_; ///< superficie del agua del mapa compilado
+	int requestedLive_  = -1;
+	double lastRequest_ = 0;
+	std::vector<Toast> toasts_;
+	double lastAutosave_ = 0;
+
+	// Herramientas
+	Tool tool_         = Tool::Move;
+	HeightOp heightOp_ = HeightOp::Raise;
+	float brushRadius_ = 150.0f, brushStrength_ = 150.0f, flattenTarget_ = 0.0f;
+	bool floorErase_ = false, brushValid_ = false, brushWasDown_ = false;
+	bool waterErase_ = false, plateauUp_ = true;
+	float plateauAmount_ = 100.0f;
+	int paintMaterial_ = 0;
+	V3 brushPos_;
+	PlaceChoice place_;
+	bool placeValid_ = false;
+	V3 placePos_;
+	float wallHeight_ = 150.0f, wallThickness_ = 40.0f;
+	bool drawingWall_ = false;
+	V3 wallStart_;
+	// Arrastre con «Mover»
+	bool dragging_ = false, dragArmed_ = false;
+	int dragHandle_ = -1; // extremo del muro que se arrastra (0 A, 1 B) o -1
+	V3 dragGrab_;
+	float pressX_ = 0, pressY_ = 0;
+	std::vector<std::pair<ItemRef, Xform>> dragStart_;
+
+	// Materiales
+	bool openMatBrowser_  = false;
+	int matBrowserTarget_ = -1; // -1 añadir a la paleta, -2 paredes del borde, k cambiar el k
+	std::string matBrowserCourse_;
+	std::map<std::string, std::shared_ptr<nectar::Model>> courseModels_;
+	std::map<std::string, unsigned> swatches_;
+	std::map<std::string, std::vector<std::array<int, 3>>> courseStats_; // (material, triángulos, de suelo)
+
+	// Vista
+	bool showTwins_ = true, mirrorEdits_ = true;
+	bool viewportHovered_ = false;
+	float viewAspect_     = 1.0f;
+	Rect viewRect_, toolboxRect_, checklistRect_, testButtonRect_, floorButtonRect_, placeButtonRect_;
+
+	// Diálogos y ayuda
+	bool openSaveAs_ = false, openOpen_ = false, openNew_ = false, openHelp_ = false, testAfterSave_ = false;
+	char saveName_[128] = {};
+	std::vector<std::pair<std::string, std::string>> openList_; // (nombre, ruta)
+	int tutorialStep_ = -1;
+	std::string openAtStart_;
+};
+
+} // namespace nm

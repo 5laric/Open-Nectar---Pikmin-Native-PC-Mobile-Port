@@ -20,21 +20,24 @@ static const char name[] = "ebiScreenTitleMenu";
 // por letra (title_al_*.bti en los idiomas europeos, kana en japonés) que el
 // .bck lleva a su sitio al abrir el menú y hace botar al elegirla.
 //
-// La séptima se monta sin tocar los archivos del juego: se carga otra copia
+// Speedrun y Coop se montan sin tocar los archivos del juego: se carga otra copia
 // del mismo .blo, se toma su rama de Challenge Mode (11 letras o más en todos
 // los idiomas) con sus materiales y sus índices de animación, y se cuelga
-// debajo de Extras. Las letras siguen las pistas de las de Challenge Mode
+// en el bloque de filas. Las letras siguen las pistas de las de Challenge Mode
 // (llegada al abrir, bote al elegir), pero cada una dentro de un panel
-// intermedio que la desplaza a su sitio en "SPEEDRUN", y con la textura de su
-// letra. Las etiquetas se renombran (Pch → Psp, Ppich → Ppisp) para que las
-// búsquedas del original sigan encontrando la rama original.
+// intermedio que la desplaza a su sitio en la palabra, y con la textura de su
+// letra. Las etiquetas se renombran (Pch → Psp, Ppich → Ppisp; Pco/Ppico para
+// Coop) para que las búsquedas del original sigan encontrando la rama original.
 namespace {
 
 const char kPcSpeedrunWord[] = "speedrun";
 // Avance entre letras, en el espacio de la rama (las de Challenge Mode van a
 // 24-30 según el ancho de la letra).
 const f32 kPcSpeedrunAdvance[] = { 28.0f, 27.0f, 26.0f, 27.0f, 28.0f, 28.0f, 29.0f };
-// Fila siguiente a Extras (Nomake está a 100; las filas van cada ~36).
+const char kPcCoopWord[]    = "coop";
+const f32 kPcCoopAdvance[]  = { 27.0f, 27.0f, 27.0f };
+// Fila siguiente a Extras (Nomake está a 100; las filas van cada ~36), antes
+// de que Coop baje un hueco las de debajo de Story.
 const f32 kPcSpeedrunRowY = 136.0f;
 // Último frame de la llegada de las letras (mAnim6/mAnim7: 0-100).
 const f32 kPcSpeedrunOpenEndFrame = 100.0f;
@@ -51,23 +54,24 @@ void pcTagToStr(u64 tag, char out[9])
 	out[n] = '\0';
 }
 
-// Pch00 → Psp00, Pchil → Pspil, Ppich00 → Ppisp00, Nchallen → Nspeed.
-void pcRenameTree(J2DPane* pane)
+// Con code "sp": Pch00 → Psp00, Pchil → Pspil, Ppich00 → Ppisp00, y
+// Nchallen → branchTag.
+void pcRenameTree(J2DPane* pane, const char* code, const char* branchTag)
 {
 	char tag[9];
 	pcTagToStr(pane->mTag, tag);
 	if (std::strcmp(tag, "Nchallen") == 0) {
-		std::strcpy(tag, "Nspeed");
+		std::snprintf(tag, sizeof(tag), "%s", branchTag);
 	} else if (std::strncmp(tag, "Pch", 3) == 0) {
-		tag[1] = 's';
-		tag[2] = 'p';
+		tag[1] = code[0];
+		tag[2] = code[1];
 	} else if (std::strncmp(tag, "Ppich", 5) == 0) {
-		tag[3] = 's';
-		tag[4] = 'p';
+		tag[3] = code[0];
+		tag[4] = code[1];
 	}
 	pane->mTag = pc_mc8(tag);
 	for (JSUTree<J2DPane>* it = pane->mTree.getFirstChild(); it; it = it->getNextChild()) {
-		pcRenameTree(it->getObject());
+		pcRenameTree(it->getObject(), code, branchTag);
 	}
 }
 
@@ -80,6 +84,24 @@ void pcArrivedY(J2DAnmTransform* anm, u16 joint, f32* y, f32* scale)
 	if (scale) {
 		*scale = info.mScale.z;
 	}
+}
+
+// Mete un panel en wrapper, que ocupa su sitio entre sus hermanos (mismo
+// orden de dibujo).
+void pcWrap(J2DPane* pane, J2DPane* wrapper)
+{
+	JSUTree<J2DPane>* parentTree = pane->mTree.getParent();
+	if (!parentTree) {
+		return;
+	}
+	JSUTree<J2DPane>* next = pane->mTree.getNextChild();
+	parentTree->removeChild(&pane->mTree);
+	if (next) {
+		parentTree->insertChild(next, &wrapper->mTree);
+	} else {
+		parentTree->appendChild(&wrapper->mTree);
+	}
+	wrapper->mTree.appendChild(&pane->mTree);
 }
 
 // Mueve un panel (con su rama) bajo otro padre, al final.
@@ -132,21 +154,22 @@ namespace Screen {
 
 #ifdef PIKI_PC_PORT
 /**
- * Monta la opción Speedrun (índice 6) a partir de una copia de la rama de
- * Challenge Mode. Rellena mCategoryPanes[6], mPikiCounts[6] y mPikaPanes[6],
- * y devuelve los punteros (Pspil/Pspir) para sus animaciones. false si no se
- * pudo (sin letras latinas o la copia no tiene la forma esperada): el menú se
- * queda con sus seis opciones.
+ * Monta una opción del port (Speedrun, Coop) en mCategoryPanes[index] a partir
+ * de una copia de la rama de Challenge Mode, con las letras de word. Rellena
+ * mCategoryPanes, mPikiCounts y mPikaPanes de index, y devuelve los punteros
+ * para sus animaciones. La fila queda en Y 0: la coloca pcLayoutRows. nullptr
+ * si no se pudo (sin letras latinas o la copia no tiene la forma esperada).
  */
-bool TTitleMenu::pcAddSpeedrunEntry(JKRArchive* arc, J2DPane** iconLeft, J2DPane** iconRight)
+J2DPane* TTitleMenu::pcAddWordEntry(JKRArchive* arc, int index, const char* word, const f32* advance, const char* code,
+                                    const char* branchTag, J2DPane** iconLeft, J2DPane** iconRight)
 {
-	const int letterCount = (int)sizeof(kPcSpeedrunWord) - 1;
-	const ResTIMG* textures[letterCount];
+	const int letterCount = (int)std::strlen(word);
+	const ResTIMG* textures[16];
 	for (int i = 0; i < letterCount; i++) {
-		textures[i] = pcLetterTexture(arc, kPcSpeedrunWord[i]);
+		textures[i] = pcLetterTexture(arc, word[i]);
 		if (!textures[i]) {
-			printf("[PC Port] Title: no 'title_al_%c.bti', Speedrun option not added\n", kPcSpeedrunWord[i]);
-			return false;
+			printf("[PC Port] Title: no 'title_al_%c.bti', %s option not added\n", word[i], word);
+			return nullptr;
 		}
 	}
 
@@ -155,12 +178,12 @@ bool TTitleMenu::pcAddSpeedrunEntry(JKRArchive* arc, J2DPane** iconLeft, J2DPane
 	J2DPane* branch = copy->search(MC8("Nchallen"));
 	J2DPane* parent = mCategoryPanes[5]->mTree.getParent() ? mCategoryPanes[5]->mTree.getParent()->getObject() : nullptr;
 	if (!branch || !parent) {
-		printf("[PC Port] Title: Challenge Mode branch not found, Speedrun option not added\n");
-		return false;
+		printf("[PC Port] Title: Challenge Mode branch not found, %s option not added\n", word);
+		return nullptr;
 	}
 
 	// Letras en orden (Pch00, Pch01...), antes de renombrar.
-	J2DPane* letters[letterCount];
+	J2DPane* letters[16];
 	J2DPane* spare[32];
 	int found = 0, spareCount = 0;
 	for (int i = 0; i < 32; i++) {
@@ -171,8 +194,8 @@ bool TTitleMenu::pcAddSpeedrunEntry(JKRArchive* arc, J2DPane** iconLeft, J2DPane
 			break;
 		}
 		if (letter->getTypeID() != PANETYPE_Picture) {
-			printf("[PC Port] Title: %s is not a picture, Speedrun option not added\n", tag);
-			return false;
+			printf("[PC Port] Title: %s is not a picture, %s option not added\n", tag, word);
+			return nullptr;
 		}
 		if (found < letterCount) {
 			letters[found++] = letter;
@@ -181,16 +204,16 @@ bool TTitleMenu::pcAddSpeedrunEntry(JKRArchive* arc, J2DPane** iconLeft, J2DPane
 		}
 	}
 	if (found < letterCount) {
-		printf("[PC Port] Title: Challenge Mode has %d letters, Speedrun option not added\n", found);
-		return false;
+		printf("[PC Port] Title: Challenge Mode has %d letters, %s option not added\n", found, word);
+		return nullptr;
 	}
 
 	// Dónde acaba cada letra prestada al llegar, para desplazarla a la suya.
 	J2DAnmTransform* arrive = static_cast<J2DAnmTransform*>(
 	    J2DAnmLoaderDataBase::load(JKRFileLoader::getGlbResource("title_menu_6.bck", arc)));
 	if (!arrive) {
-		printf("[PC Port] Title: title_menu_6.bck not loaded, Speedrun option not added\n");
-		return false;
+		printf("[PC Port] Title: title_menu_6.bck not loaded, %s option not added\n", word);
+		return nullptr;
 	}
 	arrive->setFrame(kPcSpeedrunOpenEndFrame);
 
@@ -200,16 +223,16 @@ bool TTitleMenu::pcAddSpeedrunEntry(JKRArchive* arc, J2DPane** iconLeft, J2DPane
 	}
 
 	// La rama ya no sigue la pista de Challenge Mode (que en el menú sin Desafío
-	// la saca de pantalla): fila fija debajo de Extras.
-	pcRenameTree(branch);
+	// la saca de pantalla): fila fija, que coloca pcLayoutRows.
+	pcRenameTree(branch, code, branchTag);
 	pcReparent(branch, parent);
 	branch->mAnimPaneIndex = 0xFFFF;
 	branch->mTransform     = nullptr;
-	branch->setOffset(mCategoryPanes[5]->mTranslateX, kPcSpeedrunRowY);
+	branch->setOffset(mCategoryPanes[5]->mTranslateX, 0.0f);
 
 	f32 width = 0.0f;
 	for (int i = 0; i < letterCount - 1; i++) {
-		width += kPcSpeedrunAdvance[i];
+		width += advance[i];
 	}
 	f32 x = -width / 2.0f;
 	J2DPane* others[64];
@@ -227,13 +250,13 @@ bool TTitleMenu::pcAddSpeedrunEntry(JKRArchive* arc, J2DPane** iconLeft, J2DPane
 		J3DTransformInfo info;
 		arrive->getTransform(letters[i]->mAnimPaneIndex, &info);
 		char tag[9];
-		std::snprintf(tag, sizeof(tag), "Wsp%02d", i);
+		std::snprintf(tag, sizeof(tag), "W%s%02d", code, i);
 		J2DPane* holder = new J2DPane(branch, true, pc_mc8(tag), JGeometry::TBox2f(0.0f, 0.0f, 0.0f, 0.0f));
 		holder->setOffset(x - info.mTranslation.x, 0.0f);
 		pcReparent(letters[i], holder);
 		static_cast<J2DPictureEx*>(letters[i])->changeTexture(textures[i], 0);
 		if (i < letterCount - 1) {
-			x += kPcSpeedrunAdvance[i];
+			x += advance[i];
 		}
 	}
 	// Punteros y Pikmin sueltos (japonés) después de las letras, como estaban.
@@ -241,63 +264,103 @@ bool TTitleMenu::pcAddSpeedrunEntry(JKRArchive* arc, J2DPane** iconLeft, J2DPane
 		pcReparent(others[i], branch);
 	}
 
-	mCategoryPanes[6] = branch;
-	mPikiCounts[6]    = mMainScreen->gather(mPikaPanes[6], MC8("Ppisp00"), MC8("Ppisp99"), 100);
-	*iconLeft         = branch->search(MC8("Pspil"));
-	*iconRight        = branch->search(MC8("Pspir"));
+	char tagFirst[9], tagLast[9], tagLeft[9], tagRight[9];
+	std::snprintf(tagFirst, sizeof(tagFirst), "Ppi%s00", code);
+	std::snprintf(tagLast, sizeof(tagLast), "Ppi%s99", code);
+	std::snprintf(tagLeft, sizeof(tagLeft), "P%sil", code);
+	std::snprintf(tagRight, sizeof(tagRight), "P%sir", code);
+	*iconLeft  = branch->search(pc_mc8(tagLeft));
+	*iconRight = branch->search(pc_mc8(tagRight));
 	if (!*iconLeft || !*iconRight) {
-		printf("[PC Port] Title: Speedrun pointers not found, Speedrun option not added\n");
+		printf("[PC Port] Title: %s pointers not found, %s option not added\n", word, word);
 		pcReparent(branch, copy);
-		return false;
+		return nullptr;
 	}
+	mCategoryPanes[index] = branch;
+	mPikiCounts[index]    = mMainScreen->gather(mPikaPanes[index], pc_mc8(tagFirst), pc_mc8(tagLast), 100);
 
-	// Siete filas no caben donde había seis: el bloque (NULL_001) va dentro de
-	// un panel que lo sube y, si hace falta, lo escala para que la primera fila
-	// quede donde estaba la de Story y la última no pase de la de Extras más un
-	// margen (debajo está el copyright). Sin el Desafío (title_menu_5) basta con
-	// subirlo: su hueco deja sitio a Speedrun.
+	printf("[PC Port] Title: %s option added (%d Pikmin)\n", word, mPikiCounts[index]);
+	return branch;
+}
+
+/**
+ * Coloca las filas del port: Coop justo debajo de Story (las de debajo bajan un
+ * hueco, cada una dentro de un panel que la desplaza; sus pistas siguen
+ * mandando dentro) y Speedrun debajo de Extras.
+ */
+void TTitleMenu::pcLayoutRows(JKRArchive* arc)
+{
+	J2DPane* parent = mCategoryPanes[5]->mTree.getParent() ? mCategoryPanes[5]->mTree.getParent()->getObject() : nullptr;
+	J2DAnmTransform* arrive = static_cast<J2DAnmTransform*>(
+	    J2DAnmLoaderDataBase::load(JKRFileLoader::getGlbResource("title_menu_6.bck", arc)));
 	J2DAnmTransform* arrive5 = static_cast<J2DAnmTransform*>(
 	    J2DAnmLoaderDataBase::load(JKRFileLoader::getGlbResource("title_menu_5.bck", arc)));
-	JSUTree<J2DPane>* rootTree = parent->mTree.getParent();
-	if (arrive5 && rootTree) {
-		arrive5->setFrame(kPcSpeedrunOpenEndFrame);
-		f32 blockY, blockScale;
-		pcArrivedY(arrive, parent->mAnimPaneIndex, &blockY, &blockScale);
-		J3DTransformInfo blockInfo;
-		arrive->getTransform(parent->mAnimPaneIndex, &blockInfo);
-		const f32 blockX = blockInfo.mTranslation.x;
-		f32 storyY, extrasY;
-		pcArrivedY(arrive, mCategoryPanes[0]->mAnimPaneIndex, &storyY, nullptr);
-		pcArrivedY(arrive, mCategoryPanes[5]->mAnimPaneIndex, &extrasY, nullptr);
-		const f32 top    = blockY + blockScale * storyY;
-		const f32 bottom = blockY + blockScale * extrasY + 6.0f;
-		for (int state = 0; state < 2; state++) {
-			// Primera fila visible: Story (en title_menu_5 baja al hueco del Desafío).
-			f32 firstY;
-			pcArrivedY(state == 0 ? arrive5 : arrive, mCategoryPanes[0]->mAnimPaneIndex, &firstY, nullptr);
-			f32 scale = (bottom - top) / (blockScale * (kPcSpeedrunRowY - firstY));
-			if (scale > 1.0f) {
-				scale = 1.0f;
+	if (!parent || !arrive || !arrive5) {
+		printf("[PC Port] Title: title_menu_5/6.bck not loaded, rows not laid out\n");
+		return;
+	}
+	arrive->setFrame(kPcSpeedrunOpenEndFrame);
+	arrive5->setFrame(kPcSpeedrunOpenEndFrame);
+
+	f32 storyY[2], extrasY;
+	pcArrivedY(arrive5, mCategoryPanes[0]->mAnimPaneIndex, &storyY[0], nullptr);
+	pcArrivedY(arrive, mCategoryPanes[0]->mAnimPaneIndex, &storyY[1], nullptr);
+	pcArrivedY(arrive, mCategoryPanes[5]->mAnimPaneIndex, &extrasY, nullptr);
+	const f32 rowStep = (extrasY - storyY[1]) / 5.0f;
+
+	f32 lastY = extrasY;
+	if (mPcHasSpeedrun) {
+		J2DPane* sp = mCategoryPanes[PC_TITLE_SPEEDRUN];
+		sp->setOffset(sp->mTranslateX, kPcSpeedrunRowY);
+		lastY = kPcSpeedrunRowY;
+	}
+	if (mPcHasCoop) {
+		for (int i = 1; i < menuNum(); i++) {
+			if (i == PC_TITLE_COOP) {
+				continue;
 			}
-			mPcFitScale[state] = scale;
-			mPcFitX[state]     = blockX * (1.0f - scale);
-			mPcFitY[state]     = top - scale * (blockY + blockScale * firstY);
+			char tag[9];
+			std::snprintf(tag, sizeof(tag), "Wrow%d", i);
+			J2DPane* holder = new J2DPane(nullptr, true, pc_mc8(tag), JGeometry::TBox2f(0.0f, 0.0f, 0.0f, 0.0f));
+			pcWrap(mCategoryPanes[i], holder);
+			// Después de colgarlo: calcMtx no hace nada en un panel fuera del árbol.
+			holder->setOffset(0.0f, rowStep);
 		}
-		// El panel ocupa el sitio de NULL_001 entre sus hermanos (mismo orden de dibujo).
-		mPcFitPane = new J2DPane(nullptr, true, MC8("Nsrfit"), JGeometry::TBox2f(0.0f, 0.0f, 0.0f, 0.0f));
-		JSUTree<J2DPane>* next = parent->mTree.getNextChild();
-		rootTree->removeChild(&parent->mTree);
-		if (next) {
-			rootTree->insertChild(next, &mPcFitPane->mTree);
-		} else {
-			rootTree->appendChild(&mPcFitPane->mTree);
+		for (int state = 0; state < 2; state++) {
+			mPcCoopY[state] = storyY[state] + rowStep;
 		}
-		mPcFitPane->mTree.appendChild(&parent->mTree);
-		printf("[PC Port] Title: menu fit scale %.3f/%.3f\n", mPcFitScale[0], mPcFitScale[1]);
+		lastY += rowStep;
 	}
 
-	printf("[PC Port] Title: Speedrun option added (%d Pikmin)\n", mPikiCounts[6]);
-	return true;
+	// Las filas de más no caben donde había seis: el bloque (NULL_001) va
+	// dentro de un panel que lo sube y, si hace falta, lo escala para que la
+	// primera fila quede donde estaba la de Story y la última quede algo por
+	// encima de la de Extras (debajo está el copyright). Sin el Desafío
+	// (title_menu_5) su hueco deja sitio.
+	JSUTree<J2DPane>* rootTree = parent->mTree.getParent();
+	if (!rootTree) {
+		return;
+	}
+	f32 blockY, blockScale;
+	pcArrivedY(arrive, parent->mAnimPaneIndex, &blockY, &blockScale);
+	J3DTransformInfo blockInfo;
+	arrive->getTransform(parent->mAnimPaneIndex, &blockInfo);
+	const f32 blockX = blockInfo.mTranslation.x;
+	const f32 top    = blockY + blockScale * storyY[1];
+	const f32 bottom = blockY + blockScale * extrasY - 14.0f;
+	for (int state = 0; state < 2; state++) {
+		// Primera fila visible: Story (en title_menu_5 baja al hueco del Desafío).
+		f32 scale = (bottom - top) / (blockScale * (lastY - storyY[state]));
+		if (scale > 1.0f) {
+			scale = 1.0f;
+		}
+		mPcFitScale[state] = scale;
+		mPcFitX[state]     = blockX * (1.0f - scale);
+		mPcFitY[state]     = top - scale * (blockY + blockScale * storyY[state]);
+	}
+	mPcFitPane = new J2DPane(nullptr, true, MC8("Nsrfit"), JGeometry::TBox2f(0.0f, 0.0f, 0.0f, 0.0f));
+	pcWrap(parent, mPcFitPane);
+	printf("[PC Port] Title: menu fit scale %.3f/%.3f\n", mPcFitScale[0], mPcFitScale[1]);
 }
 #endif
 
@@ -356,7 +419,16 @@ void TTitleMenu::doSetArchive(JKRArchive* arc)
 	panelist2[5] = E2DScreen_searchAssert(mMainScreen, MC8("Pomir"));
 
 #ifdef PIKI_PC_PORT
-	mPcHasSpeedrun = pcAddSpeedrunEntry(arc, &panelist1[6], &panelist2[6]);
+	mPcHasSpeedrun = pcAddWordEntry(arc, PC_TITLE_SPEEDRUN, kPcSpeedrunWord, kPcSpeedrunAdvance, "sp", "Nspeed",
+	                                &panelist1[PC_TITLE_SPEEDRUN], &panelist2[PC_TITLE_SPEEDRUN])
+	              != nullptr;
+	mPcHasCoop = mPcHasSpeedrun
+	          && pcAddWordEntry(arc, PC_TITLE_COOP, kPcCoopWord, kPcCoopAdvance, "co", "Ncoop", &panelist1[PC_TITLE_COOP],
+	                            &panelist2[PC_TITLE_COOP])
+	                 != nullptr;
+	if (mPcHasSpeedrun) {
+		pcLayoutRows(arc);
+	}
 #endif
 	const int menuCount = menuNum();
 
@@ -420,14 +492,14 @@ void TTitleMenu::doSetArchive(JKRArchive* arc)
 	mAnims5[5].loadAnm(path, arc, 1110, 1229);
 
 #ifdef PIKI_PC_PORT
-	if (mPcHasSpeedrun) {
-		// Las pistas prestadas son las de Challenge Mode (índice 2).
-		mAnims1[0][6].loadAnm("title_menu_5.bck", arc, 495, 621);
-		mAnims1[1][6].loadAnm("title_menu_6.bck", arc, 495, 621);
-		mAnims2[6].loadAnm(path, arc, 494, 509);
-		mAnims4[6].loadAnm(path, arc, 510, 629);
-		mAnims3[6].loadAnm(path, arc, 494, 509);
-		mAnims5[6].loadAnm(path, arc, 510, 629);
+	// Las pistas prestadas son las de Challenge Mode (índice 2).
+	for (int i = PC_TITLE_SPEEDRUN; i < menuNum(); i++) {
+		mAnims1[0][i].loadAnm("title_menu_5.bck", arc, 495, 621);
+		mAnims1[1][i].loadAnm("title_menu_6.bck", arc, 495, 621);
+		mAnims2[i].loadAnm(path, arc, 494, 509);
+		mAnims4[i].loadAnm(path, arc, 510, 629);
+		mAnims3[i].loadAnm(path, arc, 494, 509);
+		mAnims5[i].loadAnm(path, arc, 510, 629);
 	}
 #endif
 
@@ -482,7 +554,12 @@ void TTitleMenu::doOpenScreen(ArgOpen* arg)
 	if (Game::gGameConfig.mParms.mE3version.mData) {
 		mPad.init(mController, 1, 2, &mSelectID, EUTPadInterface_countNum::MODE_DOWNUP, 0.66f, 0.15f);
 	} else {
+#ifdef PIKI_PC_PORT
+		mPcVisPos = pcIdxToVis(mSelectID);
+		mPad.init(mController, 0, menuNum() - 1, &mPcVisPos, EUTPadInterface_countNum::MODE_DOWNUP, 0.66f, 0.15f);
+#else
 		mPad.init(mController, 0, menuNum() - 1, &mSelectID, EUTPadInterface_countNum::MODE_DOWNUP, 0.66f, 0.15f);
+#endif
 	}
 
 #endif
@@ -494,6 +571,10 @@ void TTitleMenu::doOpenScreen(ArgOpen* arg)
 		mPcFitPane->mScaleX = mPcFitScale[mState];
 		mPcFitPane->mScaleY = mPcFitScale[mState];
 		mPcFitPane->setOffset(mPcFitX[mState], mPcFitY[mState]);
+	}
+	if (mPcHasCoop) {
+		J2DPane* coop = mCategoryPanes[PC_TITLE_COOP];
+		coop->setOffset(coop->mTranslateX, mPcCoopY[mState]);
 	}
 #endif
 
@@ -610,6 +691,12 @@ bool TTitleMenu::doUpdateStateWait()
 	// change main menu selection
 	if (mPad.mSelectionChanged) {
 		int id = mPad.mLastIndex;
+#ifdef PIKI_PC_PORT
+		if (mPad.mSelIndex == &mPcVisPos) {
+			id        = pcVisToIdx(id);
+			mSelectID = pcVisToIdx(mPcVisPos);
+		}
+#endif
 		// skip over challenge mode if its not unlocked
 		if (mState == 0 && mSelectID == 2) {
 			if (id < mSelectID) {
@@ -618,6 +705,11 @@ bool TTitleMenu::doUpdateStateWait()
 				mSelectID--;
 			}
 		}
+#ifdef PIKI_PC_PORT
+		if (mPad.mSelIndex == &mPcVisPos) {
+			mPcVisPos = pcIdxToVis(mSelectID);
+		}
+#endif
 		mAnims1[mState][mSelectID].play(sys->mDeltaTime * 60.0f, J3DAA_UNKNOWN_0, true);
 		showPika_(mSelectID);
 		mObjIcon[mSelectID].start();

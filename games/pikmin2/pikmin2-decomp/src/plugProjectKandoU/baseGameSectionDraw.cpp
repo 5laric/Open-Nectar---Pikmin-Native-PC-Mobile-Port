@@ -1,4 +1,5 @@
 #include "Game/BaseGameSection.h"
+#include "Game/pcCoop.h"
 #ifdef PIKI_PC_PORT
 extern "C" int pc_settings_get_shadows(void);
 extern "C" void pc_gfx_set_dof_focus(float viewDistance);
@@ -49,7 +50,7 @@ void BaseGameSection::newdraw_draw3D_all(Graphics& gfx)
 	gPcDrawBufferClears++;
 #endif
 
-	if (!gameSystem->isMultiplayerMode()) {
+	if (!PC_TWO_CAPTAIN_PLAY()) {
 		particleMgr->setXfb(mXfbImage->mTexInfo);
 	}
 
@@ -131,7 +132,7 @@ void BaseGameSection::newdraw_drawAll(Viewport* vp)
 		f32 focus   = 0.0f;
 		Navi* navi  = naviMgr ? naviMgr->getActiveNavi() : nullptr;
 		Camera* cam = vp->getCamera();
-		if (navi && cam && !gameSystem->isMultiplayerMode()) {
+		if (navi && cam && !PC_TWO_CAPTAIN_PLAY()) {
 			Vector3f eye  = cam->getPosition();
 			Vector3f look = cam->getLookAtPosition();
 			Vector3f fwd(look.x - eye.x, look.y - eye.y, look.z - eye.z);

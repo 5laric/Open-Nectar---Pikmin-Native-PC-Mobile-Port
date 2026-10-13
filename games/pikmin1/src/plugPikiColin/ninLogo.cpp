@@ -12,6 +12,9 @@
 #include "sysNew.h"
 #include "types.h"
 #include "zen/DrawProgre.h"
+#if defined(PIKI_PC_PORT)
+#include "pc_vs.h"
+#endif
 
 /**
  * @note UNUSED Size: 00009C
@@ -89,7 +92,8 @@ struct NinLogoSetupSection : public Node {
 			// segundo de entrada, mantenido y medio segundo de salida.
 			static f32 pcLogoTime = 0.0f;
 			const f32 kLogoTime   = 2.5f, kFade = 0.5f;
-			if (pcLogoTime < kLogoTime) {
+			// Con --vs-map (editor de mapas) no se espera al logo.
+			if (pcLogoTime < kLogoTime && !pc_vs_direct_requested()) {
 				pcLogoTime += gsys->getFrameTime();
 				f32 fade = 1.0f;
 				if (pcLogoTime < kFade) {

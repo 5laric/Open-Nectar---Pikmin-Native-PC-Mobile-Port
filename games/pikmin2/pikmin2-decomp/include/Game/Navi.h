@@ -333,6 +333,14 @@ struct NaviMgr : public MonoObjectMgr<Navi>, public JKRDisposer {
 	SysShape::Model* createModel(int naviID);
 	void createPSMDirectorUpdator();
 	Navi* getActiveNavi();
+#ifdef PIKI_PC_PORT
+	// Co-op (docs/PLAN_COOP.md §3.2): con los dos capitanes con mando,
+	// getActiveNavi devolvería siempre a Olimar. Fuera del co-op, las dos
+	// devuelven getActiveNavi().
+	Navi* getNearestNavi(Vector3f& pos); // el capitán vivo más cercano
+	Navi* getMovieNavi();                // Olimar si está vivo, si no Louie
+	Navi* getMenuNavi();                 // el capitán de quien abrió el menú
+#endif
 	int getAliveCount();
 	Navi* getAliveOrima(int aliveOrimaType); // see AliveOrimaType enum; 0 = get active, 1 = get inactive
 	Navi* getDeadOrima(int deadID);          // 0 for first dead, 1 for second dead

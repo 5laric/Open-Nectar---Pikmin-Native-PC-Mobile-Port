@@ -85,4 +85,11 @@ enum { PC_VS_EXIT_NONE = 0, PC_VS_EXIT_REMATCH = 1, PC_VS_EXIT_TITLE = 2 };
 void pc_vs_request_exit(int kind);
 int pc_vs_take_exit_request(void);
 
+/// Opción --vs-map del editor de mapas: el juego va directo a una partida VS
+/// con ese map.json, sin título ni menús (J1 teclado + mando 1, J2 mando 2).
+void pc_vs_direct_request(void);
+bool pc_vs_direct_requested(void); ///< pedida y aún sin llegar al título
+bool pc_vs_direct_take_title(void); ///< en el título: true una vez, para salir hacia el VS
+bool pc_vs_direct_take_setup(void); ///< en CardSelect: true una vez, para saltar los menús
+
 #endif

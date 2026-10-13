@@ -3,6 +3,7 @@ extern "C" float pc_p2_hard_teki_life(float base);
 #endif
 // Enemies
 #include "Game/generalEnemyMgr.h"
+#include "Game/pcCoop.h"
 #ifdef PIKI_PC_PORT
 extern "C" float pc_mods_teki_damage(float damage);
 #endif
@@ -1875,7 +1876,7 @@ void EnemyBase::doEntryLiving()
 		changeMaterial();
 	} else {
 		if (BaseHIOParms::sEntryOpt) {
-			if (!gameSystem->isMultiplayerMode())
+			if (!PC_TWO_CAPTAIN_PLAY())
 				return;
 		}
 

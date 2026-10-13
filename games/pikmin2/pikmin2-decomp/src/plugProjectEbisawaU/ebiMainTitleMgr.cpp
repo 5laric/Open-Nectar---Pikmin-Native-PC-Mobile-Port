@@ -164,7 +164,10 @@ void TMainTitleMgr::startMenuSet(s32, s32 select)
 		break;
 #ifdef PIKI_PC_PORT
 	case Select_Speedrun:
-		id = mTitleMenu.menuNum() > 6 ? 6 : 0;
+		id = mTitleMenu.menuNum() > PC_TITLE_SPEEDRUN ? PC_TITLE_SPEEDRUN : 0;
+		break;
+	case Select_Coop:
+		id = mTitleMenu.menuNum() > PC_TITLE_COOP ? PC_TITLE_COOP : 0;
 		break;
 #endif
 	default:
@@ -354,8 +357,11 @@ void TMainTitleMgr::update()
 					mSelectedMenuOption = Select_Bonus;
 					break;
 #ifdef PIKI_PC_PORT
-				case 6:
+				case PC_TITLE_SPEEDRUN:
 					mSelectedMenuOption = Select_Speedrun;
+					break;
+				case PC_TITLE_COOP:
+					mSelectedMenuOption = Select_Coop;
 					break;
 #endif
 				}

@@ -33,9 +33,11 @@ namespace platform = pikmin::launcher::platform;
 #ifdef _WIN32
 constexpr const char* kGameExecutable     = "nectar.exe";
 constexpr const char* kLauncherExecutable = "nectar-launcher.exe";
+constexpr const char* kMapEditorExecutable = "nectar-mapmaker.exe";
 #else
 constexpr const char* kGameExecutable     = "nectar";
 constexpr const char* kLauncherExecutable = "nectar-launcher";
+constexpr const char* kMapEditorExecutable = "nectar-mapmaker";
 #endif
 
 
@@ -1030,6 +1032,15 @@ int main(int argc, char** argv)
             hubState.gameDataDirectory = (artRoot / "assets/dataDir").string();
             hubState.games[0].discId = installedGameBuild(artRoot) == "nectar-pal" ? "GPIP01" : "GPIE01";
         }
+        // Editor de mapas VS: en la instalación de Pikmin 1 o junto al launcher.
+        if (pikmin1Available) {
+            for (const fs::path& dir : { pikmin1Directory, platform::executablePath().parent_path() }) {
+                if (!dir.empty() && fs::is_regular_file(dir / kMapEditorExecutable)) {
+                    hubState.mapEditor = (dir / kMapEditorExecutable).string();
+                    break;
+                }
+            }
+        }
         auto window = std::make_unique<pikmin::launcher::HubWindow>();
         std::string hubError;
         if (window->open(hubState, hubError)) {
@@ -1046,6 +1057,11 @@ int main(int argc, char** argv)
                 for (;;) {
                     const pikmin::launcher::HubResult choice = home->runHome();
                     if (choice.action == pikmin::launcher::HubAction::Quit) return choice;
+                    if (choice.action == pikmin::launcher::HubAction::MapEditor) {
+                        // Se abre en la carpeta del juego: de ahí saca assets/ y el ejecutable.
+                        if (!hubState.mapEditor.empty()) play(hubState.games[0].directory, hubState.mapEditor);
+                        continue;
+                    }
                     if (choice.action == pikmin::launcher::HubAction::Play) {
                         pikmin::launcher::GameInstall game = hubState.games[int(choice.game)];
                         if (choice.game == pikmin::launcher::HubGame::Pikmin2 && !game.installed) continue;

@@ -2,6 +2,7 @@
 extern "C" int pc_settings_get_piki_invincible(void);
 #endif
 #include "types.h"
+#include "Game/pcCoop.h"
 #include "Game/Interaction.h"
 #include "Game/Piki.h"
 #include "Game/PikiState.h"
@@ -82,6 +83,15 @@ bool InteractFue::actPiki(Game::Piki* piki)
 			}
 		}
 	}
+
+#ifdef PIKI_PC_PORT
+	// Co-op: el silbato no roba Pikmin del grupo del otro capitán; solo
+	// recoge los que no están en ningún grupo (docs/PLAN_COOP.md §8).
+	if (pc_p2_coop_active() && mCreature->isNavi() && piki->getCurrActionID() == PikiAI::ACT_Formation && piki->mNavi
+	    && piki->mNavi != mCreature) {
+		return false;
+	}
+#endif
 
 	if (piki->isZikatu()) {
 		int pikiKind = piki->getKind();

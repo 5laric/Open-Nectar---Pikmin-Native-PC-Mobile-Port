@@ -45,6 +45,7 @@
 #include "pc_permadeath.h"
 #include "pc_coop.h"
 #include "pc_vs.h"
+#include "mods/pc_vs_map.h"
 #include "pc_achievements.h"
 #include "pc_speedrun.h"
 #include "pc_livesplit.h"
@@ -185,6 +186,7 @@ struct PcConfig {
     int vsBigPiece = 1;  // minuto 3 / minuto 7 / desde el inicio / sin gorda
     int vsPikiLimit = 2; // 25 / 40 / 50 por jugador
     int vsPellets = 1;   // cada 30 / 45 / 60 s / sin pastillas
+    std::string vsMap;   // carpeta en user/maps/vs/; vacío = la arena de serie
     // Mods de Pikmin 3: fijar objetivo, y mandar el escuadrón contra él.
     int lockOn = 0;
     int charge = 0;
@@ -298,6 +300,7 @@ struct PcConfig {
         vsBigPiece = 1;
         vsPikiLimit = 2;
         vsPellets = 1;
+        vsMap.clear();
         lockOn = 0;
         charge = 0;
         throwWhileMoving = 0;
@@ -1137,6 +1140,7 @@ void saveConfig() {
     out << "vsBigPiece = " << sConfig.vsBigPiece << "\n";
     out << "vsPikiLimit = " << sConfig.vsPikiLimit << "\n";
     out << "vsPellets = " << sConfig.vsPellets << "\n";
+    out << "vsMap = " << sConfig.vsMap << "\n";
     out << "lockOn = " << sConfig.lockOn << "\n";
     out << "charge = " << sConfig.charge << "\n";
     out << "throwWhileMoving = " << sConfig.throwWhileMoving << "\n";
@@ -1454,6 +1458,12 @@ void loadConfig() {
         }
         else if (key == "debugKeys") {
             sConfig.debugKeys = atoi(val.c_str()) ? 1 : 0;
+        }
+        else if (key == "vsMap") {
+            // Solo un nombre de carpeta, nunca una ruta.
+            const bool safe = val.size() < 64 && val.find('/') == std::string::npos
+                && val.find('\\') == std::string::npos && val.find("..") == std::string::npos;
+            sConfig.vsMap = safe ? val : std::string();
         }
         else if (key == "texturePack") {
             const bool safe = !val.empty() && val.size() < 64
@@ -4968,6 +4978,11 @@ namespace {
 bool sPlayerCountOpen    = false;
 int  sPlayerCountChoice  = 0;   // 0 = 1 jugador, 1 = 2 jugadores
 int  sPlayerCountResult  = PC_PLAYERCOUNT_PENDING;
+// Modo Desafío: tercera opción, 1 vs 1, que aún no se puede elegir.
+bool sPlayerCountChallenge = false;
+constexpr bool kChallengeVsReady = false;
+int playerCountOptions() { return sPlayerCountChallenge ? 3 : 2; }
+bool playerCountEnabled(int i) { return i < 2 || kChallengeVsReady; }
 
 bool playerCountSpanish() { return pc_settings_get_language() == 3; } // OS_LANG_SPANISH
 }
@@ -4976,7 +4991,13 @@ void pc_playercount_prompt_open(void) {
     sPlayerCountOpen    = true;
     sPlayerCountChoice  = sConfig.coopPlayers == 2 ? 1 : 0;
     sPlayerCountResult  = PC_PLAYERCOUNT_PENDING;
+    sPlayerCountChallenge = false;
     pc_menu_edge_reset();
+}
+
+void pc_playercount_prompt_open_challenge(void) {
+    pc_playercount_prompt_open();
+    sPlayerCountChallenge = true;
 }
 
 bool pc_playercount_prompt_active(void) { return sPlayerCountOpen; }
@@ -5008,9 +5029,13 @@ void pcPlayerCountPromptInput() {
         const float panelX = screenW * 0.5f - 310.0f;
         const float panelY = 110.0f;
         const float optY = panelY + 108.0f;
-        for (int i = 0; i < 2; ++i) {
-            const float boxX = panelX + 40.0f + i * 270.0f;
-            if (x >= boxX && x <= boxX + 230.0f && y >= optY - 8.0f && y <= optY + 52.0f) {
+        const int n = playerCountOptions();
+        const float boxW = n == 3 ? 170.0f : 230.0f, gap = n == 3 ? 20.0f : 40.0f;
+        const float left0 = panelX + (620.0f - (n * boxW + (n - 1) * gap)) * 0.5f;
+        for (int i = 0; i < n; ++i) {
+            const float boxX = left0 + i * (boxW + gap);
+            if (!playerCountEnabled(i)) continue;
+            if (x >= boxX && x <= boxX + boxW && y >= optY - 8.0f && y <= optY + 52.0f) {
                 sPlayerCountChoice = i;
                 accept = true;
                 break;
@@ -5026,12 +5051,19 @@ void pcPlayerCountPromptInput() {
         if (promptPadB(ctl))  cancel = true;
     }
 
-    if (left || right) sPlayerCountChoice = sPlayerCountChoice ? 0 : 1;
+    if (left || right) {
+        const int n = playerCountOptions();
+        do {
+            sPlayerCountChoice = (sPlayerCountChoice + (left ? n - 1 : 1)) % n;
+        } while (!playerCountEnabled(sPlayerCountChoice));
+    }
 
     if (accept) {
         sConfig.coopPlayers = sPlayerCountChoice ? 2 : 1;
         saveConfig();
-        sPlayerCountResult = sPlayerCountChoice ? PC_PLAYERCOUNT_TWO : PC_PLAYERCOUNT_ONE;
+        sPlayerCountResult = sPlayerCountChoice == 2 ? PC_PLAYERCOUNT_VS
+                           : sPlayerCountChoice      ? PC_PLAYERCOUNT_TWO
+                                                     : PC_PLAYERCOUNT_ONE;
         sPlayerCountOpen   = false;
     } else if (cancel) {
         sPlayerCountResult = PC_PLAYERCOUNT_CANCELLED;
@@ -5072,12 +5104,16 @@ void pc_playercount_prompt_draw(void) {
     drawTextOutline(panelX + panelW / 2 - menuTextWidth(line1) / 2, panelY + 62,
                     "%s", Colour(214, 224, 245, 255), Colour(8, 12, 28, 255), line1);
 
-    const char* options[2] = { es ? "1 jugador" : "1 player", es ? "2 jugadores" : "2 players" };
+    const char* options[3] = { es ? "1 jugador" : "1 player", es ? "2 jugadores" : "2 players", "1 vs 1" };
+    if (sPlayerCountChallenge) options[1] = es ? "Cooperativo" : "Co-op";
     const int optY = panelY + 108;
-    for (int i = 0; i < 2; i++) {
+    const int n    = playerCountOptions();
+    const int boxW = n == 3 ? 170 : 230, gap = n == 3 ? 20 : 40;
+    const int left0 = panelX + (panelW - (n * boxW + (n - 1) * gap)) / 2;
+    for (int i = 0; i < n; i++) {
         const bool sel = (i == sPlayerCountChoice);
-        const int boxW = 230;
-        const int boxX = panelX + 40 + i * (boxW + 40);
+        const bool on  = playerCountEnabled(i);
+        const int boxX = left0 + i * (boxW + gap);
         if (pc_settings_p2d_active()) {
             if (sel) pc_settings_p2d_plate(boxX, optY, boxW, 44, 2);
             pc_settings_p2d_plate(boxX, optY, boxW, 44, 1);
@@ -5089,11 +5125,16 @@ void pc_playercount_prompt_draw(void) {
         }
         const int tw = menuTextWidth(options[i]);
         drawTextOutline(boxX + boxW / 2 - tw / 2, optY + 12, "%s",
-                        sel ? Colour(255, 229, 120, 255) : Colour(170, 180, 200, 255),
+                        sel ? Colour(255, 229, 120, 255) : on ? Colour(170, 180, 200, 255) : Colour(90, 96, 112, 255),
                         Colour(8, 12, 28, 255), options[i]);
     }
 
-    const char* detail = sPlayerCountChoice
+    const char* detail = sPlayerCountChallenge
+        ? (sPlayerCountChoice == 2 ? (es ? "Cada uno con sus Pikmin: gana quien tenga más." : "Each with their own Pikmin: most Pikmin wins.")
+           : sPlayerCountChoice    ? (es ? "Los dos juntos, un solo marcador. Luego se asignan los mandos."
+                                         : "Both together, one shared score. Controllers are assigned next.")
+                                   : (es ? "El desafío original, un solo Olimar." : "The original challenge, a single Olimar."))
+        : sPlayerCountChoice
         ? (es ? "Cooperativo a pantalla partida. Luego se asignan los mandos."
               : "Split-screen co-op. Controllers are assigned next.")
         : (es ? "La aventura original, un solo Olimar."
@@ -5141,32 +5182,49 @@ void devAssignRestart() {
 
 // Tarjetas del selector de capitán, en orden (índice = PcCaptain).
 const char* const kCaptainNames[PC_CAPTAIN_COUNT] = { "Olimar", "Louie", "Red", "Yellow", "Blue",
-                                                      "President", "White", "Purple", "Bulbmin" };
+                                                      "President", "White", "Purple", "Bulbmin", "Puffmin" };
 // Sprites al doble (Olimar/Louie de Pikmin 2-e; los Pikmin, de Pikmin Puzzle
 // Cards de GBA, de pie con la hoja).
 const char* const kCaptainArt[PC_CAPTAIN_COUNT] = { "coop_olimar", "coop_louie", "coop_piki_red", "coop_piki_yellow",
                                                     "coop_piki_blue", "coop_president", "coop_piki_white",
-                                                    "coop_piki_purple", "coop_bulbmin" };
+                                                    "coop_piki_purple", "coop_bulbmin", "coop_puffmin" };
 // Si falta el PNG de un Pikmin, sale de la textura del juego piki3 (116x64):
 // rojo, amarillo y azul tumbados con su hoja. Columnas de cada uno.
 const int kCaptainPikiCol[PC_CAPTAIN_COUNT][2] = { { 0, 0 }, { 0, 0 }, { 0, 38 }, { 34, 78 }, { 76, 116 } };
 constexpr int kCaptainBoxW = 104, kCaptainBoxH = 120, kCaptainBoxGap = 9;
-// Primera fila: los de Pikmin 1; segunda (con Pikmin 2 instalado): los suyos.
-constexpr int kCaptainRow0 = PC_CAPTAIN_FIRST_PIKMIN2;
-constexpr int kCaptainRow1 = PC_CAPTAIN_COUNT - PC_CAPTAIN_FIRST_PIKMIN2;
+// Primera fila: los de Pikmin 1; segunda: los de Pikmin 2 que estén
+// instalados y el Puffmin, que siempre está.
 constexpr int captainRowLeft(int count) { return (620 - (count * kCaptainBoxW + (count - 1) * kCaptainBoxGap)) / 2; }
-bool captainSecondRow() { return pc_pikmin2_detected(); }
 int captainRowOf(int captain) { return captain >= PC_CAPTAIN_FIRST_PIKMIN2 ? 1 : 0; }
+// Tarjetas visibles de una fila, y la de la columna col (-1 si no hay).
+int captainRowCount(int row) {
+    if (row == 0) return PC_CAPTAIN_FIRST_PIKMIN2;
+    int n = 0;
+    for (int i = PC_CAPTAIN_FIRST_PIKMIN2; i < PC_CAPTAIN_COUNT; i++) n += pc_captain_available(i) ? 1 : 0;
+    return n;
+}
+int captainRowAt(int row, int col) {
+    if (row == 0) return (col >= 0 && col < PC_CAPTAIN_FIRST_PIKMIN2) ? col : -1;
+    for (int i = PC_CAPTAIN_FIRST_PIKMIN2; i < PC_CAPTAIN_COUNT; i++) {
+        if (pc_captain_available(i) && col-- == 0) return i;
+    }
+    return -1;
+}
+int captainColOf(int captain) {
+    if (captainRowOf(captain) == 0) return captain;
+    int col = 0;
+    for (int i = PC_CAPTAIN_FIRST_PIKMIN2; i < captain; i++) col += pc_captain_available(i) ? 1 : 0;
+    return col;
+}
+bool captainSecondRow() { return captainRowCount(1) > 0; }
 // Alto extra del panel con la segunda fila.
 int captainExtraH() { return captainSecondRow() ? kCaptainBoxH + kCaptainBoxGap : 0; }
 // Esquina de la tarjeta de un capitán dentro del panel; false si no se muestra.
 bool captainCardPos(int captain, int panelX, int panelY, int* x, int* y) {
     if (captain < 0 || captain >= PC_CAPTAIN_COUNT) return false;
     const int row = captainRowOf(captain);
-    if (row == 1 && !captainSecondRow()) return false;
-    const int first = row == 0 ? 0 : PC_CAPTAIN_FIRST_PIKMIN2;
-    const int count = row == 0 ? kCaptainRow0 : kCaptainRow1;
-    *x = panelX + captainRowLeft(count) + (captain - first) * (kCaptainBoxW + kCaptainBoxGap);
+    if (row == 1 && !pc_captain_available(captain)) return false;
+    *x = panelX + captainRowLeft(captainRowCount(row)) + captainColOf(captain) * (kCaptainBoxW + kCaptainBoxGap);
     *y = panelY + 84 + row * (kCaptainBoxH + kCaptainBoxGap);
     return true;
 }
@@ -5242,21 +5300,18 @@ int captainPickInput(int player, bool keyboardOk, SDL_GameController* ctl, int* 
     if (ignoreWindow) return 0;
     // Izquierda/derecha dan la vuelta dentro de la fila; arriba/abajo cambian
     // de fila (la segunda solo con Pikmin 2), a la misma columna o la última.
-    if (!captainSecondRow() && captainRowOf(*captain) == 1) *captain = PC_CAPTAIN_OLIMAR;
+    if (!pc_captain_available(*captain)) *captain = PC_CAPTAIN_OLIMAR;
     {
         const int row   = captainRowOf(*captain);
-        const int first = row == 0 ? 0 : PC_CAPTAIN_FIRST_PIKMIN2;
-        const int count = row == 0 ? kCaptainRow0 : kCaptainRow1;
-        for (int step = 0; step < count && (left || right); step++) {
-            *captain = first + (*captain - first + (left ? count - 1 : 1)) % count;
-            if (pc_captain_available(*captain)) break;
+        const int count = captainRowCount(row);
+        if ((left || right) && count > 0) {
+            *captain = captainRowAt(row, (captainColOf(*captain) + (left ? count - 1 : 1)) % count);
         }
         if ((up || down) && captainSecondRow() && (row == 0 ? down : up)) {
-            const int col    = *captain - first;
-            const int other  = row == 0 ? PC_CAPTAIN_FIRST_PIKMIN2 : 0;
-            const int oCount = row == 0 ? kCaptainRow1 : kCaptainRow0;
-            const int target = other + (col < oCount ? col : oCount - 1);
-            if (pc_captain_available(target)) *captain = target;
+            const int col    = captainColOf(*captain);
+            const int oCount = captainRowCount(1 - row);
+            const int target = captainRowAt(1 - row, col < oCount ? col : oCount - 1);
+            if (target >= 0) *captain = target;
         }
     }
     if (accept && *captain == PC_CAPTAIN_LOUIE && !devAssignLouieInstalled()) {
@@ -5457,6 +5512,7 @@ void pcDevAssignPromptInput() {
         if (cancel) {
             sDevAssignResult = PC_DEVASSIGN_CANCELLED;
             sDevAssignOpen   = false;
+            pc_captain_preview_release();
             return;
         }
         if (!pressed || SDL_GetTicks() < sDevAssignIgnoreUntil) return;
@@ -5484,6 +5540,7 @@ void pcDevAssignPromptInput() {
         if (cancel) {
             sDevAssignResult = PC_DEVASSIGN_CANCELLED;
             sDevAssignOpen   = false;
+            pc_captain_preview_release();
             return;
         }
         // El botón con el que se acaba de reclamar el mando sigue pulsado.
@@ -5537,9 +5594,11 @@ void pcDevAssignPromptInput() {
         if (sDevAssignChoice == 1) { devAssignRestart(); return; }
         sDevAssignResult = PC_DEVASSIGN_OK;
         sDevAssignOpen   = false;
+        pc_captain_preview_release();
     } else if (cancel) {
         sDevAssignResult = PC_DEVASSIGN_CANCELLED;
         sDevAssignOpen   = false;
+        pc_captain_preview_release();
     }
 }
 } // namespace
@@ -5553,30 +5612,53 @@ void pc_devassign_prompt_draw(void) {
 
     const int screenW = pc_gfx_menu_wide() ? pc_gfx_menu_virt_width() : gfx->mScreenWidth;
     const int screenH = gfx->mScreenHeight;
+    const int panelW = 620;
+
+    if (sDevAssignStep == DEVASSIGN_PickP1 || sDevAssignStep == DEVASSIGN_PickP2) {
+        // El mismo selector que el de 1 jugador (pc_captain_prompt_draw):
+        // con Pikmin 2 cabe la segunda fila y, a pantalla ancha, las
+        // tarjetas llevan el modelo 3D.
+        const int player = devAssignPlayer();
+        const int panelH = 260 + captainExtraH();
+        const int panelX = screenW / 2 - panelW / 2, panelY = screenH / 2 - panelH / 2;
+        sCaptainCards3D  = pc_gfx_menu_wide() != 0;
+        {
+            PcSettingsP2DFrame nativeFrame(screenW, screenH);
+            GlassTextScope glassText;
+            Matrix4f ortho;
+            gfx->setOrthogonal(ortho.mMtx, RectArea(0, 0, screenW, screenH));
+            drawPikminPanel(gfx, panelX, panelY, panelW, panelH, 22);
+            drawPikminHeader(gfx, panelX, panelY, panelW, "Captain");
+            captainPickDraw(gfx, panelX, panelY, panelW, player, sDevAssignCaptain[player],
+                            captainSecondRow() ? "Arrows: choose    A / Enter: confirm    B: reassign    Esc: back"
+                                               : "Left/Right: choose    A / Enter: confirm    B: reassign    Esc: back");
+        }
+        if (sCaptainCards3D) {
+            // Mismo hueco que el sprite: encima del nombre de la tarjeta.
+            for (int i = 0; i < PC_CAPTAIN_COUNT; i++) {
+                int boxX = 0, boxY = 0;
+                if (!captainCardPos(i, panelX, panelY, &boxX, &boxY)) continue;
+                pc_captain_preview_draw(i, boxX + 4, boxY + 4, kCaptainBoxW - 8, kCaptainBoxH - 44, screenW, screenH,
+                                        i == sDevAssignCaptain[player]);
+            }
+            Matrix4f ortho;
+            gfx->setOrthogonal(ortho.mMtx, RectArea(0, 0, screenW, screenH));
+        }
+        return;
+    }
+
     PcSettingsP2DFrame nativeFrame(screenW, screenH);
     GlassTextScope glassText;
 
     Matrix4f ortho;
     gfx->setOrthogonal(ortho.mMtx, RectArea(0, 0, screenW, screenH));
 
-
-    const int panelW = 620;
-    // Al elegir capitán, con Pikmin 2 cabe la segunda fila de tarjetas.
-    const bool picking = sDevAssignStep == DEVASSIGN_PickP1 || sDevAssignStep == DEVASSIGN_PickP2;
-    const int panelH = 260 + (picking ? captainExtraH() : 0);
+    const int panelH = 260;
     const int panelX = screenW / 2 - panelW / 2;
     const int panelY = screenH / 2 - panelH / 2;
 
     drawPikminPanel(gfx, panelX, panelY, panelW, panelH, 22);
     drawPikminHeader(gfx, panelX, panelY, panelW, "Controllers");
-
-    if (sDevAssignStep == DEVASSIGN_PickP1 || sDevAssignStep == DEVASSIGN_PickP2) {
-        const int player = devAssignPlayer();
-        captainPickDraw(gfx, panelX, panelY, panelW, player, sDevAssignCaptain[player],
-                        captainSecondRow() ? "Arrows: choose    A / Enter: confirm    B: reassign    Esc: back"
-                                        : "Left/Right: choose    A / Enter: confirm    B: reassign    Esc: back");
-        return;
-    }
 
     if (sDevAssignStep != DEVASSIGN_Confirm) {
         const int player = devAssignPlayer();
@@ -5769,8 +5851,20 @@ void vsRuleText(int row, const char** label, char* value, size_t n)
 }
 
 bool sVsRulesOpen   = false;
-int sVsRulesRow     = 0;
+int sVsRulesRow     = 0; // 0 = mapa, 1.. = reglas (vsRuleField(row - 1))
 int sVsRulesResult  = PC_DEVASSIGN_PENDING;
+constexpr int kVsMenuRows = kVsRuleRows + 1;
+
+// Selector de mapa: posición en pc_vs_map_list y, si al pulsar A no se pudo
+// montar, por qué (se enseña en la tarjeta de abajo y no se empieza).
+int sVsMapIndex = 0;
+std::string sVsMapError;
+
+const PcVsMapEntry& vsMapEntry()
+{
+    const std::vector<PcVsMapEntry>& list = pc_vs_map_list(false);
+    return list[std::clamp(sVsMapIndex, 0, int(list.size()) - 1)];
+}
 int sVsEndChoice    = 0; // 0 revancha, 1 título
 Uint32 sVsOverSince = 0; // cuándo acabó la partida (la pantalla final sale un poco después)
 constexpr Uint32 kVsEndScreenDelayMs = 2500;
@@ -5805,14 +5899,26 @@ void pcVsRulesInput()
         if (promptPadA(ctl)) accept = true;
         if (promptPadB(ctl)) cancel = true;
     }
-    if (up) sVsRulesRow = (sVsRulesRow + kVsRuleRows - 1) % kVsRuleRows;
-    if (down) sVsRulesRow = (sVsRulesRow + 1) % kVsRuleRows;
-    if (left || right) {
-        int* field  = vsRuleField(sVsRulesRow);
-        const int n = vsRuleCount(sVsRulesRow);
+    if (up) sVsRulesRow = (sVsRulesRow + kVsMenuRows - 1) % kVsMenuRows;
+    if (down) sVsRulesRow = (sVsRulesRow + 1) % kVsMenuRows;
+    if ((left || right) && sVsRulesRow == 0) {
+        const int n   = int(pc_vs_map_list(false).size());
+        sVsMapIndex   = (sVsMapIndex + (left ? n - 1 : 1)) % n;
+        sConfig.vsMap = vsMapEntry().id;
+        sVsMapError.clear();
+    } else if (left || right) {
+        int* field  = vsRuleField(sVsRulesRow - 1);
+        const int n = vsRuleCount(sVsRulesRow - 1);
         *field      = (*field + (left ? n - 1 : 1)) % n;
     }
     if (accept) {
+        // Se monta ya: si el mapa no vale, se dice aquí y no se empieza.
+        pc_vs_map_select(sConfig.vsMap);
+        if (const char* why = pc_vs_arena_prepare()) {
+            sVsMapError = why;
+            sVsRulesRow = 0;
+            return;
+        }
         saveConfig();
         sVsRulesResult = PC_DEVASSIGN_OK;
         sVsRulesOpen   = false;
@@ -5865,6 +5971,14 @@ void pc_vsrules_prompt_open(void) {
     sVsRulesOpen   = true;
     sVsRulesRow    = 0;
     sVsRulesResult = PC_DEVASSIGN_PENDING;
+    // La lista se vuelve a leer cada vez (mapas copiados con el juego abierto).
+    const std::vector<PcVsMapEntry>& maps = pc_vs_map_list(true);
+    sVsMapIndex = 0;
+    for (size_t i = 0; i < maps.size(); i++) {
+        if (maps[i].id == sConfig.vsMap) sVsMapIndex = int(i);
+    }
+    sConfig.vsMap = vsMapEntry().id;
+    sVsMapError.clear();
     pc_menu_edge_reset();
 }
 bool pc_vsrules_prompt_active(void) { return sVsRulesOpen; }
@@ -5878,6 +5992,22 @@ void vsText(int x, int y, const char* s, Colour c, int fw = 12, int fh = 18)
     else drawTextOutline(x, y, "%s", c, Colour(8, 12, 28, 255), s);
 }
 int vsTextW(const char* s, int fw = 12) { return pc_settings_p2d_active() ? pc_settings_p2d_text_width(s, fw) : menuTextWidth(s); }
+
+// Copia `s` en `out` recortada con "..." para que quepa en maxW (sin partir
+// letras UTF-8: los mapas pueden traer tildes).
+void vsFitText(const char* s, char* out, size_t n, int maxW, int fw)
+{
+    snprintf(out, n, "%s", s);
+    if (vsTextW(out, fw) <= maxW) return;
+    std::string cut(out);
+    while (!cut.empty()) {
+        cut.pop_back();
+        while (!cut.empty() && (u8(cut.back()) & 0xC0) == 0x80) cut.pop_back();
+        if (!cut.empty() && (u8(cut.back()) & 0x80)) cut.pop_back(); // primer byte de la letra partida
+        snprintf(out, n, "%s...", cut.c_str());
+        if (vsTextW(out, fw) <= maxW) return;
+    }
+}
 
 Texture* vsIcon(const char* name)
 {
@@ -5995,12 +6125,20 @@ void pc_vsrules_prompt_draw(void) {
     // ── Derecha: reglas ─────────────────────────────────────────────────────
     vsText(rx + 8, panelY + 56, es ? "REGLAS" : "RULES", title, 14, 21);
     const int rowsY = panelY + 88;
-    for (int row = 0; row < kVsRuleRows; row++) {
+    constexpr int kRowH = 34;
+    const PcVsMapEntry& map = vsMapEntry();
+    const bool mapBad       = !map.error.empty() || !sVsMapError.empty();
+    for (int row = 0; row < kVsMenuRows; row++) {
         const char* label = "";
         char value[48];
-        vsRuleText(row, &label, value, sizeof(value));
+        if (row == 0) {
+            label = es ? "Mapa" : "Map";
+            vsFitText(map.name.c_str(), value, sizeof(value), colW / 2, 11);
+        } else {
+            vsRuleText(row - 1, &label, value, sizeof(value));
+        }
         const bool sel = row == sVsRulesRow;
-        const int ry   = rowsY + row * 38;
+        const int ry   = rowsY + row * kRowH;
         // Fila elegida: bolita de cristal delante y valor en naranja (estilo
         // burbuja), en vez de la placa amarilla.
         if (sel && pc_settings_p2d_active())
@@ -6009,15 +6147,54 @@ void pc_vsrules_prompt_draw(void) {
         vsText(rx + 10, ry, label, c, 11, 17);
         char shown[64];
         snprintf(shown, sizeof(shown), sel ? "< %s >" : "%s", value);
-        vsText(rx + colW - 10 - vsTextW(shown, 11), ry, shown, sel ? Colour(255, 170, 30, 255) : c, 11, 17);
+        const Colour valueC = row == 0 && mapBad ? Colour(255, 110, 90, 255) : (sel ? Colour(255, 170, 30, 255) : c);
+        vsText(rx + colW - 10 - vsTextW(shown, 11), ry, shown, valueC, 11, 17);
     }
-    const char* h1;
-    const char* h2;
-    vsRuleHelp(sVsRulesRow, &h1, &h2);
-    const int descY = rowsY + kVsRuleRows * 38 + 6;
+    const int descY = rowsY + kVsMenuRows * kRowH + 6;
     vsCard(gfx, rx - 4, descY, colW + 8, 60);
-    vsText(rx + 10, descY + 12, h1, body, 10, 15);
-    vsText(rx + 10, descY + 32, h2, body, 10, 15);
+    if (sVsRulesRow == 0 || !sVsMapError.empty()) {
+        // Mapa: miniatura (si trae thumb.png) y autor, o por qué no vale.
+        int tx = rx + 10;
+        int aw = 0, ah = 0;
+        const std::string thumbName = map.thumb.empty() ? std::string() : "@" + map.thumb;
+        Texture* thumb = thumbName.empty() ? nullptr : pc_art_texture(thumbName.c_str());
+        if (thumb && pc_art_size(thumbName.c_str(), &aw, &ah) && aw > 0 && ah > 0) {
+            const int th = 48, tw = std::min(80, aw * th / ah);
+            const Colour tint(255, 255, 255, 255);
+            const float u1 = float(aw) / thumb->mWidth, v1 = float(ah) / thumb->mHeight;
+            if (pc_settings_p2d_active()) {
+                pc_settings_p2d_image(rx + 2, descY + 6, tw, th, thumb, u1, v1, tint, 0.0f);
+            } else {
+                gfx->setColour(tint, true);
+                gfx->setAuxColour(tint);
+                gfx->useTexture(thumb, GX_TEXMAP0);
+                gfx->drawRectangle(RectArea(rx + 2, descY + 6, rx + 2 + tw, descY + 6 + th), RectArea(0, 0, aw, ah), nullptr);
+                gfx->useTexture(nullptr, GX_TEXMAP0);
+            }
+            tx = rx + 2 + tw + 10;
+        }
+        const int textW = rx + colW - 6 - tx;
+        char l1[96], l2[128];
+        const std::string& why = !sVsMapError.empty() ? sVsMapError : map.error;
+        if (!why.empty()) {
+            snprintf(l1, sizeof(l1), "%s", es ? "No se puede jugar:" : "Can't be played:");
+            vsFitText(why.c_str(), l2, sizeof(l2), textW, 10);
+        } else {
+            if (map.id.empty()) snprintf(l1, sizeof(l1), "%s", es ? "Arena de serie" : "Built-in arena");
+            else snprintf(l1, sizeof(l1), "%s", es ? "Mapa de la comunidad" : "Community map");
+            char by[96];
+            snprintf(by, sizeof(by), "%s %s", es ? "De" : "By", map.author.empty() ? "?" : map.author.c_str());
+            vsFitText(by, l2, sizeof(l2), textW, 10);
+        }
+        vsText(tx, descY + 12, l1, why.empty() ? body : Colour(255, 110, 90, 255), 10, 15);
+        vsText(tx, descY + 32, l2, body, 10, 15);
+    } else {
+        const char* h1;
+        const char* h2;
+        vsRuleHelp(sVsRulesRow - 1, &h1, &h2);
+        vsText(rx + 10, descY + 12, h1, body, 10, 15);
+        vsText(rx + 10, descY + 32, h2, body, 10, 15);
+    }
 
     const char* help = es ? "Arriba/Abajo: opción   Izq/Der: cambiar   A: jugar   B: salir"
                           : "Up/Down: option   Left/Right: change   A: play   B: back";

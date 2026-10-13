@@ -1,4 +1,5 @@
 #include "pc_p2_captains.h"
+#include "Game/pcCoop.h"
 #include "IDelegate.h"
 #ifdef PIKI_PC_PORT
 extern "C" float pc_settings_get_throw_speed_scale(void);
@@ -7,6 +8,11 @@ extern "C" int pc_settings_get_throw_cancel_b(void);
 extern "C" int pc_settings_get_mouse_wheel_action(void);
 extern "C" int pc_settings_get_quick_grab(void);
 int pc_window_take_wheel_steps(void);
+extern "C" int pc_window_get_keyboard_owner(void);
+namespace Game {
+struct Navi;
+}
+static bool pcWheelIsMine(Game::Navi* navi);
 // Mod "Throw Speed": velocidad de las animaciones de coger y lanzar.
 #define PC_THROW_ANIM_SPEED (30.0f * pc_settings_get_throw_speed_scale())
 #else
@@ -507,7 +513,7 @@ void NaviWalkState::exec(Navi* navi)
 				mDismissTimer = 0;
 			}
 
-			if (!gameSystem->paused_soft() && moviePlayer->mDemoState == DEMOSTATE_Inactive && !gameSystem->isMultiplayerMode()
+			if (!gameSystem->paused_soft() && moviePlayer->mDemoState == DEMOSTATE_Inactive && !PC_TWO_CAPTAIN_PLAY()
 			    && navi->mController1->isButtonDown(JUTGamePad::PRESS_Y) && playData->isDemoFlag(DEMO_Unlock_Captain_Switch)) {
 
 				Navi* otherNavi = naviMgr->getAt(GET_OTHER_NAVI(navi));
@@ -2506,7 +2512,7 @@ void NaviSaraiState::exec(Navi* navi)
 		}
 	}
 
-	if (!gameSystem->paused_soft() && !gameSystem->isMultiplayerMode() && navi->mController1
+	if (!gameSystem->paused_soft() && !PC_TWO_CAPTAIN_PLAY() && navi->mController1
 	    && navi->mController1->isButtonDown(JUTGamePad::PRESS_Y)) {
 
 		Navi* currNavi = naviMgr->getAt(GET_OTHER_NAVI(navi));
@@ -2597,6 +2603,9 @@ void NaviContainerState::init(Navi* navi, StateArg* stateArg)
 	mOnyon = static_cast<NaviContainerArg*>(stateArg)->mOnyon;
 
 	Screen::gGame2DMgr->setGamePad(navi->mController1);
+#ifdef PIKI_PC_PORT
+	pc_p2_coop_set_menu_player(navi->mNaviIndex); // co-op: la partida no le quita el mando cada frame
+#endif
 	int type      = mOnyon->mOnyonType;
 	mIsScreenOpen = false;
 
@@ -2696,6 +2705,9 @@ void NaviContainerState::exec(Navi* navi)
 				} else {
 					mShipPikiType = Purple;
 				}
+#ifdef PIKI_PC_PORT
+				mOnyon->mPcExitNavi = navi;
+#endif
 				mOnyon->exitPikis(-pikiNum, mShipPikiType);
 			} else if (pikiNum > 0) {
 				if (isWhite) {
@@ -2721,8 +2733,14 @@ void NaviContainerState::exec(Navi* navi)
 			if (res < 0) {
 				Onyon* onyon = mOnyon;
 				if (onyon->mOnyonType == ONYON_TYPE_SHIP) {
+#ifdef PIKI_PC_PORT
+					onyon->mPcExitNavi = navi;
+#endif
 					onyon->exitPikis(-res, mShipPikiType);
 				} else {
+#ifdef PIKI_PC_PORT
+					onyon->mPcExitNavi = navi;
+#endif
 					onyon->exitPikis(-res, onyon->mOnyonType);
 				}
 			} else if (res > 0) {
@@ -3105,6 +3123,17 @@ void NaviThrowWaitState::restart(Navi* navi)
 	transit(navi, NSID_Walk, nullptr);
 }
 
+#ifdef PIKI_PC_PORT
+} // namespace Game
+// La rueda del raton es del jugador que tiene el teclado (co-op: puede ser P2).
+static bool pcWheelIsMine(Game::Navi* navi)
+{
+	const int player = navi && navi->mController1 && navi->mController1->getPortNum() == 1 ? 1 : 0;
+	return player == pc_window_get_keyboard_owner();
+}
+namespace Game {
+#endif
+
 /**
  * @note Address: 0x80185CB8
  * @note Size: 0x558
@@ -3113,7 +3142,8 @@ void NaviThrowWaitState::init(Navi* navi, StateArg* stateArg)
 {
 #ifdef PIKI_PC_PORT
 	// Las muescas acumuladas fuera de este estado no deben cambiar el color al coger.
-	if (pc_settings_get_mouse_wheel_action() == 0) {
+	// Co-op: la rueda es de quien tenga el raton (el del puerto de este capitan).
+	if (pc_settings_get_mouse_wheel_action() == 0 && pcWheelIsMine(navi)) {
 		pc_window_take_wheel_steps();
 	}
 #endif
@@ -3311,7 +3341,7 @@ void NaviThrowWaitState::exec(Navi* navi)
 	}
 	// Mod "Mouse Wheel" (color): cada muesca equivale a la cruceta izquierda/derecha.
 	int pcWheel = 0;
-	if (pc_settings_get_mouse_wheel_action() == 0) {
+	if (pc_settings_get_mouse_wheel_action() == 0 && pcWheelIsMine(navi)) {
 		pcWheel = pc_window_take_wheel_steps();
 	}
 	if ((navi->mController1->getButtonDown() & Controller::PRESS_DPAD_RIGHT) || pcWheel < 0) {
@@ -3641,7 +3671,7 @@ void NaviPelletState::exec(Navi* navi)
 	}
 
 	if (navi->mController1 && moviePlayer->mDemoState == DEMOSTATE_Inactive) {
-		if (!gameSystem->paused_soft() && !gameSystem->isMultiplayerMode() && navi->mController1
+		if (!gameSystem->paused_soft() && !PC_TWO_CAPTAIN_PLAY() && navi->mController1
 		    && navi->mController1->isButtonDown(JUTGamePad::PRESS_Y) && playData->isDemoFlag(DEMO_Unlock_Captain_Switch)) {
 
 			Navi* currNavi = naviMgr->getAt(GET_OTHER_NAVI(navi));

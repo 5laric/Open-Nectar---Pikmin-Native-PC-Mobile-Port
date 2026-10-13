@@ -221,3 +221,25 @@ int pc_vs_take_exit_request(void)
 	sExitRequest   = PC_VS_EXIT_NONE;
 	return kind;
 }
+
+// ── Arranque directo (--vs-map) ────────────────────────────────────────────
+namespace {
+int sDirect = 0; // 0 no, 1 pedido, 2 camino del VS, 3 hecho
+}
+
+void pc_vs_direct_request(void) { sDirect = 1; }
+bool pc_vs_direct_requested(void) { return sDirect == 1; }
+
+bool pc_vs_direct_take_title(void)
+{
+	if (sDirect != 1) return false;
+	sDirect = 2;
+	return true;
+}
+
+bool pc_vs_direct_take_setup(void)
+{
+	if (sDirect != 2) return false;
+	sDirect = 3;
+	return true;
+}

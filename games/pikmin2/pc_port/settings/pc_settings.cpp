@@ -56,6 +56,7 @@
 #include "pc_speedrun.h"
 #if PIKI_P2_HOST
 #include "pc_p2_captains.h"
+#include "pc_p2_coop.h"
 #include "pc_p2_captain_preview.h"
 #endif
 #include "pc_livesplit.h"
@@ -4566,10 +4567,10 @@ void pc_devassign_prompt_draw(void) {
     drawHelpLine(panelX + panelW / 2, panelY + 212, help, Colour(150, 165, 195, 255));
 }
 #else
-// Pikmin 2 no tiene estas pantallas: nunca estan activas.
+// Pikmin 2 no tiene el selector 1P/2P ni el de capitán de Pikmin 1 (el co-op
+// es una opción del título): nunca están activos.
 namespace {
 void pcPlayerCountPromptInput() { }
-void pcDevAssignPromptInput() { }
 void pcCaptainPromptInput() { }
 } // namespace
 bool pc_playercount_prompt_active(void) { return false; }
@@ -4898,6 +4899,224 @@ void pc_newgame_prompt_draw(void)
     drawHelpLine(panelX + panelW / 2, panelY + panelH - 46, "Arrows: move    A: select    B: back", dim, panelW - 60);
 }
 
+// ─── Co-op de Pikmin 2: asignación de mandos ───
+//
+// Al entrar desde la opción Coop del título, antes del selector de capitanes
+// (singleGS_FileSelect). Como la de Pikmin 1, sin elegir capitán: P1 lleva a
+// Olimar y P2 a Louie (o los del selector de capitanes). docs/PLAN_COOP.md §5.
+
+namespace {
+const int kCoopPanelW = 560;
+const int kCoopPanelH = 330;
+const int kCoopBoxW   = 220;
+const int kCoopBoxH   = 40;
+int coopBoxX(int panelX, int i) { return panelX + 50 + i * (kCoopBoxW + 20); }
+int coopBoxY(int panelY) { return panelY + 150; }
+
+// Placa de una opción con el aspecto de la ventana New Game.
+void coopOption(DGXGraphics* gfx, int x, int y, const char* label, bool focus)
+{
+    const Colour gold(255, 207, 75, 255);
+    const Colour dim(150, 170, 190, 255);
+    if (focus) f1Text(x - 16, y + 10, ">", gold, 14, 20);
+    if (pc_settings_p2d_active()) {
+        if (focus) pc_settings_p2d_plate(x, y, kCoopBoxW, kCoopBoxH, 2);
+        pc_settings_p2d_plate(x, y, kCoopBoxW, kCoopBoxH, 1);
+    } else {
+        const Colour fill = focus ? Colour(70, 92, 150, 240) : Colour(26, 30, 48, 220);
+        gfx->setColour(fill, true);
+        gfx->setAuxColour(fill);
+        gfx->fillRectangle(RectArea(x, y, x + kCoopBoxW, y + kCoopBoxH));
+    }
+    f1Text(x + kCoopBoxW / 2 - f1TextW(label, 14) / 2, y + 10, label, focus ? Colour(255, 255, 255, 255) : dim, 14, 20);
+}
+
+void coopCentered(int panelX, int y, const char* text, const Colour& c)
+{
+    f1Text(panelX + kCoopPanelW / 2 - f1TextW(text, 12) / 2, y, text, c, 12, 18);
+}
+
+// Panel y título de la ventana sobre el marco 2D ya abierto.
+void coopBeginPanel(DGXGraphics* gfx, int screenW, int screenH, int* panelX, int* panelY, const char* title)
+{
+    Matrix4f ortho;
+    gfx->setOrthogonal(ortho.mMtx, RectArea(0, 0, screenW, screenH));
+    *panelX = screenW / 2 - kCoopPanelW / 2;
+    *panelY = screenH / 2 - kCoopPanelH / 2;
+    drawPikminPanel(gfx, *panelX, *panelY, kCoopPanelW, kCoopPanelH, 22);
+    drawPikminHeader(gfx, *panelX, *panelY, kCoopPanelW, title);
+}
+
+// Asignación: "Player 1, press a button", luego P2 y una confirmación. Un
+// dispositivo no puede ir a los dos, y tras cada asignación se descartan las
+// pulsaciones un rato para que un mando duplicado por el sistema no se cuele.
+enum { COOPASSIGN_WaitP1 = 0, COOPASSIGN_WaitP2 = 1, COOPASSIGN_Confirm = 2 };
+bool   sDevAssignOpen        = false;
+int    sDevAssignStep        = COOPASSIGN_WaitP1;
+int    sDevAssignChoice      = 0; // confirmación: 0 = Start, 1 = Reassign
+int    sDevAssignResult      = PC_DEVASSIGN_PENDING;
+Uint32 sDevAssignIgnoreUntil = 0;
+int    sDevAssignKind[2]     = { PC_INPUT_DEV_NONE, PC_INPUT_DEV_NONE };
+int    sDevAssignId[2]       = { -1, -1 };
+
+void devAssignRestart()
+{
+    sDevAssignStep = COOPASSIGN_WaitP1;
+    for (int p = 0; p < 2; p++) { sDevAssignKind[p] = PC_INPUT_DEV_NONE; sDevAssignId[p] = -1; }
+    pc_window_input_reset_assignment();
+    pc_window_discard_button_presses();
+    sDevAssignIgnoreUntil = SDL_GetTicks() + 300;
+    pc_menu_edge_reset();
+}
+
+const char* devAssignName(int player)
+{
+    if (sDevAssignKind[player] == PC_INPUT_DEV_KEYBOARD) return "Keyboard";
+    if (sDevAssignKind[player] == PC_INPUT_DEV_GAMEPAD) return pc_window_gamepad_name(sDevAssignId[player]);
+    return "-";
+}
+
+void pcDevAssignPromptInput()
+{
+    if (!sDevAssignOpen) return;
+
+    // Esc / B cancelan en cualquier paso (vuelven al selector 1P/2P).
+    bool cancel = keyWentDown(SDL_SCANCODE_ESCAPE);
+    cancel |= (sTouchFrameButtons & PAD_BUTTON_B) != 0;
+
+    if (sDevAssignStep != COOPASSIGN_Confirm) {
+        const int player = sDevAssignStep == COOPASSIGN_WaitP1 ? 0 : 1;
+        int kind = PC_INPUT_DEV_NONE, id = -1;
+        bool pressed = pc_window_take_button_press(&kind, &id);
+#if PIKI_PC_TOUCH
+        // Táctil: un toque vale como "P1 = pantalla" (va al pad 0). P2 necesita un mando.
+        if (sTouchTapPending) {
+            sTouchTapPending = false;
+            if (player == 0 && !pressed) {
+                pressed = true;
+                kind    = PC_INPUT_DEV_KEYBOARD;
+                id      = -1;
+            }
+        }
+#endif
+        if (cancel) {
+            sDevAssignResult = PC_DEVASSIGN_CANCELLED;
+            sDevAssignOpen   = false;
+            return;
+        }
+        if (!pressed || SDL_GetTicks() < sDevAssignIgnoreUntil) return;
+        // B de un mando sin asignar también cancela.
+        if (kind == PC_INPUT_DEV_GAMEPAD) {
+            SDL_GameController* ctl = SDL_GameControllerFromInstanceID(id);
+            if (ctl && pc_window_gamepad_bind_held(ctl, pc_window_get_gamepad_binding(PC_KEY_ACT_B))) {
+                sDevAssignResult = PC_DEVASSIGN_CANCELLED;
+                sDevAssignOpen   = false;
+                return;
+            }
+        }
+        // El dispositivo de P1 no puede repetirse en P2.
+        if (player == 1 && kind == sDevAssignKind[0] && (kind != PC_INPUT_DEV_GAMEPAD || id == sDevAssignId[0])) return;
+        sDevAssignKind[player] = kind;
+        sDevAssignId[player]   = id;
+        pc_window_input_assign(player, kind, id);
+        pc_window_discard_button_presses();
+        sDevAssignIgnoreUntil = SDL_GetTicks() + 400;
+        sDevAssignStep        = player == 0 ? COOPASSIGN_WaitP2 : COOPASSIGN_Confirm;
+        sDevAssignChoice      = 0;
+        pc_menu_edge_reset();
+        return;
+    }
+
+    // Confirmación: con teclado y con los dos mandos. Los flancos van por
+    // acción, no por mando: se combina el estado de los dos y se detecta una vez.
+    bool left   = keyWentDown(SDL_SCANCODE_LEFT)  || keyWentDown(SDL_SCANCODE_A);
+    bool right  = keyWentDown(SDL_SCANCODE_RIGHT) || keyWentDown(SDL_SCANCODE_D);
+    bool accept = keyWentDown(SDL_SCANCODE_RETURN) || keyWentDown(SDL_SCANCODE_SPACE);
+    left   |= (sTouchFrameButtons & PAD_BUTTON_LEFT) != 0;
+    right  |= (sTouchFrameButtons & PAD_BUTTON_RIGHT) != 0;
+    accept |= (sTouchFrameButtons & PAD_BUTTON_A) != 0;
+    SDL_GameController* pads[2] = { pc_window_get_controller(), pc_window_get_controller_p2() };
+    bool hLeft = false, hRight = false, hA = false, hB = false;
+    for (int i = 0; i < 2; i++) {
+        SDL_GameController* ctl = pads[i];
+        if (!ctl) continue;
+        hLeft  |= SDL_GameControllerGetButton(ctl, SDL_CONTROLLER_BUTTON_DPAD_LEFT) || menuStickHorizontal(ctl, -1);
+        hRight |= SDL_GameControllerGetButton(ctl, SDL_CONTROLLER_BUTTON_DPAD_RIGHT) || menuStickHorizontal(ctl, 1);
+        hA     |= pc_window_gamepad_bind_held(ctl, pc_window_get_gamepad_binding(PC_KEY_ACT_A));
+        hB     |= pc_window_gamepad_bind_held(ctl, pc_window_get_gamepad_binding(PC_KEY_ACT_B));
+    }
+    if (padEdge(hLeft, 2))  left   = true;
+    if (padEdge(hRight, 3)) right  = true;
+    if (padEdge(hA, 4))     accept = true;
+    if (padEdge(hB, 5))     cancel = true;
+    pc_window_discard_button_presses();
+    // El botón con el que P2 se acaba de asignar sigue pulsado.
+    if (SDL_GetTicks() < sDevAssignIgnoreUntil) return;
+
+    if (left || right) sDevAssignChoice = sDevAssignChoice ? 0 : 1;
+    if (accept) {
+        if (sDevAssignChoice == 1) { devAssignRestart(); return; }
+        sDevAssignResult = PC_DEVASSIGN_OK;
+        sDevAssignOpen   = false;
+    } else if (cancel) {
+        sDevAssignResult = PC_DEVASSIGN_CANCELLED;
+        sDevAssignOpen   = false;
+    }
+}
+} // namespace
+
+void pc_devassign_prompt_open(void)
+{
+    sDevAssignOpen   = true;
+    sDevAssignChoice = 0;
+    sDevAssignResult = PC_DEVASSIGN_PENDING;
+    devAssignRestart();
+}
+
+bool pc_devassign_prompt_active(void) { return sDevAssignOpen; }
+
+int pc_devassign_prompt_result(void) { return sDevAssignResult; }
+
+void pc_devassign_prompt_draw(void)
+{
+    PC_SETTINGS_HOST_ALLOC();
+    if (!sDevAssignOpen) return;
+    if (!gsys || !gsys->mDGXGfx) return;
+    DGXGraphics* gfx = static_cast<DGXGraphics*>(gsys->mDGXGfx);
+    ensureFont();
+    if (!sFont) return;
+    int screenW, screenH;
+    ngScreen(&screenW, &screenH);
+    PcSettingsP2DFrame nativeFrame(screenW, screenH);
+    int panelX, panelY;
+    coopBeginPanel(gfx, screenW, screenH, &panelX, &panelY, "Controllers");
+
+    const Colour gold(255, 207, 75, 255);
+    const Colour pale(205, 239, 250, 255);
+    const Colour dim(150, 170, 190, 255);
+    char line[160];
+    for (int p = 0; p < 2; p++) {
+        const bool waiting = sDevAssignStep == p;
+        snprintf(line, sizeof(line), "Player %d (%s):  %s", p + 1, p == 0 ? "Olimar" : "Louie",
+                 waiting ? "press a button" : devAssignName(p));
+        coopCentered(panelX, panelY + 80 + p * 30, line, waiting ? gold : pale);
+    }
+
+    if (sDevAssignStep == COOPASSIGN_Confirm) {
+        const char* labels[2] = { "Start", "Reassign" };
+        for (int i = 0; i < 2; i++) coopOption(gfx, coopBoxX(panelX, i), coopBoxY(panelY) + 20, labels[i], i == sDevAssignChoice);
+    } else {
+        const char* hint = sDevAssignStep == COOPASSIGN_WaitP2
+            ? (pc_window_num_gamepads() > 0 ? "Player 2: press a button on another controller."
+                                            : "Connect a controller for Player 2.")
+            : "Player 1: press a key or a controller button.";
+        coopCentered(panelX, panelY + 180, hint, dim);
+    }
+    drawHelpLine(panelX + kCoopPanelW / 2, panelY + kCoopPanelH - 46,
+                 sDevAssignStep == COOPASSIGN_Confirm ? "Left/Right: choose    A: confirm    B: back" : "B / Esc: back", dim,
+                 kCoopPanelW - 60);
+}
+
 // ─── Selector de capitanes de Pikmin 2 ───
 //
 // Como la selección de un juego de lucha: en el centro, una rejilla 3x3 con
@@ -4916,6 +5135,14 @@ int  sCapSelActive = 0;     // capitán que elige: 0 = rojo, 1 = azul
 int  sCapSelIndex  = 0;     // tarjeta bajo la burbuja activa
 bool sCapSelStart  = false; // foco en el botón Start
 int  sCapSelChoice[2] = { PC_P2_CHAR_OLIMAR, -1 }; // -1 = original (solo capitán 2)
+// Co-op: cada jugador elige su capitán a la vez, con su cursor y su mando
+// (el teclado, de quien lo tenga). A elige y queda listo, B lo deshace (P1
+// sin elegir vuelve atrás) y con los dos listos A o Start empiezan.
+bool sCsCoop        = false;
+int  sCsCursor[2]   = { 0, 0 };
+bool sCsReady[2]    = { false, false };
+enum { CS_Left, CS_Right, CS_Up, CS_Down, CS_A, CS_B, CS_Start, CS_InputCount };
+bool sCsHeld[2][CS_InputCount];
 
 const int kCsPanelW = 636;
 const int kCsPanelH = 456;
@@ -5017,9 +5244,91 @@ void csAssign(int index)
     csSetActive(1 - sCapSelActive);
 }
 
+// Lo pulsado este frame por un jugador: su teclado (si es suyo) y su mando,
+// con flancos propios (pc_menu_edge es uno por acción y los mandos se pisarían).
+void csCoopPressed(int player, bool pressed[CS_InputCount])
+{
+    for (int i = 0; i < CS_InputCount; i++) pressed[i] = false;
+    if (pc_window_get_keyboard_owner() == player) {
+        pressed[CS_Left]  = keyWentDown(SDL_SCANCODE_LEFT) || keyWentDown(SDL_SCANCODE_A);
+        pressed[CS_Right] = keyWentDown(SDL_SCANCODE_RIGHT) || keyWentDown(SDL_SCANCODE_D);
+        pressed[CS_Up]    = keyWentDown(SDL_SCANCODE_UP) || keyWentDown(SDL_SCANCODE_W);
+        pressed[CS_Down]  = keyWentDown(SDL_SCANCODE_DOWN) || keyWentDown(SDL_SCANCODE_S);
+        pressed[CS_A]     = keyWentDown(SDL_SCANCODE_RETURN) || keyWentDown(SDL_SCANCODE_SPACE);
+        pressed[CS_B]     = keyWentDown(SDL_SCANCODE_ESCAPE);
+        pressed[CS_Start] = keyWentDown(SDL_SCANCODE_TAB);
+    }
+    SDL_GameController* ctl = player == 0 ? pc_window_get_controller() : pc_window_get_controller_p2();
+    bool held[CS_InputCount] = {};
+    if (ctl) {
+        held[CS_Left]  = SDL_GameControllerGetButton(ctl, SDL_CONTROLLER_BUTTON_DPAD_LEFT) || menuStickHorizontal(ctl, -1);
+        held[CS_Right] = SDL_GameControllerGetButton(ctl, SDL_CONTROLLER_BUTTON_DPAD_RIGHT) || menuStickHorizontal(ctl, 1);
+        held[CS_Up]    = SDL_GameControllerGetButton(ctl, SDL_CONTROLLER_BUTTON_DPAD_UP) || menuStickVertical(ctl, -1);
+        held[CS_Down]  = SDL_GameControllerGetButton(ctl, SDL_CONTROLLER_BUTTON_DPAD_DOWN) || menuStickVertical(ctl, 1);
+        held[CS_A]     = pc_window_gamepad_bind_held(ctl, pc_window_get_gamepad_binding(PC_KEY_ACT_A));
+        held[CS_B]     = pc_window_gamepad_bind_held(ctl, pc_window_get_gamepad_binding(PC_KEY_ACT_B));
+        held[CS_Start] = SDL_GameControllerGetButton(ctl, SDL_CONTROLLER_BUTTON_START);
+    }
+    for (int i = 0; i < CS_InputCount; i++) {
+        if (held[i] && !sCsHeld[player][i]) pressed[i] = true;
+        sCsHeld[player][i] = held[i];
+    }
+}
+
+void csCoopStart()
+{
+    sConfig.p2Captain1 = sCapSelChoice[0];
+    sConfig.p2Captain2 = sCapSelChoice[1];
+    pc_p2_captain_set_choice(0, sCapSelChoice[0]);
+    pc_p2_captain_set_choice(1, sCapSelChoice[1]);
+    saveConfig();
+    sCapSelResult = PC_CAPSEL_START;
+    sCapSelOpen   = false;
+}
+
+void pcCaptainSelectCoopInput()
+{
+    sTouchTapPending = false;
+    bool pressed[2][CS_InputCount];
+    for (int p = 0; p < 2; p++) csCoopPressed(p, pressed[p]);
+    const bool bothReady = sCsReady[0] && sCsReady[1];
+    for (int p = 0; p < 2; p++) {
+        const bool* in = pressed[p];
+        if (bothReady && (in[CS_A] || in[CS_Start])) {
+            csCoopStart();
+            return;
+        }
+        if (in[CS_B]) {
+            if (sCsReady[p]) {
+                sCsReady[p] = false;
+            } else if (p == 0) {
+                sCapSelResult = PC_CAPSEL_BACK;
+                sCapSelOpen   = false;
+                return;
+            }
+            continue;
+        }
+        if (sCsReady[p]) continue;
+        int& cursor   = sCsCursor[p];
+        const int row = cursor / kCsCols, col = cursor % kCsCols;
+        if (in[CS_Left]) cursor = row * kCsCols + (col + kCsCols - 1) % kCsCols;
+        if (in[CS_Right]) cursor = row * kCsCols + (col + 1) % kCsCols;
+        if (in[CS_Up] && row > 0) cursor -= kCsCols;
+        if (in[CS_Down] && row < 2) cursor += kCsCols;
+        if (in[CS_A] || in[CS_Start]) {
+            if (!csCardChosen(p, cursor)) sCapSelChoice[p] = cursor;
+            sCsReady[p] = true;
+        }
+    }
+}
+
 void pcCaptainSelectInput()
 {
     if (!sCapSelOpen) return;
+    if (sCsCoop) {
+        pcCaptainSelectCoopInput();
+        return;
+    }
     if (!sCapSelArmed) {
         SDL_GameController* pad = pc_window_get_controller();
         const bool padHeld = pad && (SDL_GameControllerGetButton(pad, SDL_CONTROLLER_BUTTON_A)
@@ -5151,6 +5460,15 @@ void pc_captain_select_open(void)
     // El cursor empieza sobre Start: lo normal es repetir la última elección.
     sCapSelStart     = true;
     csSetActive(0);
+    // Co-op: cada uno con su cursor sobre su elección; el botón que abrió la
+    // pantalla sigue pulsado (los flancos empiezan como pulsados).
+    sCsCoop = pc_p2_coop_pending() != 0;
+    for (int p = 0; p < 2; p++) {
+        sCsCursor[p] = csCardIndex(sCapSelChoice[p]);
+        sCsReady[p]  = false;
+        for (int i = 0; i < CS_InputCount; i++) sCsHeld[p][i] = true;
+    }
+    if (sCsCoop) sCapSelStart = false;
     sCsCardCount     = 0;
     pc_menu_edge_reset();
 }
@@ -5196,7 +5514,7 @@ void pc_captain_select_draw(void)
     // Paneles de los capitanes: el activo se ilumina con su color.
     for (int captain = 0; captain < 2; ++captain) {
         const int px = csSideX(panelX, captain), py = csTop(panelY);
-        const bool active = !sCapSelStart && captain == sCapSelActive;
+        const bool active = sCsCoop ? !sCsReady[captain] : !sCapSelStart && captain == sCapSelActive;
         const Colour colour = captain == 0 ? kCsRed : kCsBlue;
         if (atlas) {
             const u8 alpha = active ? 200 : 90;
@@ -5210,6 +5528,11 @@ void pc_captain_select_draw(void)
         csCenteredText(px + kCsSideW / 2, py + 18, kCsSideW - 16, captain == 0 ? "Captain 1" : "Captain 2", active ? gold : white, 15,
                        21);
         csCenteredText(px + kCsSideW / 2, py + kCsSideH - 30, kCsSideW - 16, csLongName(csResolved(captain)), white, 12, 17);
+        if (sCsCoop) {
+            // Co-op: de quién es cada panel y si ya ha elegido.
+            const char* who = sCsReady[captain] ? (captain == 0 ? "P1 ready" : "P2 ready") : (captain == 0 ? "P1" : "P2");
+            csCenteredText(px + kCsSideW / 2, py + 38, kCsSideW - 16, who, sCsReady[captain] ? gold : dim, 11, 15);
+        }
         if (sCsCardCount < int(sizeof(sCsCards) / sizeof(sCsCards[0]))) {
             CsCard& card = sCsCards[sCsCardCount++];
             card.character = csResolved(captain);
@@ -5230,10 +5553,14 @@ void pc_captain_select_draw(void)
                 pc_settings_p2d_tinted_plate(cx + 3, cy + 3, kCsCardW - 6, kCsCardH - 6, top, bottom);
             }
             // La tarjeta bajo el cursor se tiñe con el color del capitán que elige.
-            if (!sCapSelStart && i == sCapSelIndex) {
-                const Colour hover = sCapSelActive == 0 ? Colour(255, 120, 105, 170) : Colour(110, 165, 255, 170);
-                const Colour hoverBottom(hover.r * 3 / 4, hover.g * 3 / 4, hover.b * 3 / 4, 170);
-                pc_settings_p2d_tinted_plate(cx + 3, cy + 3, kCsCardW - 6, kCsCardH - 6, hover, hoverBottom);
+            for (int captain = 0; captain < 2; ++captain) {
+                const bool hovering = sCsCoop ? !sCsReady[captain] && i == sCsCursor[captain]
+                                              : captain == sCapSelActive && !sCapSelStart && i == sCapSelIndex;
+                if (hovering) {
+                    const Colour hover = captain == 0 ? Colour(255, 120, 105, 170) : Colour(110, 165, 255, 170);
+                    const Colour hoverBottom(hover.r * 3 / 4, hover.g * 3 / 4, hover.b * 3 / 4, 170);
+                    pc_settings_p2d_tinted_plate(cx + 3, cy + 3, kCsCardW - 6, kCsCardH - 6, hover, hoverBottom);
+                }
             }
             pc_settings_p2d_plate(cx, cy, kCsCardW, kCsCardH, 1);
         } else {
@@ -5254,16 +5581,18 @@ void pc_captain_select_draw(void)
     // cursor y gira; la otra queda quieta sobre su elección.
     if (atlas) {
         for (int captain = 0; captain < 2; ++captain) {
-            const bool moving = captain == sCapSelActive && !sCapSelStart;
-            const int card    = moving ? sCapSelIndex : csCardIndex(sCapSelChoice[captain]);
+            const bool moving = sCsCoop ? !sCsReady[captain] : captain == sCapSelActive && !sCapSelStart;
+            const int card    = !moving ? csCardIndex(sCapSelChoice[captain]) : sCsCoop ? sCsCursor[captain] : sCapSelIndex;
             const int bx      = csCardX(panelX, card) + (captain == 0 ? 12 : kCsCardW - 12);
             pc_settings_p2d_cursor_tinted(bx, csCardY(panelY, card) + 12, moving ? 17 : 13, moving ? angle : 0.0f,
                                           captain == 0 ? kCsRed : kCsBlue);
         }
     }
 
-    // Botón Start.
+    // Botón Start (co-op: se enciende con los dos listos).
+    const bool pcStartLit = sCsCoop ? sCsReady[0] && sCsReady[1] : sCapSelStart;
     {
+        const bool sCapSelStart = pcStartLit;
         const int bx = csStartX(panelX), by = csStartY(panelY);
         if (sCapSelStart) f1Text(bx - 16, by + 9, ">", gold, 14, 20);
         if (atlas) {
@@ -5275,8 +5604,10 @@ void pc_captain_select_draw(void)
         f1Text(bx + kCsStartW / 2 - f1TextW("Start", 14) / 2, by + 9, "Start", sCapSelStart ? white : dim, 14, 20);
     }
 
-    drawHelpLine(panelX + kCsPanelW / 2, panelY + kCsPanelH - 46, "A: pick    L/R: switch captain    Start: go    B: back", dim,
-                 kCsPanelW - 60);
+    drawHelpLine(panelX + kCsPanelW / 2, panelY + kCsPanelH - 46,
+                 sCsCoop ? "Each player: A: pick    B: change    Both ready: A / Start"
+                         : "A: pick    L/R: switch captain    Start: go    B: back",
+                 dim, kCsPanelW - 60);
 }
 
 void pc_captain_select_draw_3d(void)
@@ -5699,7 +6030,6 @@ void pc_speedrun_menu_draw(void)
     drawHelpLine(panelX + panelW / 2, panelY + panelH - 46, help, dim, panelW - 60);
 }
 
-bool pc_devassign_prompt_active(void) { return false; }
 bool pc_captain_prompt_active(void) { return false; }
 #endif // !PIKI_P2_HOST (pantallas de Pikmin 1: permadeath, cooperativo, capitan)
 
@@ -5708,11 +6038,6 @@ bool pc_captain_prompt_active(void) { return false; }
 // aparece cuando hay alguno, como en Pikmin 3 y 4: un cero permanente se
 // vuelve ruido y se deja de mirar.
 static Uint32 sLastGameplayFrameMs = 0;
-static int sLockOnActive = 0;
-
-void pc_settings_note_lock_on(int hasTarget) {
-    sLockOnActive = hasTarget;
-}
 
 #if PIKI_P2_HOST
 void pc_p2_cheats_poll(void);
@@ -5738,30 +6063,6 @@ void pc_settings_note_gameplay_frame(void) {
     pc_p2_trace_pikis();
     pc_achievements_poll(); // Pikmin 2: los logros salen de la partida (mira 1 vez/s)
 #endif
-}
-
-// Aviso de objetivo fijado. Provisional hasta que haya un anillo sobre el
-// enemigo: sin nada en pantalla no hay forma de saber si el mod responde.
-void pc_settings_draw_lock_on(void) {
-    PC_SETTINGS_HOST_ALLOC();
-    if (!sLockOnActive || !pc_settings_get_lock_on()) return;
-    if (sMenuOpen || pc_glass_menu_active()) return;
-    if (!gsys || !gsys->mDGXGfx) return;
-    if (sLastGameplayFrameMs == 0 || SDL_GetTicks() - sLastGameplayFrameMs > 250) return;
-
-    DGXGraphics* gfx = static_cast<DGXGraphics*>(gsys->mDGXGfx);
-    ensureFont();
-    if (!sFont) return;
-
-    const int screenW = gfx->mScreenWidth;
-    const int screenH = gfx->mScreenHeight;
-    PcSettingsP2DFrame nativeFrame(screenW, screenH);
-    Matrix4f ortho;
-    gfx->setOrthogonal(ortho.mMtx, RectArea(0, 0, screenW, screenH));
-
-    const char* txt = "LOCK ON";
-    drawTextOutline(screenW / 2 - menuTextWidth(txt) / 2, (int)(screenH * 0.12f),
-                    "%s", Colour(255, 90, 60, 255), Colour(30, 0, 0, 255), txt);
 }
 
 void pc_settings_draw_idle_counter(void) {
@@ -5793,7 +6094,8 @@ void pc_settings_draw_idle_counter(void) {
     // que se lea como una cifra más del bloque y no como un aviso suelto.
 #if PIKI_P2_HOST
     // Pikmin 2: con la fuente del juego (atlas de P2), no la de consola de P1.
-    const int x = (int)(screenW * 0.917f) - f1TextW(buf, 15) / 2;
+    // Pegado al borde derecho (alineado por la derecha, con un margen).
+    const int x = (int)(screenW * 0.975f) - f1TextW(buf, 15);
     const int y = (int)(screenH * 0.775f);
     f1Text(x, y, buf, Colour(255, 207, 75, 255), 15, 21);
 #else
@@ -7326,6 +7628,8 @@ const GroupRow kCameraRows[] = {
     { SRC_MODS, 14, "Free Camera", "Turn the camera freely, as in Pikmin 3. Mouse: push the cursor against the edge of its circle. Controller: right stick. L puts the camera back behind the captain. Swarming moves to its own Swarm button: bind it in Controls (on the pad every D-pad direction is a Pikmin 2 action)." },
     { SRC_MODS, 38, "Free Camera Speed", "How fast the right stick turns the free camera. 100% is the default." },
     { SRC_MODS, 18, "First Person", "Look at the world from inside the captain's helmet. Switch in game with the First Person button (V on keyboard, L3 on a controller)." },
+    { SRC_MODS, 6, "Co-op Split Screen", "How the screen divides in two-player co-op (Coop on the title screen). 2-Player Battle keeps its own top/bottom split." },
+    { SRC_MODS, 7, "Co-op Merged Camera", "Joins both halves into one view while the captains are close, and splits smoothly when they move apart." },
 #else
     { SRC_MODS, 14, "Free Camera", "Turn the camera freely, as in Pikmin 3. Mouse: push the cursor against the edge of its circle. Controller: right stick. L puts the camera back behind the captain. Swarming moves to its own Swarm button: bind it in Controls (on the pad every D-pad direction is a Pikmin 2 action)." },
     { SRC_MODS, 38, "Free Camera Speed", "How fast the right stick turns the free camera. 100% is the default." },
