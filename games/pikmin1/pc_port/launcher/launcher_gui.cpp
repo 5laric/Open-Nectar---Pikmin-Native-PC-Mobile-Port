@@ -1811,8 +1811,17 @@ bool HubWindow::open(const HubState& state, std::string& error)
     // Android: OpenGL ES 3.0 a pantalla completa (la ventana es la actividad).
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 #endif
+#ifdef __APPLE__
+    // macOS only offers a core profile at 3.2 or later. A 3.0 request without a
+    // profile gets a legacy 2.1 context, which fails here.
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
+#else
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#endif
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 #ifdef __ANDROID__
     SDL_Window* window = SDL_CreateWindow("Open Nectar", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 0, 0,
@@ -1856,6 +1865,8 @@ bool HubWindow::open(const HubState& state, std::string& error)
     ImGui_ImplSDL2_InitForOpenGL(window, context);
 #ifdef __ANDROID__
     ImGui_ImplOpenGL3_Init("#version 300 es");
+#elif defined(__APPLE__)
+    ImGui_ImplOpenGL3_Init("#version 150");
 #else
     ImGui_ImplOpenGL3_Init("#version 130");
 #endif
