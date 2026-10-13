@@ -273,10 +273,10 @@ const SDL_Scancode kDefaultKeyBindings[PC_KEY_ACT_COUNT] = {
     /* PC_KEY_ACT_DPAD_DOWN  */ SDL_SCANCODE_DOWN,
     /* PC_KEY_ACT_DPAD_LEFT  */ SDL_SCANCODE_LEFT,
     /* PC_KEY_ACT_DPAD_RIGHT */ SDL_SCANCODE_RIGHT,
-    /* PC_KEY_ACT_STICK_UP   */ SDL_SCANCODE_W,        // Main Stick: WASD
-    /* PC_KEY_ACT_STICK_DOWN */ SDL_SCANCODE_S,
-    /* PC_KEY_ACT_STICK_LEFT */ SDL_SCANCODE_A,
-    /* PC_KEY_ACT_STICK_RIGHT*/ SDL_SCANCODE_D,
+    /* PC_KEY_ACT_STICK_UP   */ SDL_SCANCODE_UP,       // Main Stick: arrow keys (WASD is the second key)
+    /* PC_KEY_ACT_STICK_DOWN */ SDL_SCANCODE_DOWN,
+    /* PC_KEY_ACT_STICK_LEFT */ SDL_SCANCODE_LEFT,
+    /* PC_KEY_ACT_STICK_RIGHT*/ SDL_SCANCODE_RIGHT,
     /* PC_KEY_ACT_CSTICK_UP   */ SDL_SCANCODE_T,       // C-Stick (fallback): TFGH
     /* PC_KEY_ACT_CSTICK_DOWN */ SDL_SCANCODE_G,
     /* PC_KEY_ACT_CSTICK_LEFT */ SDL_SCANCODE_F,
@@ -294,6 +294,11 @@ SDL_Scancode pc_window_default_key_binding2(int action) {
     case PC_KEY_ACT_A: return static_cast<SDL_Scancode>(PC_BIND_MOUSE_BASE + SDL_BUTTON_LEFT);
     case PC_KEY_ACT_B: return static_cast<SDL_Scancode>(PC_BIND_MOUSE_BASE + SDL_BUTTON_RIGHT);
     case PC_KEY_ACT_Z: return static_cast<SDL_Scancode>(PC_BIND_MOUSE_BASE + SDL_BUTTON_MIDDLE);
+    // WASD keeps moving Olimar and the menus, next to the arrow keys.
+    case PC_KEY_ACT_STICK_UP:    return SDL_SCANCODE_W;
+    case PC_KEY_ACT_STICK_LEFT:  return SDL_SCANCODE_A;
+    case PC_KEY_ACT_STICK_DOWN:  return SDL_SCANCODE_S;
+    case PC_KEY_ACT_STICK_RIGHT: return SDL_SCANCODE_D;
     default: return SDL_SCANCODE_UNKNOWN;
     }
 }

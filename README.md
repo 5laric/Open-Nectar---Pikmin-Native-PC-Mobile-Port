@@ -383,7 +383,7 @@ This port includes significant improvements over the original GameCube game, des
 
 | Action | Key |
 |--------|-----|
-| Movement (left stick) | W A S D |
+| Movement (left stick) | Arrow keys (W A S D also works) |
 | Pikmin formation (C-stick) | T (up) F (left) G (down) H (right) |
 | D-Pad | Arrow keys |
 | A — throw / confirm | Space |
