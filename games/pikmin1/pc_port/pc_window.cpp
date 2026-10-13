@@ -269,11 +269,11 @@ const SDL_Scancode kDefaultKeyBindings[PC_KEY_ACT_COUNT] = {
     /* PC_KEY_ACT_START   */ SDL_SCANCODE_RETURN,     // Start: Enter
     /* PC_KEY_ACT_L       */ SDL_SCANCODE_Q,          // L: Q
     /* PC_KEY_ACT_R       */ SDL_SCANCODE_E,          // R: E
-    /* PC_KEY_ACT_DPAD_UP    */ SDL_SCANCODE_UP,       // D-Pad: Arrow keys
-    /* PC_KEY_ACT_DPAD_DOWN  */ SDL_SCANCODE_DOWN,
-    /* PC_KEY_ACT_DPAD_LEFT  */ SDL_SCANCODE_LEFT,
-    /* PC_KEY_ACT_DPAD_RIGHT */ SDL_SCANCODE_RIGHT,
-    /* PC_KEY_ACT_STICK_UP   */ SDL_SCANCODE_UP,       // Main Stick: arrow keys (WASD is the second key)
+    /* PC_KEY_ACT_DPAD_UP    */ SDL_SCANCODE_W,        // D-Pad: WASD
+    /* PC_KEY_ACT_DPAD_DOWN  */ SDL_SCANCODE_S,
+    /* PC_KEY_ACT_DPAD_LEFT  */ SDL_SCANCODE_A,
+    /* PC_KEY_ACT_DPAD_RIGHT */ SDL_SCANCODE_D,
+    /* PC_KEY_ACT_STICK_UP   */ SDL_SCANCODE_UP,       // Main Stick: arrow keys
     /* PC_KEY_ACT_STICK_DOWN */ SDL_SCANCODE_DOWN,
     /* PC_KEY_ACT_STICK_LEFT */ SDL_SCANCODE_LEFT,
     /* PC_KEY_ACT_STICK_RIGHT*/ SDL_SCANCODE_RIGHT,
@@ -294,11 +294,6 @@ SDL_Scancode pc_window_default_key_binding2(int action) {
     case PC_KEY_ACT_A: return static_cast<SDL_Scancode>(PC_BIND_MOUSE_BASE + SDL_BUTTON_LEFT);
     case PC_KEY_ACT_B: return static_cast<SDL_Scancode>(PC_BIND_MOUSE_BASE + SDL_BUTTON_RIGHT);
     case PC_KEY_ACT_Z: return static_cast<SDL_Scancode>(PC_BIND_MOUSE_BASE + SDL_BUTTON_MIDDLE);
-    // WASD keeps moving Olimar and the menus, next to the arrow keys.
-    case PC_KEY_ACT_STICK_UP:    return SDL_SCANCODE_W;
-    case PC_KEY_ACT_STICK_LEFT:  return SDL_SCANCODE_A;
-    case PC_KEY_ACT_STICK_DOWN:  return SDL_SCANCODE_S;
-    case PC_KEY_ACT_STICK_RIGHT: return SDL_SCANCODE_D;
     default: return SDL_SCANCODE_UNKNOWN;
     }
 }
@@ -1275,15 +1270,15 @@ void pc_window_poll_events(PADStatus* pad) {
         triggerR = 255;
     }
 
-    // Main Stick (WASD) - ALWAYS controls Olimar movement
-    // In all modes: WASD = movement, mouse = cursor (in mouse modes)
+    // Main Stick (arrow keys) - ALWAYS controls Olimar movement
+    // In all modes: arrow keys = movement, mouse = cursor (in mouse modes)
     int dirX = 0, dirY = 0;
     if (held(PC_KEY_ACT_STICK_LEFT))  dirX -= 1;
     if (held(PC_KEY_ACT_STICK_RIGHT)) dirX += 1;
     if (held(PC_KEY_ACT_STICK_UP))    dirY += 1;
     if (held(PC_KEY_ACT_STICK_DOWN))  dirY -= 1;
 
-    // WASD always controls movement stick (Olimar movement)
+    // The arrow keys always control the movement stick (Olimar movement)
     stickX = (s8)(dirX * 127);
     stickY = (s8)(dirY * 127);
 
@@ -1356,7 +1351,7 @@ void pc_window_poll_events(PADStatus* pad) {
 
     // ── Mouse Input (Virtual Cursor) ──
     // In mouse modes: mouse controls virtual cursor (separate from movement stick)
-    // Movement stick (stickX/stickY) comes from WASD or gamepad left stick
+    // Movement stick (stickX/stickY) comes from the arrow keys or gamepad left stick
     if (effectiveControlMode() != PC_CONTROL_CLASSIC) {
         int mouseX, mouseY;
         Uint32 mouseState = 0;
