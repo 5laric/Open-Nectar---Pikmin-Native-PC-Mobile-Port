@@ -780,8 +780,7 @@ bool pc_window_init(const char* title, int width, int height) {
     // renderer, so macOS requests a 4.1 core context. Some renderer programs are
     // #version 330 core (pc_gfx.cpp, pc_postprocess.cpp), which needs GL 3.3, so
     // the context must be at least 3.3. Core profiles also need a named VAO for
-    // each attribute layout (see pc_gfx_init). See
-    // games/pikmin1/porting/macos-port-map.md.
+    // each attribute layout (see pc_gfx_init).
     //
     // GLES mode (PIKI_USE_GLES) requests an ES 3.0 context instead, which has
     // no compatibility/core distinction.
