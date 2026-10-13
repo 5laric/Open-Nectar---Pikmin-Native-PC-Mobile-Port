@@ -775,10 +775,12 @@ bool pc_window_init(const char* title, int width, int height) {
     }
     pc_gyro_init();
 
-    // The current GX translation backend intentionally uses compatibility
-    // features (GLSL 1.20 attribute/varying syntax and GL_QUADS). A Core
-    // profile accepts the context but rejects every draw, producing a black
-    // window without an SDL error.
+    // Linux and Windows request a GL 3.3 compatibility profile. macOS offers no
+    // compatibility profile above GL 2.1, and the 2.1 fallback cannot run the
+    // renderer, so macOS requests a 4.1 core context. Some renderer programs are
+    // #version 330 core (pc_gfx.cpp, pc_postprocess.cpp), which needs GL 3.3, so
+    // the context must be at least 3.3. Core profiles also need a named VAO for
+    // each attribute layout (see pc_gfx_init).
     //
     // GLES mode (PIKI_USE_GLES) requests an ES 3.0 context instead, which has
     // no compatibility/core distinction.
@@ -787,6 +789,11 @@ bool pc_window_init(const char* title, int width, int height) {
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+#elif defined(__APPLE__)
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
 #else
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
@@ -842,12 +849,15 @@ bool pc_window_init(const char* title, int width, int height) {
     pc_icon_apply(sWindow);
     sGLContext = SDL_GL_CreateContext(sWindow);
     if (!sGLContext) {
-#if !PIKI_USE_GLES
+#if !PIKI_USE_GLES && !defined(__APPLE__)
         printf("[PC Port Warning] SDL_GL_CreateContext Compatibility Profile failed: %s. Retrying with default profile...\n", SDL_GetError());
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
         SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, 0);
         sGLContext = SDL_GL_CreateContext(sWindow);
+#elif defined(__APPLE__) && !PIKI_USE_GLES
+        // The GL 2.1 fallback cannot run the renderer, so macOS does not retry.
+        printf("[PC Port Error] SDL_GL_CreateContext GL 4.1 core failed: %s\n", SDL_GetError());
 #else
         printf("[PC Port Error] SDL_GL_CreateContext ES 3.0 failed: %s\n", SDL_GetError());
 #endif
@@ -1470,9 +1480,19 @@ void pc_window_poll_events(PADStatus* pad) {
 #endif
 }
 
+unsigned int pc_gfx_begin_swap_framebuffer(void);
+void pc_gfx_end_swap_framebuffer(unsigned int bound);
+
 void pc_window_swap_buffers(void) {
     if (sWindow) {
+#if defined(__APPLE__)
+        // macOS shows the frame only when the default framebuffer is bound here.
+        const unsigned int renderTarget = pc_gfx_begin_swap_framebuffer();
+#endif
         SDL_GL_SwapWindow(sWindow);
+#if defined(__APPLE__)
+        pc_gfx_end_swap_framebuffer(renderTarget);
+#endif
         // VSync Off must not retain the software presentation limiter. Game
         // simulation uses the fixed-step scheduler independently.
         if (sVsyncEnabled) {

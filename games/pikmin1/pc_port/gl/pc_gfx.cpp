@@ -969,7 +969,7 @@ static std::unordered_map<const void*, ResidentMesh> sResidentMeshes;
 static bool sMeshDecodeCacheEnabled = true;
 static GLuint sMeshArena = 0;
 static GLuint sMeshVAO = 0;
-static GLint  sStreamVAO = 0;
+static GLuint sStreamVAO = 0;
 static size_t sMeshArenaCapacity = size_t(48) << 20;
 static size_t sMeshArenaUsed = 0;
 static bool   sMeshArenaReady = false;
@@ -1537,7 +1537,7 @@ static void dim_draw(unsigned char alpha)
     glUniform4f_ptr(sDimColorLoc, 0.0f, 0.0f, 0.0f, float(alpha) / 255.0f);
     glBindVertexArray_ptr(sDimVAO);
     glDrawArrays(GL_TRIANGLES, 0, 3);
-    glBindVertexArray_ptr(0);
+    glBindVertexArray_ptr(sStreamVAO);
     glUseProgram_ptr(0);
     // Same trap as post_apply(): GX thinks the TEV program is still bound
     // and skips glUseProgram. P2D plates then draw with program 0 and show
@@ -1689,7 +1689,7 @@ void pc_gfx_overlay_end(void)
 {
     if (!sOverlayProgram) return;
     glBindTexture(GL_TEXTURE_2D, 0);
-    glBindVertexArray_ptr(0);
+    glBindVertexArray_ptr(sStreamVAO);
     glUseProgram_ptr(0);
     for (int i = 0; i < 8; i++) sBoundTextures[i] = 0;
     gl_program_cache_invalidate();
@@ -2753,7 +2753,6 @@ static void mesh_arena_init() {
         sMeshDecodeCacheEnabled = false;
         return;
     }
-    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &sStreamVAO);
     glGenVertexArrays_ptr(1, &sMeshVAO);
     glBindVertexArray_ptr(sMeshVAO);
     glGenBuffers_ptr(1, &sMeshArena);
@@ -2985,6 +2984,16 @@ void pc_gfx_init(void) {
                sNativeFramebufferReady ? "active" : "unavailable", sRenderScale,
                sDepthIsTexture ? "texture (readable)" : "renderbuffer (not readable)");
     }
+    // macOS only. Core profiles have no default VAO (name 0), so the streaming
+    // ring's attribute layout must be recorded in its own VAO. The ring (sVBO)
+    // is already bound, so the attributes refer to it. Elsewhere sStreamVAO stays
+    // 0 and the default VAO is used, as before.
+#if defined(__APPLE__)
+    if (glGenVertexArrays_ptr && glBindVertexArray_ptr) {
+        glGenVertexArrays_ptr(1, &sStreamVAO);
+        glBindVertexArray_ptr(sStreamVAO);
+    }
+#endif
     setup_vertex_attribs();
     gl_error_checkpoint("vertex array setup");
     mesh_arena_init();
@@ -3854,7 +3863,7 @@ static bool dof_build()
         }
     }
 
-    glBindVertexArray_ptr(0);
+    glBindVertexArray_ptr(sStreamVAO);
     return true;
 }
 
@@ -3897,7 +3906,7 @@ static bool bloom_build()
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
 
-    glBindVertexArray_ptr(0);
+    glBindVertexArray_ptr(sStreamVAO);
     return true;
 }
 
@@ -4005,7 +4014,7 @@ static bool ao_build()
         glDrawArrays(GL_TRIANGLES, 0, 3);
     }
 
-    glBindVertexArray_ptr(0);
+    glBindVertexArray_ptr(sStreamVAO);
     return true;
 }
 
@@ -4180,7 +4189,7 @@ static GLuint post_apply(bool allowDof)
     // the last draw was doing; the geometry comes from gl_VertexID.
     glBindVertexArray_ptr(sPostVAO);
     glDrawArrays(GL_TRIANGLES, 0, 3);
-    glBindVertexArray_ptr(0);
+    glBindVertexArray_ptr(sStreamVAO);
 
     glUseProgram_ptr(0);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -4349,6 +4358,22 @@ static void post_apply_before_interface()
     for (int i = 0; i < 8; i++) sBoundTextures[i] = 0;
     gl_program_cache_invalidate();
     invalidate_uniform_cache();
+}
+
+// The window shows the frame only when the default framebuffer is bound at the
+// swap. The renderer leaves its own target bound after present, and on macOS
+// (OpenGL 4.1 core) a swap made with that target bound shows a black window.
+// pc_window_swap_buffers brackets SDL_GL_SwapWindow with these two calls.
+unsigned int pc_gfx_begin_swap_framebuffer(void) {
+    GLint bound = 0;
+    if (!glBindFramebuffer_ptr) return 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &bound);
+    glBindFramebuffer_ptr(GL_FRAMEBUFFER, 0);
+    return static_cast<unsigned int>(bound);
+}
+
+void pc_gfx_end_swap_framebuffer(unsigned int bound) {
+    if (glBindFramebuffer_ptr) glBindFramebuffer_ptr(GL_FRAMEBUFFER, GLuint(bound));
 }
 
 void pc_gfx_present(void) {
@@ -7155,6 +7180,10 @@ void pc_gfx_flush_batch(void) {
     gl_error_checkpoint("batch upload");
     const GLint firstVertex = static_cast<GLint>(sVboWriteOffset / sizeof(Vertex));
     shadow_record_stream(sBatchVerts, sBatchMode);
+    // The other passes (dim, overlay, post, shadows) bind their own VAO and
+    // restore this one. Bind it here too, so the batch never depends on that.
+    // sStreamVAO is 0 (the default VAO) everywhere except macOS.
+    if (sStreamVAO != 0 && glBindVertexArray_ptr) glBindVertexArray_ptr(sStreamVAO);
     glDrawArrays(sBatchMode, firstVertex, (GLsizei)sBatchVerts.size());
     gl_error_checkpoint("batch draw");
 

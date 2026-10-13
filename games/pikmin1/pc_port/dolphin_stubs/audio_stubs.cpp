@@ -1182,4 +1182,12 @@ int Jac_StreamMovieGetPicture(void* pictureBuffer, int* widthOut, int* heightOut
 }
 void Jac_StreamMovieStop() {}
 }
+
+#ifdef PIKI_PC_PORT
+// moviePlayer.cpp calls this when a cutscene is skipped. The JAudio engine
+// (src/jaudio/pikidemo.c) records the skip for __Jac_FinishDemo, and the native
+// mixer has no such engine, so the note has nothing to record here.
+// C++ linkage, to match the declaration in include/jaudio/pikidemo.h.
+void Jac_NoteDemoSkipped(void) {}
+#endif
 #endif
