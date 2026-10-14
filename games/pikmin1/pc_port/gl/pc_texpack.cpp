@@ -15,6 +15,20 @@
 
 #include <SDL2/SDL.h>
 
+#include "../netplay/pc_netplay_present.h"
+
+// Netplay null-GX tripwire, as in pc_gfx.cpp: GL issued here while the null
+// flag is on counts as real GL.
+static inline void pc_texpack_count_real_gl()
+{
+    if (pc_netplay_present_null_active()) pc_netplay_present_note_real();
+}
+#define glTexImage2D(...) (pc_texpack_count_real_gl(), (glTexImage2D)(__VA_ARGS__))
+#define glTexParameteri(...) (pc_texpack_count_real_gl(), (glTexParameteri)(__VA_ARGS__))
+#define glGetError(...) (pc_texpack_count_real_gl(), (glGetError)(__VA_ARGS__))
+#define glGetIntegerv(...) (pc_texpack_count_real_gl(), (glGetIntegerv)(__VA_ARGS__))
+#define glGetString(...) (pc_texpack_count_real_gl(), (glGetString)(__VA_ARGS__))
+
 // PNG packs (la edición "Android & iOS" de Henriko es PNG). stb_image se
 // compila aquí, una sola vez, y sale a RGBA8: sin soporte de compresión
 // móvil, pero GL_RGBA8 existe en cualquier GLES3 (plan: fase 3 usará ASTC).
