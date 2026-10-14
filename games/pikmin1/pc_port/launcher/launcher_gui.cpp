@@ -1574,7 +1574,7 @@ struct Hub {
         ImGui::Dummy(ImVec2(0, 6.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, col(ImVec4(0.80f, 0.86f, 0.78f, 1.0f)));
         ImGui::TextWrapped("Both players need the same game version. If the games cannot reach each other, allow "
-                           "the game through the firewall when Windows asks, or see docs/NETPLAY.md for TURN and "
+                           "the game through the firewall when Windows asks, or see NETPLAY.md for TURN and "
                            "Tailscale.");
         ImGui::PopStyleColor();
         ImGui::PopTextWrapPos();

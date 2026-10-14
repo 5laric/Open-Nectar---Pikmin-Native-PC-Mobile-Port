@@ -1,0 +1,183 @@
+# Online co-op (netplay)
+
+Two players on two PCs play the two-captain story co-op together: the host is
+Olimar (P1), the joiner Louie (P2), and each PC shows its own captain. The two
+games run in lockstep and exchange only the players' inputs, so both must run
+the very same build.
+
+Online co-op needs a netplay build of the game (`-DPIKMIN_NETPLAY_BUILD=ON`,
+see "Building" below). A session starts a new co-op run on Impact Site day 1
+with a fresh save of its own; it never touches your normal save or your
+settings file.
+
+## What both players need
+
+- The same netplay build (`nectar.exe` and `nectar-launcher.exe`). A different
+  build is refused when the games meet (`handshake refused: exe`).
+- Their own installed game data (the launcher's install from your own disc).
+- A way to send each other one line of text: a chat message is enough.
+
+The host's settings decide the session: gameplay settings that change the
+simulation (Pikmin limit, day length, speed and health percentages, the
+quality-of-life rows...) are taken from the host for this session only. The
+joiner's own settings file keeps its own values. Window, graphics, sound and
+control settings stay each player's own.
+
+## Host and join from the launcher
+
+The launcher of a netplay build shows **Host Co-op** and **Join Co-op** under
+Pikmin.
+
+Host:
+
+1. Click **Host Co-op**. The game starts and the panel shows your **offer
+   code** (a long line starting with `NPIX2-`).
+2. Click **Copy code** and send it to the other player.
+3. Paste the **answer code** they send back (it starts with `NPIX1-`) and
+   click **Connect**. The session starts in the game window.
+
+Join:
+
+1. Click **Join Co-op**, paste the host's offer code and click **Join**.
+2. The game starts and the panel shows your **answer code**. Click **Copy
+   code** and send it to the host. The session starts once the host enters it.
+
+Closing the panel does not stop the game. Each code works once: start a new
+session with new codes every time.
+
+## Host and join from the command line
+
+From the game folder (PowerShell):
+
+```powershell
+# Host: prints the offer code (also copied to the clipboard) and waits for the
+# answer on the console: paste it and press Enter.
+.\nectar.exe --netplay-host-ice
+
+# Joiner: the offer from the clipboard, a file, or the code itself.
+.\nectar.exe --netplay-join-ice "@clipboard"
+.\nectar.exe --netplay-join-ice "@offer.txt"
+```
+
+Options for both: `--netplay-code-out <file>` also writes this side's code to
+a file; the host's `--netplay-answer-in <file>` reads the answer from a file
+instead of the console; `--netplay-input keyboard` or `--netplay-input
+gamepad[:N]` picks the device that plays your captain; `--netplay-run-root
+<dir>` puts the run folders elsewhere.
+
+Each session gets a private run folder, `netplay\run-<date>-<time>-host|join-pid<N>\`
+next to the exe (or under `%LOCALAPPDATA%\Nectar\netplay` when the game folder
+is read-only), with the session's save, both codes, `launch.txt`, the session
+input log `session-inputs.pknl` and, after a desync, the desync report.
+
+The plain UDP switches remain for a LAN or a VPN where the host's address is
+known: `--netplay-host <port>` and `--netplay-join <ip>:<port>`, with
+`$env:PIKMIN_NETPLAY_UDP_BIND = "0.0.0.0"` on both PCs (they bind 127.0.0.1
+otherwise). They take each side's own settings, so the gameplay settings must
+already match.
+
+## Firewall and NAT
+
+The codes carry each PC's possible addresses (its LAN addresses and, through
+a public STUN server, its internet address), and the two games try every pair
+until one connects. This works for most home routers.
+
+- The first time, Windows may ask whether the game may use the network.
+  Allow it (private networks are enough between two PCs at home). The game
+  never adds a firewall rule itself.
+- STUN servers: `stun.l.google.com:19302` by default; set
+  `$env:PIKMIN_NETPLAY_STUN = "host:port"` for another, or `none` for LAN only.
+- If the games never connect (`ICE connect timed out`), one of the routers
+  does not allow a direct path. Two fallbacks:
+  - **Tailscale** (or ZeroTier): install it on both PCs and sign in to the
+    same network. The codes then include the VPN addresses, and the games
+    connect over them. No setting is needed.
+  - **Your own TURN server** (for example coturn), set on both PCs:
+    `$env:PIKMIN_NETPLAY_TURN = "turn.example.org:3478:user:password"`.
+    `$env:PIKMIN_NETPLAY_ICE_TURN_ONLY = "1"` forces the relay.
+- A fixed UDP port range (for a router port forward):
+  `$env:PIKMIN_NETPLAY_ICE_PORT_BEGIN` / `PIKMIN_NETPLAY_ICE_PORT_END`.
+
+## In the game
+
+- The HUD box on the right shows the connection quality, the ping and its
+  jitter, the input delay and the hitches of the last 10 seconds. F4, or both
+  stick buttons together on a pad, hides or shows it.
+- The input delay starts at 2 frames (`$env:PIKMIN_NETPLAY_DELAY`, or `auto`
+  from the measured ping) and adapts to the hitches the two games report.
+- The F1 menu is local: opening it pauses only your input. Gameplay rows are
+  locked during a session; your other settings still save.
+- When the session ends, a banner says why (the other player left, the
+  connection was lost, or a desync) and closes after 10 seconds or on any key.
+
+## Troubleshooting
+
+- `handshake refused: exe` or `protocol`: different builds. Use the same
+  `nectar.exe` on both PCs.
+- `handshake refused: config` with the UDP switches: the gameplay settings
+  differ. Use `--netplay-host-ice` / `--netplay-join-ice`, which adopt the
+  host's, or make them match.
+- `bad ICE code: ...`: the code was cut off or belongs to the other direction
+  (offers start `NPIX2-`, answers `NPIX1-`). Copy the whole single line.
+- `ICE connect timed out` or `ICE failed: no working candidate pair`: no
+  network path between the PCs; see "Firewall and NAT".
+- `connection lost`: the other game stopped answering for 15 s (60 s while a
+  stage loads), or it crashed.
+- `desync detected` (exit code 5): the two games stopped agreeing. Both write
+  `desync-report.txt`, `desync-subs.txt`, `desync-objects.txt` and
+  `session-inputs.pknl` into their run folder; please send both folders with
+  a bug report. A recorded session replays offline with
+  `tools/netplay/replay_session.py`.
+
+## Building
+
+```powershell
+cmake -S games/pikmin1 -B build-netplay -G Ninja -DPIKMIN_NETPLAY_BUILD=ON
+cmake --build build-netplay --target pikmin_pc pikmin_launcher
+```
+
+`PIKMIN_NETPLAY_BUILD` cannot be combined with `PIKMIN_NATIVE_OPTIMIZE` (two
+PCs must run the same code). The netplay libraries (GekkoNet, libjuice) and
+their licences are listed in `third_party/NETPLAY_VENDOR.md`.
+
+## Engineering tests
+
+`tools/netplay/run_pair.py` runs a host and a joiner as hidden, bounded
+processes with scripted input and per-tick state hashes. `--ice` uses the
+connection codes, carried through files; by default only loopback candidates
+are used (`PIKMIN_NETPLAY_STUN=none`, `PIKMIN_NETPLAY_ICE_BIND=127.0.0.1`).
+
+```powershell
+py -3.12 tools\netplay\run_pair.py --ice --exe <build>\bin\nectar.exe --assets <assets> --ticks 3000 --out <scratch>\ice
+# Settings adoption: the joiner prefers other settings, the session still syncs.
+py -3.12 tools\netplay\run_pair.py --ice ... --config-join fpsMode=1 hideOlimarText=1
+# Desync forensics: a TEST ONLY nudge on the joiner; both exit 5 with reports.
+py -3.12 tools\netplay\run_pair.py --ice ... --expect desync --desync-nudge 1500:navi:1
+# Replay a recorded log offline (8 = a recorded hash did not reproduce).
+py -3.12 tools\netplay\replay_session.py --exe <build>\bin\nectar.exe --assets <assets> `
+    --log <run folder>\session-inputs.pknl --out <scratch>\replay --expect match
+# The launcher's Host Co-op / Join Co-op flow, scripted.
+py -3.12 tools\netplay\launcher_smoke.py --launcher <build>\bin\nectar-launcher.exe `
+    --exe <build>\bin\nectar.exe --assets <assets> --out <scratch>\launcher
+```
+
+Two PCs over ICE, with the codes carried between them by any means (a shared
+folder, scp). Host PC:
+
+```powershell
+py -3.12 tools\netplay\run_pair.py --peer-only host --ice --ice-bind any --stun default `
+    --exe <build>\bin\nectar.exe --assets <assets> --ticks 3000 --out <scratch>\two-pc
+# then copy <scratch>\two-pc\host\offer.txt to the joiner's PC
+```
+
+Joiner PC:
+
+```powershell
+py -3.12 tools\netplay\run_pair.py --peer-only join --ice --ice-bind any --stun default `
+    --exe <build>\bin\nectar.exe --assets <assets> --ticks 3000 --out <scratch>\two-pc `
+    --offer <copied offer.txt>
+# then copy <scratch>\two-pc\join\answer.txt to the host's <scratch>\two-pc\host\answer-in.txt
+```
+
+Afterwards compare the two `hashes.txt` with `tools\netplay\compare_hashes.py`.
+Use the same exe, `--ticks` and `--netplay-seed` on both PCs.
