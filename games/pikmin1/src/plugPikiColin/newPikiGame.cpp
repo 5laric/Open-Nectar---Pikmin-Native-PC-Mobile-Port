@@ -53,6 +53,8 @@
 #if defined(PIKI_PC_PORT)
 #include "pc_coop.h"
 #include "timing/pc_render_phase.h"
+#include "netplay/pc_netplay_camlead.h"
+#include "netplay/pc_netplay_present.h"
 #if defined(PIKI_PC_PORT)
 #include "pc_permadeath.h"
 #include "randomizer/pc_randomizer.h"
@@ -2416,11 +2418,21 @@ public:
 	{
 		Matrix4f orthoMtx;
 
+#if defined(PIKI_PC_PORT)
+		// Netplay two-pass frame: the movie update is sim.
+		if (pc_netplay_present_sim_side()) {
+#endif
 		if (!gameflow.mIsUIOverlayActive || gameflow.mIsTutorialTextActive) {
 			// update any cutscenes or text demos
 			gameflow.mMoviePlayer->update();
 		}
+#if defined(PIKI_PC_PORT)
+		}
 
+		// Netplay: the sim pass keeps the SimCamera installed; only the
+		// presentation pass drives the real camera.
+		if (!pc_netplay_present_sim_pass()) {
+#endif
 		if (!gameflow.mMoviePlayer->setCamera(gfx)) {
 			// false = no scene currently active, so no preset camera information to go off
 			if (gameflow.mMoviePlayer->mCamTransitionFactor > 0.0f) {
@@ -2484,18 +2496,46 @@ public:
 			gfx.setCamera(&mGameCamera);
 			mGameCamera.update(f32(gfx.mScreenWidth) / f32(gfx.mScreenHeight), mGameCamera.mFov, pc_first_person_active() ? 3.0f : 100.0f, mCameraFarClip);
 		}
+#if defined(PIKI_PC_PORT)
+		}
+#endif
 
 #if defined(PIKI_PC_PORT)
 		// Pantalla partida (PLAN_COOP fase 3): fuera de cinemáticas se dibuja
 		// el mundo dos veces, una por Olimar, cada una en su mitad y con su
 		// cámara. El estado (sonido, efectos) solo avanza en la primera pasada.
-		const bool splitScreen = sGamecoreLive && gamecore && gamecore->isSplitScreen() && !gameflow.mMoviePlayer->mIsActive
+		// Netplay: each peer draws only its local captain, full screen, with
+		// the same movie and memory-card exclusions; both captains are still
+		// simulated.
+		const bool detSingleView = pc_netplay_present_two_pass_active() && sGamecoreLive && gamecore
+		                        && gamecore->isSplitScreen() && !gameflow.mMoviePlayer->mIsActive
+		                        && !(gameflow.mDemoFlags & CinePlayerFlags::NonGameMovie) && !memcardWindow;
+		const bool splitScreen = !detSingleView && sGamecoreLive && gamecore && gamecore->isSplitScreen()
+		                      && !gameflow.mMoviePlayer->mIsActive
 		                      && !(gameflow.mDemoFlags & CinePlayerFlags::NonGameMovie) && !memcardWindow;
 		mSplitViews = splitScreen ? 2 : 1;
 		for (int view = 0; view < mSplitViews; view++) {
 			if (sGamecoreLive && gamecore) gamecore->mRenderPass = view;
 			if (splitScreen) {
 				beginSplitView(gfx, view);
+			}
+			// The presentation pass shows the local captain's camera, updated
+			// for the full-screen aspect and clip as beginView does per view.
+			if (detSingleView && !pc_netplay_present_sim_side()) {
+				const int localPlayer = pc_netplay_present_local_player();
+				Camera* localCam      = gamecore->getViewCamera(localPlayer);
+				if (localCam) {
+					localCam->update(f32(gfx.mScreenWidth) / f32(gfx.mScreenHeight), localCam->mFov,
+					                 pc_first_person_active() ? 3.0f : 100.0f, mCameraFarClip);
+					// In a lockstep session the view leads with the local camera
+					// controls (a separate camera; the sim camera is unchanged).
+					Camera* viewCam = pc_netplay_camlead_view(localPlayer, localCam);
+					if (viewCam != localCam) {
+						viewCam->update(f32(gfx.mScreenWidth) / f32(gfx.mScreenHeight), viewCam->mFov,
+						                pc_first_person_active() ? 3.0f : 100.0f, mCameraFarClip);
+					}
+					gfx.setCamera(viewCam);
+				}
 			}
 #endif
 
@@ -2523,7 +2563,7 @@ public:
 				}
 
 #if defined(PIKI_PC_PORT)
-				if (isDVDNormal && gamecore->mRenderPass == 0) {
+				if (isDVDNormal && gamecore->mRenderPass == 0 && pc_netplay_present_sim_side()) {
 #else
 				if (isDVDNormal) {
 #endif
@@ -2600,6 +2640,11 @@ public:
 		if (!mIsInitialSetup) {
 			// check if we should advance the time of day
 			if (!gsys->resetPending() && (!mActiveMenu || gameflow.mMoviePlayer->mIsActive)) {
+#if defined(PIKI_PC_PORT)
+				// Netplay two-pass frame: the world sim (clock, Node::update,
+				// HUD update, updateAI) runs on the sim side only.
+				if (pc_netplay_present_sim_side()) {
+#endif
 				// PIKMIN_TICK_STATS: the world simulation lives here, inside
 				// the draw, so time it apart from the GX translation.
 				const bool profiling = pc_tick_profiler_enabled();
@@ -2645,6 +2690,9 @@ public:
 					    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count()
 					        - simStart);
 				}
+#if defined(PIKI_PC_PORT)
+				}
+#endif
 			}
 		} else {
 			// we're still in initial set up - finalise things so we can start properly

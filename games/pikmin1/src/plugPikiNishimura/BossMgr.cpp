@@ -20,6 +20,7 @@
 #if defined(PIKI_PC_PORT)
 #include "NaviMgr.h"
 #include "netplay/pc_netplay_det.h"
+#include "netplay/pc_netplay_present.h"
 #include <cstdio>
 #include <cstdlib>
 #endif
@@ -931,6 +932,17 @@ void BossMgr::refresh(Graphics& gfx)
 			FOREACH_NODE(BossNode, mActiveNodes[i].mChild, node)
 			{
 				node->mBoss->refreshViewCulling(gfx);
+#if defined(PIKI_PC_PORT)
+				// Netplay presentation pass: draw only what the local frustum
+				// sees, from the stored sim state.
+				if (!pc_netplay_present_sim_side()) {
+					Vector3f point(node->mBoss->mSRT.t);
+					point.y += C_BOSS_PARM(node->mBoss, mRenderSphereHeight);
+					if (!gfx.mCamera->isPointVisible(point, C_BOSS_PARM(node->mBoss, mRenderSphereRadius))) {
+						continue;
+					}
+				}
+#endif
 				if (C_BOSS_PARM(node->mBoss, _1DC) == 0 || !node->mBoss->mGrid.aiCulling() || node->mBoss->aiCullable()) {
 					node->mBoss->refresh(gfx);
 				}

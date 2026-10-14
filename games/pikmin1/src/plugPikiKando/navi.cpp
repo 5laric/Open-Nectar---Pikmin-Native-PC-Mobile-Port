@@ -11,6 +11,8 @@
 #include "settings/pc_settings.h"
 #include "mods/pc_hd_models.h"
 #include "gl/pc_gfx.h"
+#include "netplay/pc_netplay_camlead.h"
+#include "netplay/pc_netplay_present.h"
 #if PIKI_PC_TOUCH
 #include "touch/pc_touch.h"
 #endif
@@ -3171,7 +3173,9 @@ static void pcNaviCaptureControlYaw()
 		if (navi == nullptr) continue;
 		const int pad = navi->mNaviID;
 		if (pad < 0 || pad > 3 || pc_input_log_yaw_valid(pad)) continue;
-		Camera* cam = navi->controlCamera();
+		// In a lockstep session this peer's own pad samples the camera it
+		// presents (the lead camera while it is shown).
+		Camera* cam = pc_netplay_camlead_control_camera(pad, navi->controlCamera());
 		if (cam == nullptr) {
 			if (detMode) pc_input_log_yaw_set(pad, 0, pc_input_log::kFlagsNone);
 			continue;
@@ -3740,6 +3744,13 @@ void Navi::refresh(Graphics& gfx)
 		f32 unusedVal2 = cosf(mFaceDirection);
 		STACK_PAD_VAR(1);
 
+#if defined(PIKI_PC_PORT)
+		// Netplay: mCursorWorldPos is sim (the whistle, lock-on and swarm read
+		// it), so only the sim side computes it; the presentation pass draws
+		// the cursor from the stored mWorldMtx.
+		const bool simSide = pc_netplay_present_sim_side();
+		if (simSide) {
+#endif
 		mCursorWorldPos   = mCursorPosition + mSRT.t;
 		mCursorWorldPos.y = mapMgr->getMinY(mCursorWorldPos.x, mCursorWorldPos.z, true) + 1.0f;
 
@@ -3781,6 +3792,9 @@ void Navi::refresh(Graphics& gfx)
 		mWorldMtx = orientMatrix;
 		mWorldMtx.setTranslation(mCursorWorldPos);
 #if defined(PIKI_PC_PORT)
+		}
+#endif
+#if defined(PIKI_PC_PORT)
 		// Lock-On: el aro del cursor se sustituye por uno propio alrededor del
 		// objetivo (pcDrawLockRing), de trazo fijo sea cual sea su tamaño.
 		const bool pcLocked = mPcLockTarget && pc_settings_get_lock_on() && mNaviID == 0;
@@ -3788,6 +3802,9 @@ void Navi::refresh(Graphics& gfx)
 
 		// Estela: emite mientras el cursor se desplaza; quieto, deja de emitir
 		// y las partículas que quedan se desvanecen solas.
+#if defined(PIKI_PC_PORT)
+		if (simSide)
+#endif
 		{
 			const bool cursorShown = mIsCursorVisible && getCurrState()->getID() != NAVISTATE_DemoSunset;
 			Vector3f trailPos(mCursorWorldPos.x, mCursorWorldPos.y + 2.0f, mCursorWorldPos.z);
@@ -4016,7 +4033,10 @@ bool Navi::pcDrawAsPikmin(Graphics& gfx)
 
 	Vector3f tip(6.0f, 0.0f, 0.0f);
 	obj->mShape->calcJointWorldPos(gfx, 6, tip);
-	mPcPikiLeafTip = tip;
+	// Netplay: the leaf-tip anchor is sim.
+	if (pc_netplay_present_sim_side()) {
+		mPcPikiLeafTip = tip;
+	}
 	return true;
 }
 #endif
@@ -4056,6 +4076,12 @@ void Navi::demoDraw(Graphics& gfx, immut Matrix4f* mtx)
 	if (tinted) pc_gfx_clear_mat_color_tint();
 #endif
 	mCollInfo->updateInfo(gfx, false);
+#if defined(PIKI_PC_PORT)
+	// Netplay: the light anchor is sim; the presentation pass reuses it.
+	if (!pc_netplay_present_sim_side()) {
+		return;
+	}
+#endif
 	CollPart* antenna = mCollInfo->getSphere('ante');
 	if (antenna) {
 		mNaviLightPosition = antenna->mCentre;

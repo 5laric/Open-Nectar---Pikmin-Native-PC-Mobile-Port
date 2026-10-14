@@ -11,6 +11,8 @@
 #include "PikiMgr.h"
 #if defined(PIKI_PC_PORT)
 #include "mods/pc_hd_models.h"
+#include "netplay/pc_netplay_policy.h"
+#include "netplay/pc_netplay_present.h"
 #endif
 #include "PikiState.h"
 #include "Shape.h"
@@ -466,7 +468,14 @@ PcHdModelId ViewPiki::hdHappaModel() const
 void ViewPiki::demoDraw(Graphics& gfx, immut Matrix4f* mtx)
 {
 	Vector3f pos;
+#if defined(PIKI_PC_PORT)
+	// Netplay: the joint anchors are sim; the presentation pass draws from
+	// the stored values.
+	const bool simSide = pc_netplay_present_sim_side();
+	if (simSide && (AIPerf::optLevel <= 2 || mOptUpdateContext.updatable())) {
+#else
 	if (AIPerf::optLevel <= 2 || mOptUpdateContext.updatable()) {
+#endif
 		pos.set(0.0f, 0.0f, 0.0f);
 		mPikiShape->mShape->calcJointWorldPos(gfx, 0, pos);
 		mShadowPos = pos;
@@ -483,8 +492,15 @@ void ViewPiki::demoDraw(Graphics& gfx, immut Matrix4f* mtx)
 	} else {
 		pos.set(6.0f, 0.0f, 0.0f);
 	}
+#if defined(PIKI_PC_PORT)
+	if (simSide) {
+		mPikiShape->mShape->calcJointWorldPos(gfx, 6, pos);
+		mEffectPos = pos;
+	}
+#else
 	mPikiShape->mShape->calcJointWorldPos(gfx, 6, pos);
 	mEffectPos = pos;
+#endif
 
 #if defined(PIKI_PC_PORT)
 	// Netplay: the damage flash is draw-only, so the cosmetic stream.
@@ -508,9 +524,15 @@ void ViewPiki::demoDraw(Graphics& gfx, immut Matrix4f* mtx)
 		if (amount > hdWhiten) hdWhiten = amount;
 	}
 	const GXColor hdHappaTint = { 255, 255, 255, 255 };
+	// The presentation pass submits only what the local frustum sees.
+	const bool submit = simSide || gfx.mCamera->isPointVisible(mSRT.t, getSize() * 4.0f);
 #endif
 
+#if defined(PIKI_PC_PORT)
+	if (aiCullable() && submit) {
+#else
 	if (aiCullable()) {
+#endif
 #if defined(PIKI_PC_PORT)
 		if (!pc_hd_model_draw_skinned(gfx, mPikiShape->mShape, hdPikiModel(), hdTint, static_cast<u8>(hdWhiten)))
 #endif
@@ -521,7 +543,11 @@ void ViewPiki::demoDraw(Graphics& gfx, immut Matrix4f* mtx)
 		mPanickedEffect->updatePos(mShadowPos);
 	}
 
+#if defined(PIKI_PC_PORT)
+	if (aiCullable() && submit && AIPerf::optLevel < 3 && mHappaModel) {
+#else
 	if (aiCullable() && AIPerf::optLevel < 3 && mHappaModel) {
+#endif
 		gfx.useMatrix(mPikiShape->mShape->getAnimMatrix(6), 0);
 #if defined(PIKI_PC_PORT)
 		// VS: la hoja/flor de los Pikmin de J2 va teñida de violeta; el cuerpo
@@ -623,13 +649,23 @@ void ViewPiki::refresh(Graphics& gfx)
 	}
 	Matrix4f mtx;
 	f32 size = getSize();
+#if defined(PIKI_PC_PORT)
+	// Netplay: the sim sees always-visible and the full LOD, never the local
+	// camera's frustum or distance.
+	if (!pc_netplay_sim_visible(gfx.mCamera->isPointVisible(mSRT.t, size * 4.0f))) {
+#else
 	if (!gfx.mCamera->isPointVisible(mSRT.t, size * 4.0f)) {
+#endif
 		enableAICulling();
 	} else {
 		disableAICulling();
 		if (AIPerf::useLOD) {
 			Vector3f diff = gfx.mCamera->mPosition - mSRT.t;
+#if defined(PIKI_PC_PORT)
+			_528          = pc_netplay_sim_lod_distance(diff.length());
+#else
 			_528          = diff.length();
+#endif
 		} else {
 			_528 = 12800.0f;
 		}

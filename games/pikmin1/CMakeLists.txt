@@ -318,6 +318,9 @@ set(PC_PORT_SOURCES
     pc_port/netplay/pc_sim_rng.cpp
     pc_port/netplay/pc_input_log.cpp
     pc_port/netplay/pc_state_hash.cpp
+    # Two-pass sim/presentation frame and the session lead camera.
+    pc_port/netplay/pc_netplay_present.cpp
+    pc_port/netplay/pc_netplay_camlead.cpp
     pc_port/audio/pc_audio.cpp
     pc_port/audio/pc_envelope.cpp
     pc_port/audio/pc_jam.cpp
@@ -1076,6 +1079,29 @@ if(PIKMIN_BUILD_TESTS)
         pc_port/netplay/pc_sim_rng.cpp)
     target_compile_options(pc_netplay_policy_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
     add_test(NAME pc_netplay_policy_test COMMAND pc_netplay_policy_test)
+
+    # Two-pass present module: skip flag, null-GX counters, local player.
+    add_executable(pc_netplay_present_test
+        pc_port/netplay/pc_netplay_present_test.cpp
+        pc_port/netplay/pc_netplay_present.cpp
+        pc_port/netplay/pc_netplay_det.cpp
+        pc_port/netplay/pc_sim_rng.cpp)
+    target_compile_definitions(pc_netplay_present_test PRIVATE PC_NETPLAY_PRESENT_HOST=1)
+    target_compile_options(pc_netplay_present_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
+    add_test(NAME pc_netplay_present_test COMMAND pc_netplay_present_test)
+
+    # Lead camera core (header-only): key mapping, input history, prediction
+    # window, correction filter.
+    add_executable(pc_netplay_camlead_test pc_port/netplay/pc_netplay_camlead_test.cpp)
+    target_include_directories(pc_netplay_camlead_test PRIVATE pc_port)
+    target_compile_options(pc_netplay_camlead_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
+    add_test(NAME pc_netplay_camlead_test COMMAND pc_netplay_camlead_test)
+
+    # Netplay audio ownership gate (header-only).
+    add_executable(pc_audio_source_test pc_port/audio/pc_audio_source_test.cpp)
+    target_include_directories(pc_audio_source_test PRIVATE pc_port)
+    target_compile_options(pc_audio_source_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
+    add_test(NAME pc_audio_source_test COMMAND pc_audio_source_test)
 
     # PKNI input-file format, yaw quantisation and the per-tick yaw slots.
     add_executable(pc_input_log_test

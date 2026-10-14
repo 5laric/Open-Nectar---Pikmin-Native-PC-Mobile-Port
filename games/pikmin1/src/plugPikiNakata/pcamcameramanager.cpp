@@ -7,6 +7,7 @@
 #include "Peve/Event.h"
 #include "sysNew.h"
 #if defined(PIKI_PC_PORT)
+#include "netplay/pc_netplay_camlead.h"
 #include "netplay/pc_netplay_det.h"
 #include <cmath>
 #include <cstdio>
@@ -114,6 +115,7 @@ void PcamCameraManager::update()
 		}
 	}
 	mCamera->update();
+	pc_netplay_camlead_note_sim_update(this);
 	updateVibrationEvent();
 	if (wobActive) {
 		mCamera->mPolarDir.mAzimuth = wobSavedAz;

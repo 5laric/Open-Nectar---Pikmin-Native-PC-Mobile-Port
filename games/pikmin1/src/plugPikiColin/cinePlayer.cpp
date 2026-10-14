@@ -16,6 +16,7 @@
 #include "zen/Math.h"
 #ifdef PIKI_PC_PORT
 #include "gl/pc_gfx.h"
+#include "netplay/pc_netplay_present.h"
 #endif
 
 /**
@@ -1057,6 +1058,13 @@ void ActorInstance::refresh(immut Matrix4f& mtx, Graphics& gfx, f32* p3)
 		return;
 	}
 
+#if defined(PIKI_PC_PORT)
+	// Netplay: the joint, centre and direction stores, event keys, effect
+	// emits and the movie navi's position are sim; the presentation pass
+	// draws from the stored values.
+	const bool simSide = pc_netplay_present_sim_side();
+#endif
+
 	f32 a       = 0.0f;
 	f32 b       = 0.0f;
 	bool check1 = false;
@@ -1096,6 +1104,9 @@ void ActorInstance::refresh(immut Matrix4f& mtx, Graphics& gfx, f32* p3)
 		mActiveActor->mModel->updateAnim(gfx, mtx, d, mActiveActor);
 		mActiveActor->mModel->mFrameCacher = prevCacher;
 
+#if defined(PIKI_PC_PORT)
+		if (simSide) {
+#endif
 		mJointPositions[0].set(0.0f, 0.0f, 0.0f);
 		mActiveActor->mModel->calcJointWorldPos(gfx, 0, mJointPositions[0]);
 		mJointPositions[1].set(0.0f, 0.0f, 0.0f);
@@ -1106,6 +1117,9 @@ void ActorInstance::refresh(immut Matrix4f& mtx, Graphics& gfx, f32* p3)
 			mActiveActor->mModel->calcJointWorldPos(gfx, 0, pos);
 			checkEventKeys(a, b, pos);
 		}
+#if defined(PIKI_PC_PORT)
+		}
+#endif
 
 		Matrix4f animMtx = mActiveActor->mModel->getAnimMatrix(0);
 		mActiveActor->mModel->restoreAnimOverrides();
@@ -1203,6 +1217,9 @@ void ActorInstance::refresh(immut Matrix4f& mtx, Graphics& gfx, f32* p3)
 	mActiveActor->mModel->updateAnim(gfx, mtx, d, mActiveActor);
 	mActiveActor->mModel->mFrameCacher = prevCacher;
 
+#if defined(PIKI_PC_PORT)
+	if (simSide) {
+#endif
 	mCenterPosition.set(0.0f, 0.0f, 0.0f);
 	mActiveActor->mModel->calcJointWorldPos(gfx, 0, mCenterPosition);
 
@@ -1294,12 +1311,15 @@ void ActorInstance::refresh(immut Matrix4f& mtx, Graphics& gfx, f32* p3)
 		mActiveActor->mModel->calcJointWorldPos(gfx, 0, pos);
 		checkEventKeys(a, b, pos);
 	}
+#if defined(PIKI_PC_PORT)
+	}
+#endif
 
 #if defined(PIKI_PC_PORT)
 	// Key 19 writes dummy (-25000) joints and then this frame's effect update
 	// runs. Recompute the UFO trail sockets so the opening burst emits on the
 	// ship instead of off-camera.
-	if (mMeteorFlag) {
+	if (mMeteorFlag && simSide) {
 		mJointPositions[0].set(0.0f, 7.0f, 0.0f);
 		mActiveActor->mModel->calcJointWorldPos(gfx, 0, mJointPositions[0]);
 		mJointPositions[1].set(-14.4f, 14.9f, 14.4f);
@@ -1319,7 +1339,13 @@ void ActorInstance::refresh(immut Matrix4f& mtx, Graphics& gfx, f32* p3)
 			Vector3f pos(0.0f, 0.0f, 0.0f);
 			pos.multMatrix(mActiveActor->mModel->getAnimMatrix(0));
 			pos.multMatrix(gfx.mCamera->mInverseLookAtMtx);
+#if defined(PIKI_PC_PORT)
+			if (simSide) {
+#endif
 			naviMgr->getMovieNavi()->updateDayEnd(pos);
+#if defined(PIKI_PC_PORT)
+			}
+#endif
 			naviMgr->getMovieNavi()->demoDraw(gfx, nullptr);
 		}
 	} else {

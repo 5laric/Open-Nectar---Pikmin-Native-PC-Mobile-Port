@@ -1,6 +1,8 @@
 #include "GoalItem.h"
 #if defined(PIKI_PC_PORT)
 #include "pc_coop.h"
+#include "netplay/pc_netplay_policy.h"
+#include "netplay/pc_netplay_present.h"
 #endif
 #include "BaseInf.h"
 #include "CreatureCollPart.h"
@@ -811,7 +813,11 @@ void GoalItem::refresh(Graphics& gfx)
 	Vector3f pos = mSRT.t;
 	mWorldMtx.makeSRT(mSRT.s, mSRT.r, pos);
 	gfx.mCamera->mLookAtMtx.multiplyTo(mWorldMtx, mtx1);
+#if defined(PIKI_PC_PORT)
+	if (!pc_netplay_sim_visible(gfx.mCamera->isPointVisible(mSRT.t, 200.0f))) {
+#else
 	if (!gfx.mCamera->isPointVisible(mSRT.t, 200.0f)) {
+#endif
 		enableAICulling();
 		if (!gameflow.mMoviePlayer->mIsActive) {
 			mSpotModelEff->mIsVisible = false;
@@ -820,6 +826,13 @@ void GoalItem::refresh(Graphics& gfx)
 		disableAICulling();
 		mSpotModelEff->mIsVisible = true;
 	}
+#if defined(PIKI_PC_PORT)
+	// Netplay presentation pass: the spot effect follows the local frustum.
+	// The sim pass sets it again before the effects update.
+	if (!pc_netplay_present_sim_side() && !gameflow.mMoviePlayer->mIsActive) {
+		mSpotModelEff->mIsVisible = gfx.mCamera->isPointVisible(mSRT.t, 200.0f);
+	}
+#endif
 
 	gfx.setLighting(true, nullptr);
 	gfx.useMatrix(Matrix4f::ident, 0);

@@ -944,6 +944,32 @@ Matrix4f* Graphics::getMatrices(int requestedMatrixCount)
 	return mtx;
 }
 
+#if defined(PIKI_PC_PORT)
+void Graphics::resetPresentBuffer()
+{
+	if (!mPresentMatrixBuffer || mPresentMatrixMax < mMaxMatrixCount) {
+		delete[] mPresentMatrixBuffer;
+		mPresentMatrixBuffer = new Matrix4f[mMaxMatrixCount > 0 ? mMaxMatrixCount : 1];
+		mPresentMatrixMax    = mMaxMatrixCount;
+	}
+	mNextFreePresentMatrixIdx = 0;
+}
+
+Matrix4f* Graphics::getPresentMatrices(int requestedMatrixCount)
+{
+	if (!mPresentMatrixBuffer || mPresentMatrixMax < mMaxMatrixCount) {
+		resetPresentBuffer();
+	}
+	if (mNextFreePresentMatrixIdx + requestedMatrixCount > mPresentMatrixMax) {
+		ERROR("using too many present matrices!! (%d + %d > %d)\n", mNextFreePresentMatrixIdx, requestedMatrixCount,
+		      mPresentMatrixMax);
+	}
+	Matrix4f* mtx = &mPresentMatrixBuffer[mNextFreePresentMatrixIdx];
+	mNextFreePresentMatrixIdx += requestedMatrixCount;
+	return mtx;
+}
+#endif
+
 /**
  * @todo: Documentation
  */

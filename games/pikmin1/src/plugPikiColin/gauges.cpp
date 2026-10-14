@@ -13,6 +13,7 @@
 #include "gl/pc_gfx.h"
 #endif
 #if defined(PIKI_PC_PORT)
+#include "netplay/pc_netplay_present.h"
 #include "timing/pc_render_phase.h"
 #include "GlobalGameOptions.h"
 #endif
@@ -442,6 +443,11 @@ void LifeGauge::refresh(Graphics& gfx)
 		}
 		}
 #if defined(PIKI_PC_PORT)
+	}
+	// Netplay two-pass frame: the gauges are drawn in the presentation pass
+	// only (their geometry depends on the local camera).
+	if (pc_netplay_present_sim_pass()) {
+		return;
 	}
 #endif
 

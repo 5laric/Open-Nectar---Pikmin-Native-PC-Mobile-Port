@@ -23,6 +23,8 @@
 #include <stddef.h>
 #if defined(PIKI_PC_PORT)
 #include "pc_photo_mode.h"
+#include "timing/pc_render_phase.h"
+#include "netplay/pc_netplay_present.h"
 #endif
 
 /**
@@ -3415,7 +3417,20 @@ void BaseShape::updateAnim(Graphics& gfx, immut Matrix4f& mtx, f32* p3, const vo
 	(void)visualOwner;
 	gsys->mTimer->start("updateAnim", true);
 	gsys->mAnimatedPolygons++;
+#if defined(PIKI_PC_PORT)
+	// Netplay presentation pass: rebuild matrices for the local camera in the
+	// present pool without advancing animation time. The sim pointer is
+	// restored by pc_netplay_present_restore_all_shapes.
+	const bool isPresentation = !pc_render_is_authoritative() && pc_netplay_present_two_pass_active();
+	if (isPresentation) {
+		pc_netplay_present_save_shape_ptr(this, mAnimMatrices);
+		mAnimMatrices = gfx.getPresentMatrices(mAnimMtxCount);
+	} else {
+		mAnimMatrices = gfx.getMatrices(mAnimMtxCount);
+	}
+#else
 	mAnimMatrices = gfx.getMatrices(mAnimMtxCount);
+#endif
 
 	if (mCurrentAnimation->mData) {
 #if defined(PIKI_PC_PORT)
@@ -3428,9 +3443,15 @@ void BaseShape::updateAnim(Graphics& gfx, immut Matrix4f& mtx, f32* p3, const vo
 #else
 		const bool holdAnimation = false;
 #endif
+#if defined(PIKI_PC_PORT)
+		if (!p3 && !holdAnimation && !isPresentation) {
+			mCurrentAnimation->animate(mCurrentAnimation->mAnimSpeed);
+		}
+#else
 		if (!p3 && !holdAnimation) {
 			mCurrentAnimation->animate(mCurrentAnimation->mAnimSpeed);
 		}
+#endif
 
 		for (int i = 0; i < mJointCount; i++) {
 			AnimData* data = mAnimOverrides[i]->mData;
@@ -3480,6 +3501,22 @@ void BaseShape::updateAnim(Graphics& gfx, immut Matrix4f& mtx, f32* p3, const vo
 
 	gsys->mTimer->stop("updateAnim");
 }
+
+#if defined(PIKI_PC_PORT)
+// Puts back every sim matrix pointer the presentation pass redirected.
+void pc_netplay_present_restore_all_shapes()
+{
+	const size_t n = pc_netplay_present_saved_count();
+	for (size_t i = 0; i < n; ++i) {
+		void* saved      = nullptr;
+		BaseShape* shape = static_cast<BaseShape*>(pc_netplay_present_saved_shape_at(i, &saved));
+		if (shape) {
+			shape->mAnimMatrices = static_cast<Matrix4f*>(saved);
+		}
+	}
+	pc_netplay_present_clear_saved();
+}
+#endif
 
 /**
  * @brief Likely fabricated static inline function useful for DOL-exclusive code in `BaseShape::calcWeightedMatrices`.
