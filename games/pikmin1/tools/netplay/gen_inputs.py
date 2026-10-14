@@ -13,6 +13,9 @@ The generator plays a plausible field session on pad 0: smooth main-stick
 walk patterns, periodic A (throw/pluck), B holds (whistle), rare X
 (disband), C-stick nudges and trigger presses. It never presses Start or Y
 and never opens menus. Pads 1-3 are neutral (no controller).
+
+--vs-starts writes a VS script for pad 0 instead (gen_vs_ticks): walk legs to
+a ship piece, A throws in --vs-tap-windows, a constant control yaw.
 """
 
 import argparse
@@ -166,6 +169,42 @@ def gen_ticks(nticks: int, seed: int, players: int = 1):
         yield (b0, b1, yaws)
 
 
+def gen_vs_ticks(nticks: int, seed: int, yaw: int, starts, path, swarm=(0, 100), tap=(15, 30), tap_windows=((0, 1 << 30),)):
+    """VS script for one player's pad 0: neutral until each match start in
+    `starts` (session ticks), then the walk legs of `path` ((ticks, stickX,
+    stickY) each, towards a ship piece of the VS arena), then the C-stick
+    forward (the squad swarms into the piece and carries it) with an A tap now
+    and then. The stick is back to neutral when a match ends, so the end screen
+    keeps its default choice (Rematch) and the next A tap takes it. The yaw is
+    constant (the control basis that faces the arena from this player's base);
+    the seed only jitters the stick and the tap timing."""
+    rng = random.Random(seed)
+    starts = sorted(starts)
+    walk = sum(leg[0] for leg in path)
+    next_a = rng.randint(30, 60)
+    for tick in range(nticks):
+        begun = [s for s in starts if s <= tick]
+        buttons, sx, sy, cx, cy = 0, 0, 0, 0, 0
+        if begun:
+            t = tick - begun[-1]
+            if t < walk:
+                left = t
+                for ticks, lx, ly in path:
+                    if left < ticks:
+                        sx, sy = lx + rng.randint(-4, 4), ly + rng.randint(-4, 4)
+                        break
+                    left -= ticks
+            else:
+                cx, cy = (swarm[0] + rng.randint(-4, 4), swarm[1] + rng.randint(-4, 4)) if swarm else (0, 0)
+            next_a -= 1
+            tapping = any(lo <= t < hi for lo, hi in tap_windows)
+            if next_a <= 5 and tapping:  # a 5-tick press: long enough to grab, then throw
+                buttons |= BTN_A
+            if next_a <= 0:
+                next_a = rng.randint(tap[0], tap[1])
+        yield ((buttons, sx, sy, cx, cy, 0, 0), None, [yaw & 0xFFFF, 0, 0, 0])
+
+
 def _pack_pad(buttons, sx, sy, cx, cy, tl, tr, connected, yaw, v1: bool):
     if v1:
         return struct.pack(
@@ -207,10 +246,31 @@ def main(argv=None):
                    help="write the v1 format (no yaw); default is v2 with yaw")
     p.add_argument("--players", type=int, default=1, choices=(1, 2),
                    help="script pad 1 as a co-op partner when 2 (default: 1)")
+    p.add_argument("--vs-starts", default=None, metavar="T[,T...]",
+                   help="VS script instead (gen_vs_ticks): the session ticks each match's control starts")
+    p.add_argument("--vs-yaw", type=int, default=0, help="VS script: constant control yaw (1/65536 turns)")
+    p.add_argument("--vs-swarm", default="0:100",
+                   help="VS script: C-stick after the walk, STICKX:STICKY (0:0 = none; same basis as the walk)")
+    p.add_argument("--vs-tap", default="15:30", help="VS script: ticks between A taps, LO:HI")
+    p.add_argument("--vs-tap-windows", default="0:1000000",
+                   help="VS script: A taps only in these windows, ticks into a match, LO:HI[,...]")
+    p.add_argument("--vs-path", default="75:0:96",
+                   help="VS script: walk legs before the swarm, TICKS:STICKX:STICKY[,...] (stick -127..127)")
     a = p.parse_args(argv)
     if a.ticks <= 0:
         print("gen_inputs: --ticks must be positive", file=sys.stderr)
         return 2
+    if a.vs_starts is not None:
+        starts = [int(s) for s in a.vs_starts.split(",") if s.strip()]
+        path = [tuple(int(v) for v in leg.split(":")) for leg in a.vs_path.split(",") if leg.strip()]
+        tap = tuple(int(v) for v in a.vs_tap.split(":"))
+        swarm = tuple(int(v) for v in a.vs_swarm.split(":"))
+        swarm = swarm if any(swarm) else None
+        windows = [tuple(int(v) for v in w.split(":")) for w in a.vs_tap_windows.split(",") if w.strip()]
+        write_file(a.out, gen_vs_ticks(a.ticks, a.seed, a.vs_yaw, starts, path, swarm, tap, windows), v1=a.v1)
+        print(f"gen_inputs: wrote {a.ticks} ticks (seed {a.seed}) VS script starts={starts} yaw={a.vs_yaw} "
+              f"path={path} to {a.out}")
+        return 0
     write_file(a.out, gen_ticks(a.ticks, a.seed, players=a.players), v1=a.v1)
     print(f"gen_inputs: wrote {a.ticks} ticks (seed {a.seed}) v{'1' if a.v1 else '2'} "
           f"players={a.players} to {a.out}")

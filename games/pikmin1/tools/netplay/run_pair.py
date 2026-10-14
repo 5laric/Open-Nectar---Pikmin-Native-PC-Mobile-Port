@@ -47,6 +47,15 @@ on the GekkoNet channel (PIKMIN_NETPLAY_TEST_*); --proxy "lat:jit:loss" puts
 the netplay_impair_proxy between the peers instead (every datagram, both
 directions, handshake included).
 
+VS (--mode vs): both peers get --netplay-mode vs (plus --vs-map FILE when
+given) and play the VS script of gen_inputs.py (--vs-starts, --vs-yaw-host/
+--vs-yaw-join, --vs-path) instead of the field script. --expect sync then
+also wants, on both peers and with the same text: the "[VS] match over" lines
+(winner, score, pieces and tick), a scoring line, the "[VS] end screen" choice
+lines, a VS mode column that changes, and with --vs-matches N at least N match
+starts ("[VS] piece kind 5" once per match). Use a short match:
+--env PIKMIN_NETPLAY_TEST_KNOBS=1 PIKMIN_NETPLAY_TEST_VS_MATCH_SECONDS=60.
+
 Examples:
     py tools/netplay/run_pair.py --exe <build>/bin/nectar.exe --assets <assets> \\
         --ticks 3000 --out run/pair1
@@ -129,12 +138,12 @@ def sha256_file(path):
     return h.hexdigest()
 
 
-def gen_inputs(ticks, seed, out):
+def gen_inputs(ticks, seed, out, extra=None):
     subprocess.run([sys.executable, str(TOOLS / "gen_inputs.py"), "--ticks", str(ticks), "--seed", str(seed),
-                    "--out", str(out)], check=True, stdout=subprocess.DEVNULL)
+                    "--out", str(out)] + (extra or []), check=True, stdout=subprocess.DEVNULL)
 
 
-def prepare_run(run, assets, config, ticks, seed):
+def prepare_run(run, assets, config, ticks, seed, gen_extra=None):
     run.mkdir(parents=True, exist_ok=True)
     link_assets(assets, run / "assets")
     (run / "save").mkdir(exist_ok=True)
@@ -150,7 +159,7 @@ def prepare_run(run, assets, config, ticks, seed):
             (run / stale).unlink()
     pkni = run / "input.pkni"
     # A few hundred spare records: a peer's input for frame F is record F - d.
-    gen_inputs(ticks + 600, seed, pkni)
+    gen_inputs(ticks + 600, seed, pkni, gen_extra)
     return pkni
 
 
@@ -259,6 +268,11 @@ def peer_summary(name, run, rc):
         "desync": lines_with(text, "desync detected"),
         "refused": lines_with(text, "handshake refused:"),
         "marker": lines_with(text, "[NETPLAY] coop_active="),
+        "vs_over": lines_with(text, "[VS] match over"),
+        "vs_end": lines_with(text, "[VS] end screen:"),
+        "vs_score": [ln for ln in text.splitlines() if re.match(r"\[VS\] P[12] \+\d+", ln)],
+        "vs_matches": len(lines_with(text, "[VS] piece kind 5")),
+        "distinct_mode": len({row[7] for row in hashes.values()}),
         "started": lines_with(text, "[netplay] session started:"),
     }
     print(f"run_pair: {name}: exit={rc} hash ticks={info['ticks']} distinct navi hashes={distinct_navi} "
@@ -268,6 +282,11 @@ def peer_summary(name, run, rc):
     for navi, (n, path, far) in sorted(travel.items()):
         print(f"run_pair: {name}:   captain {navi}: {n} position samples, path {path:.1f}, farthest {far:.1f} "
               f"from the first sample")
+    for line in info["vs_score"][:6] + info["vs_over"] + info["vs_end"]:
+        print(f"run_pair: {name}:   {line.strip()}")
+    if info["vs_matches"]:
+        print(f"run_pair: {name}:   VS matches started: {info['vs_matches']}, distinct mode hashes: "
+              f"{info['distinct_mode']}")
     for line in lines_with(text, "[netplay] exit after") + lines_with(text, "[netplay] wall="):
         print(f"run_pair: {name}:   {line.strip()}")
     print(f"run_pair: {name}: log {run / 'native.log'}")
@@ -306,6 +325,36 @@ def check_sync(h, j, args):
     if h["travel"] != j["travel"]:
         print("run_pair: FAIL: the captains' positions differ between the peers")
         ok = False
+    if args.mode == "vs":
+        ok = check_vs(h, j, args) and ok
+    return ok
+
+
+def check_vs(h, j, args):
+    ok = True
+    for name, p in (("host", h), ("join", j)):
+        if not p["vs_over"]:
+            print(f"run_pair: FAIL: {name} logged no '[VS] match over' line")
+            ok = False
+        if not p["vs_score"] and not any(re.search(r"pieces [1-9]|pieces \d+ - [1-9]", ln) for ln in p["vs_over"]):
+            print(f"run_pair: FAIL: {name} recorded no scoring")
+            ok = False
+        if p["distinct_mode"] < 3:
+            print(f"run_pair: FAIL: {name} VS mode column took {p['distinct_mode']} distinct values")
+            ok = False
+        if p["vs_matches"] < args.vs_matches:
+            print(f"run_pair: FAIL: {name} started {p['vs_matches']} VS matches (want >= {args.vs_matches})")
+            ok = False
+        if args.vs_matches >= 2 and not any("rematch" in ln for ln in p["vs_end"]):
+            print(f"run_pair: FAIL: {name} has no rematch line")
+            ok = False
+    for key in ("vs_over", "vs_end", "vs_score"):
+        if [ln.strip() for ln in h[key]] != [ln.strip() for ln in j[key]]:
+            # The end screen line names who confirmed; the same text on both.
+            print(f"run_pair: FAIL: the peers' {key} lines differ")
+            ok = False
+    if ok:
+        print("run_pair: VS: same match results, scoring and end-screen choices on both peers, on the same ticks")
     return ok
 
 
@@ -465,6 +514,19 @@ def main(argv=None):
                    help="run one peer against --remote (two-PC test)")
     p.add_argument("--remote", default=None, help="joiner: host ip:port")
     p.add_argument("--bind", default="127.0.0.1", help="PIKMIN_NETPLAY_UDP_BIND for --peer-only")
+    p.add_argument("--mode", choices=("coop", "vs"), default="coop", help="session mode (--netplay-mode)")
+    p.add_argument("--vs-map", type=Path, default=None, help="--mode vs: a map.json for both peers (--vs-map)")
+    p.add_argument("--vs-map-join", type=Path, default=None, help="--mode vs: the joiner's own --vs-map")
+    p.add_argument("--vs-starts", default="130,2135", help="--mode vs: script control starts (session ticks)")
+    p.add_argument("--vs-yaw-host", type=int, default=4187,
+                   help="--mode vs: host control yaw (faces its near small piece on impact_arena)")
+    p.add_argument("--vs-yaw-join", type=int, default=36955, help="--mode vs: joiner control yaw (the same, turned 180)")
+    p.add_argument("--vs-path", default="85:-15:96,38:26:92,3:0:96", help="--mode vs: walk legs (gen_inputs --vs-path)")
+    p.add_argument("--vs-swarm", default="0:0", help="--mode vs: gen_inputs --vs-swarm")
+    p.add_argument("--vs-tap", default="12:18", help="--mode vs: gen_inputs --vs-tap")
+    p.add_argument("--vs-tap-windows", default="126:400,1790:1000000", help="--mode vs: gen_inputs --vs-tap-windows")
+    p.add_argument("--vs-tap-windows-join", default=None, help="--mode vs: the joiner's own tap windows")
+    p.add_argument("--vs-matches", type=int, default=1, help="--mode vs, --expect sync: matches that must start")
     a = p.parse_args(argv)
 
     a.out = a.out.resolve()
@@ -472,6 +534,8 @@ def main(argv=None):
     if not (assets / "dataDir").is_dir():
         raise SystemExit(f"run_pair: {assets} has no dataDir/")
     shared_env = dict(PIKMIN_NETPLAY_SEED=str(a.netplay_seed), PIKMIN_NETPLAY_DELAY=a.delay)
+    if a.mode == "vs":
+        shared_env["PIKMIN_NETPLAY_DEBUG_VS"] = "1"
     if a.latency_ms or a.jitter_ms or a.loss_pct:
         shared_env.update(PIKMIN_NETPLAY_TEST_LATENCY_MS=str(a.latency_ms),
                           PIKMIN_NETPLAY_TEST_JITTER_MS=str(a.jitter_ms),
@@ -480,6 +544,17 @@ def main(argv=None):
         shared_env.update(ice_env(a))
     shared_env.update(parse_kv(a.env, "env"))
     config = parse_kv(a.config, "config")
+    mode_args = {"host": [], "join": []}
+    gen_extra = {"host": None, "join": None}
+    if a.mode == "vs":
+        for role in ("host", "join"):
+            vs_map = a.vs_map_join if role == "join" and a.vs_map_join else a.vs_map
+            mode_args[role] = ["--netplay-mode", "vs"] + (["--vs-map", str(vs_map.resolve())] if vs_map else [])
+            gen_extra[role] = ["--vs-starts=" + a.vs_starts, "--vs-path=" + a.vs_path, "--vs-swarm=" + a.vs_swarm,
+                               "--vs-tap=" + a.vs_tap, "--vs-tap-windows=" + (a.vs_tap_windows_join if role == "join" and a.vs_tap_windows_join else a.vs_tap_windows),
+                               "--vs-yaw=" + str(a.vs_yaw_host if role == "host" else a.vs_yaw_join)]
+    else:
+        a.vs_matches = 0
     if a.desync_nudge is not None:
         a.env_join = list(a.env_join) + ["PIKMIN_NETPLAY_TEST_KNOBS=1",
                                          f"PIKMIN_NETPLAY_TEST_DESYNC_NUDGE={a.desync_nudge}"]
@@ -488,7 +563,7 @@ def main(argv=None):
         role = a.peer_only
         run = a.out / role
         cfg = dict(config, **parse_kv(a.config_host if role == "host" else a.config_join, "config"))
-        pkni = prepare_run(run, assets, cfg, a.ticks, a.seed_host if role == "host" else a.seed_join)
+        pkni = prepare_run(run, assets, cfg, a.ticks, a.seed_host if role == "host" else a.seed_join, gen_extra[role])
         if a.ice:
             clear_codes(run)
             if role == "host":
@@ -506,7 +581,8 @@ def main(argv=None):
         env = dict(shared_env, PIKMIN_NETPLAY_UDP_BIND=a.bind,
                    **parse_kv(a.env_host if role == "host" else a.env_join, "env"))
         print(f"run_pair: {role}: exe={a.exe.resolve()} sha256={sha256_file(a.exe)} bind={a.bind}")
-        proc, out = launch(a.exe, run, args + ["--netplay-input", str(pkni)], env, not a.throttled, a.ticks)
+        proc, out = launch(a.exe, run, args + mode_args[role] + ["--netplay-input", str(pkni)], env, not a.throttled,
+                           a.ticks)
         print(f"run_pair: {role}: pid {proc.pid}, log {run / 'native.log'}")
         if a.ice and role == "host":
             if wait_for_file(run / "offer.txt", proc, 120):
@@ -535,8 +611,10 @@ def main(argv=None):
     if a.exe_join_variant:
         exe_join = exe_variant(a.exe, a.out / "join")
     host_run, join_run = a.out / "host", a.out / "join"
-    host_pkni = prepare_run(host_run, assets, dict(config, **parse_kv(a.config_host, "config")), a.ticks, a.seed_host)
-    join_pkni = prepare_run(join_run, assets, dict(config, **parse_kv(a.config_join, "config")), a.ticks, a.seed_join)
+    host_pkni = prepare_run(host_run, assets, dict(config, **parse_kv(a.config_host, "config")), a.ticks, a.seed_host,
+                            gen_extra["host"])
+    join_pkni = prepare_run(join_run, assets, dict(config, **parse_kv(a.config_join, "config")), a.ticks, a.seed_join,
+                            gen_extra["join"])
     print(f"run_pair: host exe={Path(exe_host).resolve()} sha256={sha256_file(exe_host)}")
     print(f"run_pair: join exe={Path(exe_join).resolve()} sha256={sha256_file(exe_join)}")
 
@@ -571,7 +649,7 @@ def main(argv=None):
         host_args = ice_host_args(host_run)
     else:
         host_args = ["--netplay-host", str(port)]
-    hproc, hout = launch(exe_host, host_run, host_args + ["--netplay-input", str(host_pkni)],
+    hproc, hout = launch(exe_host, host_run, host_args + mode_args["host"] + ["--netplay-input", str(host_pkni)],
                          dict(loop_env, **parse_kv(a.env_host, "env")), not a.throttled, a.ticks)
     procs.append(("host", hproc))
     files.append(hout)
@@ -585,7 +663,7 @@ def main(argv=None):
     else:
         time.sleep(0.5)
         join_args = ["--netplay-join", f"127.0.0.1:{join_target}"]
-    jproc, jout = launch(exe_join, join_run, join_args + ["--netplay-input", str(join_pkni)],
+    jproc, jout = launch(exe_join, join_run, join_args + mode_args["join"] + ["--netplay-input", str(join_pkni)],
                          dict(loop_env, **parse_kv(a.env_join, "env")), not a.throttled, a.ticks)
     procs.append(("join", jproc))
     files.append(jout)
