@@ -83,3 +83,61 @@ inline PcNetplayInput pc_netplay_input_neutral()
 {
 	return PcNetplayInput();
 }
+
+// Per-turn physical-pad accumulator. The driver samples the pad every loop
+// turn but submits at most one input per Advance, so a tap that starts and
+// ends between two submit turns would be lost. Between submits every sample
+// is folded in: button bits OR-accumulate, while the sticks, triggers and
+// control yaw keep the latest sample. take() returns the merged input and
+// clears the button latch.
+struct PcNetplayAccum {
+	uint16_t buttons = 0;
+	int8_t stickX = 0;
+	int8_t stickY = 0;
+	int8_t substickX = 0;
+	int8_t substickY = 0;
+	uint8_t triggerL = 0;
+	uint8_t triggerR = 0;
+	uint16_t controlYaw = 0;
+
+	void reset()
+	{
+		buttons = 0;
+		stickX = stickY = 0;
+		substickX = substickY = 0;
+		triggerL = triggerR = 0;
+		controlYaw = 0;
+	}
+
+	void add(uint16_t b, int8_t sx, int8_t sy, int8_t cx, int8_t cy, uint8_t tl, uint8_t tr, uint16_t yaw)
+	{
+		buttons |= b;
+		stickX = sx;
+		stickY = sy;
+		substickX = cx;
+		substickY = cy;
+		triggerL = tl;
+		triggerR = tr;
+		controlYaw = yaw;
+	}
+
+	void add_input(const PcNetplayInput& in)
+	{
+		add(in.buttons, in.stickX, in.stickY, in.substickX, in.substickY, in.triggerL, in.triggerR, in.controlYaw);
+	}
+
+	PcNetplayInput take()
+	{
+		PcNetplayInput out;
+		out.buttons    = buttons;
+		out.stickX     = stickX;
+		out.stickY     = stickY;
+		out.substickX  = substickX;
+		out.substickY  = substickY;
+		out.triggerL   = triggerL;
+		out.triggerR   = triggerR;
+		out.controlYaw = controlYaw;
+		buttons        = 0;
+		return out;
+	}
+};
