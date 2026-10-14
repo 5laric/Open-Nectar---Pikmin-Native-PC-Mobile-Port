@@ -61,6 +61,7 @@ __declspec(dllexport) int           AmdPowerXpressRequestHighPerformance = 1;
 #include "netplay/pc_netplay_det.h"
 #include "netplay/pc_input_log.h"
 #include "netplay/pc_state_hash.h"
+#include "netplay/pc_coop_switch.h"
 
 int main(int argc, char* argv[])
 {
@@ -119,6 +120,14 @@ int main(int argc, char* argv[])
         if (std::strcmp(argv[i], "--vs-map") == 0 && i + 1 < argc) {
             pc_vs_map_select_file(argv[++i]);
             pc_vs_direct_request();
+        }
+        // Straight into a new two-captain story run (--coop-captains=<p1>,<p2>
+        // picks the captains).
+        if (std::strcmp(argv[i], "--coop-direct") == 0) {
+            PcCoopSwitch sw = pc_coop_switch_parse(argc, argv);
+            sw.coop         = true;
+            pc_coop_switch_apply(sw);
+            pc_coop_direct_request();
         }
     }
     (void)argc;

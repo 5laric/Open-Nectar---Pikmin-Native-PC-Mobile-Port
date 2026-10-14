@@ -318,6 +318,8 @@ set(PC_PORT_SOURCES
     # Two-pass sim/presentation frame and the session lead camera.
     pc_port/netplay/pc_netplay_present.cpp
     pc_port/netplay/pc_netplay_camlead.cpp
+    # Co-op switch and direct boot (--coop-direct, netplay).
+    pc_port/netplay/pc_coop_switch.cpp
     pc_port/audio/pc_audio.cpp
     pc_port/audio/pc_envelope.cpp
     pc_port/audio/pc_jam.cpp
@@ -1120,6 +1122,12 @@ if(PIKMIN_BUILD_TESTS)
     target_include_directories(pc_netplay_input_sel_test PRIVATE pc_port)
     target_compile_options(pc_netplay_input_sel_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
     add_test(NAME pc_netplay_input_sel_test COMMAND pc_netplay_input_sel_test)
+    add_executable(pc_coop_switch_test
+        pc_port/netplay/pc_coop_switch_test.cpp
+        pc_port/netplay/pc_coop_switch.cpp)
+    target_include_directories(pc_coop_switch_test PRIVATE pc_port)
+    target_compile_options(pc_coop_switch_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
+    add_test(NAME pc_coop_switch_test COMMAND pc_coop_switch_test)
 
     # PKNI input-file format, yaw quantisation and the per-tick yaw slots.
     add_executable(pc_input_log_test

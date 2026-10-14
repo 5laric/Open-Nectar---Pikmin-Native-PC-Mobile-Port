@@ -27,6 +27,7 @@
 #include "mods/pc_vs_arena.h"
 #include "pc_window.h"
 #include "settings/pc_settings.h"
+#include "netplay/pc_coop_switch.h"
 #endif
 
 // Macros for packing and unpacking the section compression flag.
@@ -115,6 +116,19 @@ struct CardSelectSetupSection : public Node {
 				mNextSectionsFlag = PACK_NEXT_ONEPLAYER(ONEPLAYER_GameExit);
 			}
 			mState = Exit;
+			gsys->setFade(0.0f);
+		} else if (!gameflow.mIsChallengeMode && pc_coop_pending() && pc_coop_direct_take_setup()) {
+			// Co-op direct boot: a new file with no prompts. The captains and
+			// the controller assignment were armed by the co-op switch; the
+			// run takes no Permadeath, Hard mode, Randomizer or tutorial skip.
+			pc_coop_take_chosen_at_title();
+			pc_permadeath_set_pending(false);
+			pc_hardmode_set_pending(false);
+			pc_randomizer_set_menu_pending(false);
+			pc_tutorial_skip_set_pending(false);
+			gameflow.mGamePrefs.mHasSaveGame = false;
+			mNextSectionsFlag                = 0; // no destination: the exit starts the new run
+			mState                           = Exit;
 			gsys->setFade(0.0f);
 		} else if (gameflow.mIsChallengeMode && pc_vs_pending() && pc_coop_take_chosen_at_title()) {
 			// VS: primero la explicación y las reglas; luego mandos y
@@ -535,7 +549,7 @@ struct CardSelectSetupSection : public Node {
 					#if defined(PIKI_PC_PORT)
 						// Skip tutorial enters the stage directly. IntroGame is only the
 						// two-part crash movie and has no progression state to preserve.
-						gameflow.mNextOnePlayerSectionID = pc_tutorial_skip_pending()
+						gameflow.mNextOnePlayerSectionID = pc_tutorial_skip_pending() || pc_coop_direct_active()
 						                                       ? ONEPLAYER_NewPikiGame
 						                                       : ONEPLAYER_IntroGame;
 					#else

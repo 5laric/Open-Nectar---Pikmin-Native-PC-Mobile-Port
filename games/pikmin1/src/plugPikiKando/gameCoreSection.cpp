@@ -9,6 +9,7 @@
 #include "settings/pc_settings.h"
 #include "netplay/pc_netplay_det.h"
 #include "netplay/pc_netplay_present.h"
+#include "netplay/pc_coop_switch.h"
 #if defined(PIKI_PC_PORT)
 #include "pc_photo_mode.h"
 #include "pc_coop.h"
@@ -2098,6 +2099,11 @@ GameCoreSection::GameCoreSection(Controller* controller, MapMgr* mgr, Camera& ca
 	mNavi = static_cast<Navi*>(naviMgr->birth());
 	// mNaviID 1 -> Kontroller(2) -> pad 1 (segundo mando, fase 0).
 	mNavi2 = pc_coop_active() ? static_cast<Navi*>(naviMgr->birth()) : nullptr;
+	// One marker line for runs the co-op switch armed (--coop-direct or
+	// netplay); ordinary logs are unchanged.
+	if (pc_coop_switch_active()) {
+		printf("[NETPLAY] coop_active=%d navis=%d\n", pc_coop_active() ? 1 : 0, naviMgr->getNaviCount());
+	}
 #else
 	naviMgr->create(1);
 	mNavi = static_cast<Navi*>(naviMgr->birth());
