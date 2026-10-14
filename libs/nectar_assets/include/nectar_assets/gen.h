@@ -45,7 +45,13 @@ struct Generator {
 	GenObject object;
 	GenArea area;
 	GenPart type;
+	/// El generador tal cual está en el archivo (para reescribirlo).
+	std::vector<std::uint8_t> raw;
 };
+
+/// Posición (pos) dentro de Generator::raw: tras nombre, versión, _70,
+/// carryOver y la nota de 32 bytes.
+constexpr std::size_t kGenPosOffset = 48;
 
 struct GenFile {
 	std::uint32_t version = 0;
@@ -56,6 +62,10 @@ struct GenFile {
 
 bool parseGen(const std::uint8_t* data, std::size_t size, GenFile& out, std::string& error);
 bool loadGen(const std::string& path, GenFile& out, std::string& error);
+
+/// Archivo .gen con estos generadores en crudo (cabecera v0.1, el capitán en
+/// el origen). Cada uno debe empezar como Generator::raw.
+std::vector<std::uint8_t> writeGen(const std::vector<std::vector<std::uint8_t>>& generators);
 
 /// 'teki' -> "teki".
 std::string genIdString(std::uint32_t id);

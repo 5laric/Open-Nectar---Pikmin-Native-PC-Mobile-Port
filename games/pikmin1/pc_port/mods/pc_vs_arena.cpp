@@ -1,6 +1,7 @@
 #include "pc_vs_arena.h"
 #include "pc_vs_map.h"
 
+#include "MapMgr.h"
 #include "Stream.h"
 #include "Vector.h"
 #include "system.h"
@@ -34,7 +35,7 @@ bool readGameFile(const std::string& path, std::vector<u8>& out)
 }
 
 // Lo compilado del mapa activo (se tira al elegir otro).
-std::vector<u8> sMod, sIni;
+std::vector<u8> sMod, sIni, sGen, sPlants;
 int sBuiltSerial = -1;
 std::string sBuildError;
 
@@ -52,6 +53,8 @@ bool build()
 	}
 	sMod.swap(out.mod);
 	sIni.swap(out.ini);
+	sGen.swap(out.genDefault);
+	sPlants.swap(out.genPlants);
 	fprintf(stderr, "[VS arena] built %s: %zu bytes, %zu verts, %zu coll tris, %zu route points, %zu props\n", PC_VS_ARENA_MOD, sMod.size(),
 	        out.vertices, out.collisionTris, out.routePoints, out.props);
 	return true;
@@ -62,6 +65,8 @@ void dropIfStale()
 	if (sBuiltSerial != pc_vs_map_serial()) {
 		sMod.clear();
 		sIni.clear();
+		sGen.clear();
+		sPlants.clear();
 		sBuiltSerial = pc_vs_map_serial();
 	}
 }
@@ -84,10 +89,12 @@ const char* pc_vs_arena_prepare(void)
 RandomAccessStream* pc_vs_arena_open(const char* path)
 {
 	const bool isMod = strcmp(path, PC_VS_ARENA_MOD) == 0, isIni = strcmp(path, PC_VS_ARENA_STAGE) == 0;
-	if (!isMod && !isIni) return nullptr;
+	const bool isGen = strcmp(path, PC_VS_ARENA_GEN) == 0, isPlants = strcmp(path, PC_VS_ARENA_PLANTS) == 0;
+	if (!isMod && !isIni && !isGen && !isPlants) return nullptr;
 	dropIfStale();
 	if (sMod.empty() && !build()) return nullptr;
-	std::vector<u8>& data = isMod ? sMod : sIni;
+	std::vector<u8>& data = isMod ? sMod : isIni ? sIni : isGen ? sGen : sPlants;
+	if (data.empty()) return nullptr; // sin generadores: como si no hubiera archivo
 	return new RamStream(data.data(), int(data.size()));
 }
 
@@ -101,8 +108,13 @@ const PcVsMap& activeMap()
 	return m ? *m : sEmpty;
 }
 
-// Con terreno editable, la altura del suelo; en los llanos, 0.
-f32 groundAt(f32 x, f32 z) { return nectar::terrainHeight(activeMap(), x, z); }
+// Con terreno editable, la altura del suelo; en los llanos, 0. Con un
+// escenario del juego, la de su colisión.
+f32 groundAt(f32 x, f32 z)
+{
+	if (!activeMap().course.empty() && mapMgr) return mapMgr->getMinY(x, z, true);
+	return nectar::terrainHeight(activeMap(), x, z);
+}
 } // namespace
 
 void pc_vs_arena_base(int player, Vector3f& pos, f32& faceDirection)
@@ -186,7 +198,7 @@ int pc_vs_arena_object_spots(PcVsObjectSpot* out, int max)
 {
 	int n = 0;
 	for (const nectar::MapObject& o : activeMap().objects) {
-		if (n < max) out[n++] = { o.x, o.z, o.face, o.push, o.kind, o.work };
+		if (n < max) out[n++] = { o.x, o.z, o.face, o.push, o.kind, o.work, o.y };
 	}
 	return n;
 }

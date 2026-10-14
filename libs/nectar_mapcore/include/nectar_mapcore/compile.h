@@ -23,6 +23,7 @@ using GameFileReader = std::function<bool(const std::string& path, std::vector<s
 struct CompiledMap {
 	std::vector<std::uint8_t> mod;
 	std::vector<std::uint8_t> ini;
+	std::vector<std::uint8_t> genDefault, genPlants; ///< generadores del escenario (vacíos = sin .gen)
 	std::size_t vertices = 0, collisionTris = 0, routePoints = 0, props = 0;
 };
 

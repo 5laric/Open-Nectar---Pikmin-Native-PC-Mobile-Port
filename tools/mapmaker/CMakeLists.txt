@@ -69,11 +69,13 @@ add_executable(nectar_mapmaker
     src/main.cpp
     src/app.cpp
     src/config.cpp
+    src/course_import.cpp
     src/document.cpp
     src/gl.cpp
     src/preview.cpp
     src/renderer.cpp
     src/stb_impl.cpp
+    src/templates.cpp
     ${NM_PLATFORM}
     "${NM_GEN}/font_fredoka.h")
 set_property(TARGET nectar_mapmaker PROPERTY INCLUDE_DIRECTORIES "")

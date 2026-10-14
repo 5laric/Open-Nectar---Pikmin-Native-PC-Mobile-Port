@@ -19,6 +19,10 @@
 #include <cstdlib>
 #include <string>
 
+#include "nectar_mapcore/i18n.h"
+
+using nectar::tr;
+
 int main(int argc, char** argv)
 {
 	SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
@@ -39,7 +43,7 @@ int main(int argc, char** argv)
 	}
 	SDL_GLContext gl = SDL_GL_CreateContext(window);
 	if (!gl || !nmLoadGl()) {
-		fprintf(stderr, "Hace falta OpenGL 3.3: %s\n", SDL_GetError());
+		fprintf(stderr, tr("Hace falta OpenGL 3.3: %s\n"), SDL_GetError());
 		return 1;
 	}
 	SDL_GL_MakeCurrent(window, gl);
@@ -73,7 +77,7 @@ int main(int argc, char** argv)
 		nm::App app;
 		std::string error;
 		if (!app.init(argc > 1 ? argv[1] : "", error)) {
-			fprintf(stderr, "No se pudo iniciar el editor: %s\n", error.c_str());
+			fprintf(stderr, tr("No se pudo iniciar el editor: %s\n"), error.c_str());
 			exitCode = 1;
 		}
 		while (exitCode == 0 && !app.wantsQuit()) {

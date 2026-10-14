@@ -19,6 +19,10 @@ struct Vector3f;
  */
 #define PC_VS_ARENA_STAGE "stages/vsarena.ini"
 #define PC_VS_ARENA_MOD   "courses/vsarena/arena.mod"
+// Generadores (solo con un escenario del juego como base): el juego los busca
+// junto al .ini de la escena.
+#define PC_VS_ARENA_GEN    "stages/vsarena/default.gen"
+#define PC_VS_ARENA_PLANTS "stages/vsarena/plants.gen"
 
 /// Flujo en memoria para una ruta de la arena; nullptr si la ruta no es de la
 /// arena o faltan los datos del juego.
@@ -87,10 +91,14 @@ enum {
 	PC_VS_OBJ_GATE_SOFT,
 	PC_VS_OBJ_GATE_HARD,
 	PC_VS_OBJ_GATE_BOMB,
+	PC_VS_OBJ_KEY,
+	PC_VS_OBJ_KEY_DOOR,
+	PC_VS_OBJ_NECTAR,
 };
 struct PcVsObjectSpot {
 	f32 x, z, face, push;
 	int kind, work;
+	f32 y; ///< sobre el suelo
 };
 int pc_vs_arena_object_spots(PcVsObjectSpot* out, int max);
 

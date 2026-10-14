@@ -9,6 +9,8 @@
 #include <cstring>
 #include <map>
 
+#include "nectar_mapcore/i18n.h"
+
 namespace nectar {
 
 namespace {
@@ -297,7 +299,7 @@ void putBE32(std::vector<u8>& b, std::size_t at, u32 v)
 bool addProp(const MapProp& prop, const Model& model, PropContext& ctx, std::string& error)
 {
 	if (ctx.tables.materials.size() + std::size_t(ctx.baseMaterials) + model.materials.size() > 0x7FFF) {
-		error = "demasiados materiales con los objetos";
+		error = tr("demasiados materiales con los objetos");
 		return false;
 	}
 	// Tablas: se copian con sus índices desplazados.
@@ -441,6 +443,34 @@ struct MaterialUse {
 	u32 code     = kFloorCode;
 };
 
+// Ruido de valor suave en [0, 1] (determinista: el mismo mapa da el mismo
+// resultado). Sirve para variar el tono y deformar las UV del terreno, que si
+// no repite la textura en una rejilla perfecta.
+f32 hashNoise(int x, int z, u32 seed)
+{
+	u32 h = u32(x) * 374761393u + u32(z) * 668265263u + seed * 2246822519u;
+	h     = (h ^ (h >> 13)) * 1274126177u;
+	return f32((h ^ (h >> 16)) & 0xFFFF) / 65535.0f;
+}
+
+f32 smoothNoise(f32 x, f32 z, u32 seed)
+{
+	const f32 fx = std::floor(x), fz = std::floor(z);
+	const int ix = int(fx), iz = int(fz);
+	f32 tx = x - fx, tz = z - fz;
+	tx     = tx * tx * (3.0f - 2.0f * tx);
+	tz     = tz * tz * (3.0f - 2.0f * tz);
+	const f32 a = hashNoise(ix, iz, seed), b = hashNoise(ix + 1, iz, seed);
+	const f32 c = hashNoise(ix, iz + 1, seed), d = hashNoise(ix + 1, iz + 1, seed);
+	return (a + (b - a) * tx) + ((c + (d - c) * tx) - (a + (b - a) * tx)) * tz;
+}
+
+/// Dos octavas, en [0, 1]; `wave`: tamaño de las manchas en unidades del mundo.
+f32 terrainNoise(f32 x, f32 z, f32 wave, u32 seed)
+{
+	return smoothNoise(x / wave, z / wave, seed) * 0.65f + smoothNoise(x / (wave * 0.37f), z / (wave * 0.37f), seed + 101u) * 0.35f;
+}
+
 // Formato de vértice y escala de UV de la primera malla que usa `mat`.
 MaterialUse analyseMaterial(const Model& model, int mat)
 {
@@ -538,13 +568,13 @@ bool buildIni(const MapData& map, const GameFileReader& read, const std::string&
 	const std::string& sourceIni = map.baseStage;
 	std::vector<u8> src;
 	if (!read(sourceIni, src) || src.empty()) {
-		error = "falta " + sourceIni + " (en assets/dataDir)";
+		error = tr("falta ") + sourceIni + tr(" (en assets/dataDir)");
 		return false;
 	}
 	std::string text(src.begin(), src.end());
 	const std::size_t at = text.find("map_file");
 	if (at == std::string::npos) {
-		error = sourceIni + " no es un .ini de escena (no tiene map_file)";
+		error = sourceIni + tr(" no es un .ini de escena (no tiene map_file)");
 		return false;
 	}
 	const std::size_t eol = text.find('\n', at);
@@ -581,17 +611,29 @@ bool buildIni(const MapData& map, const GameFileReader& read, const std::string&
 bool compileMap(const MapData& map, const GameFileReader& read, const std::string& modPath, CompiledMap& result, std::string& error)
 {
 	result = CompiledMap();
+	if (!map.course.empty()) {
+		// Escenario del juego: su .mod tal cual (geometría, colisión y caminos)
+		// y sus generadores; lo de VS lo pone el juego encima.
+		if (!read(map.course, result.mod) || result.mod.empty()) {
+			error = tr("falta o no se puede leer ") + map.course + tr(" (en assets/dataDir)");
+			return false;
+		}
+		if (!buildIni(map, read, modPath, result.ini, error)) return false;
+		result.genDefault = map.genDefault;
+		result.genPlants  = map.genPlants;
+		return true;
+	}
 	const std::string& sourceMod = map.sourceMod;
 	std::vector<u8> src;
 	std::map<u32, std::pair<std::size_t, std::size_t>> chunks;
 	if (!read(sourceMod, src) || src.empty() || !scanChunks(src, chunks)) {
-		error = "falta o no se puede leer " + sourceMod + " (en assets/dataDir)";
+		error = tr("falta o no se puede leer ") + sourceMod + tr(" (en assets/dataDir)");
 		return false;
 	}
 	for (u32 need : { kChunkHeader, kChunkTexture, kChunkTexAttr, kChunkMaterial }) {
 		if (!chunks.count(need)) {
 			char why[160];
-			snprintf(why, sizeof(why), "%s no trae el bloque %x (texturas/materiales)", sourceMod.c_str(), need);
+			snprintf(why, sizeof(why), tr("%s no trae el bloque %x (texturas/materiales)"), sourceMod.c_str(), need);
 			error = why;
 			return false;
 		}
@@ -746,7 +788,7 @@ bool compileMap(const MapData& map, const GameFileReader& read, const std::strin
 					Model m;
 					std::string why;
 					if (!read(pm.source, bytes) || bytes.empty()) {
-						error = "falta " + pm.source + " (material del suelo)";
+						error = tr("falta ") + pm.source + tr(" (material del suelo)");
 						return false;
 					}
 					if (!parseMod(bytes.data(), bytes.size(), m, why)) {
@@ -758,7 +800,7 @@ bool compileMap(const MapData& map, const GameFileReader& read, const std::strin
 				model = &it->second;
 			}
 			if (pm.index < 0 || std::size_t(pm.index) >= model->materials.size()) {
-				error = pm.source + " no tiene el material " + std::to_string(pm.index);
+				error = pm.source + tr(" no tiene el material ") + std::to_string(pm.index);
 				return false;
 			}
 			use          = analyseMaterial(*model, pm.index);
@@ -924,9 +966,45 @@ bool compileMap(const MapData& map, const GameFileReader& read, const std::strin
 			auto it        = uvAt.find(key);
 			if (it != uvAt.end()) return it->second;
 			const int ui = int(uvs[ch].size());
-			uvs[ch].push_back({ verts[std::size_t(vi)].x * uvSets[std::size_t(set)].scale[ch], verts[std::size_t(vi)].z * uvSets[std::size_t(set)].scale[ch] });
+			const V3& p  = verts[std::size_t(vi)];
+			const f32 sc = uvSets[std::size_t(set)].scale[ch];
+			V2 uv { p.x * sc, p.z * sc };
+			if (std::size_t(set) < uses.size()) {
+				// Deformación suave (fracción de repetición): rompe la rejilla.
+				const f32 amp = ch == 0 ? 0.45f : 0.25f;
+				uv.x += (terrainNoise(p.x, p.z, 900.0f, 11u + u32(ch)) - 0.5f) * amp;
+				uv.y += (terrainNoise(p.x, p.z, 900.0f, 23u + u32(ch)) - 0.5f) * amp;
+			}
+			uvs[ch].push_back(uv);
 			uvAt[key] = ui;
 			return ui;
+		};
+		// Tono del suelo por vértice, como los escenarios del juego: manchas
+		// más claras y más oscuras, algo más cálidas o frías, y las pendientes
+		// más oscuras. Colores redondeados para no llenar la tabla.
+		std::map<u32, int> shadeIndex;
+		std::map<int, int> shadeOf;
+		auto shade = [&](int vi) {
+			auto it = shadeOf.find(vi);
+			if (it != shadeOf.end()) return it->second;
+			const V3& p  = verts[std::size_t(vi)];
+			const f32 nl = terrainNoise(p.x, p.z, 700.0f, 5u);
+			const f32 nw = terrainNoise(p.x, p.z, 1300.0f, 7u);
+			f32 b        = 0.80f + 0.20f * nl;
+			const auto nit = normalOf.find(vi);
+			if (nit != normalOf.end()) {
+				const f32 ny = normals[std::size_t(nit->second)].y;
+				b *= 0.78f + 0.22f * std::max(0.0f, std::min(1.0f, (ny - 0.55f) / 0.4f));
+			}
+			auto q        = [](f32 v) { return u32(std::lround(std::max(0.0f, std::min(1.0f, v)) * 31.0f)) * 255u / 31u; };
+			const u32 col = (q(b * (0.97f + 0.06f * nw)) << 24) | (q(b) << 16) | (q(b * (1.03f - 0.08f * nw)) << 8) | 0xFFu;
+			auto ci       = shadeIndex.find(col);
+			if (ci == shadeIndex.end()) {
+				ci = shadeIndex.emplace(col, int(colours.size())).first;
+				colours.push_back(col);
+			}
+			shadeOf[vi] = ci->second;
+			return ci->second;
 		};
 		// Un polígono convexo en abanico.
 		auto emit = [&](MeshBuild& m, int set, const Tri3& t, const Poly& poly, u32 code, bool bed) {
@@ -937,7 +1015,7 @@ bool compileMap(const MapData& map, const GameFileReader& read, const std::strin
 				Tri tri          = makeTri(idx[0], idx[1], idx[2], 0, code);
 				for (int q = 0; q < 3; q++) {
 					tri.n[q]   = normalOf[idx[q]];
-					tri.col[q] = 0;
+					tri.col[q] = bed ? 0 : shade(idx[q]);
 					if (bed) {
 						f32 x, z, h, w;
 						pointPos(t, poly[q == 0 ? 0 : (q == 1 ? i : i + 1)], x, z, h, w);
@@ -1263,7 +1341,7 @@ bool compileMap(const MapData& map, const GameFileReader& read, const std::strin
 				std::vector<u8> bytes;
 				Model model;
 				if (!read(prop.asset, bytes) || bytes.empty()) {
-					error = "falta el objeto " + prop.asset + " (en assets/dataDir)";
+					error = tr("falta el objeto ") + prop.asset + tr(" (en assets/dataDir)");
 					return false;
 				}
 				if (!parseMod(bytes.data(), bytes.size(), model, why)) {
@@ -1309,7 +1387,7 @@ bool compileMap(const MapData& map, const GameFileReader& read, const std::strin
 	bool tooBig = verts.size() > 0xFFFF || normals.size() > 0xFFFF || colours.size() > 0xFFFF;
 	for (const std::vector<V2>& u : uvs) tooBig = tooBig || u.size() > 0xFFFF;
 	if (tooBig) {
-		error = "el mapa es demasiado grande (más de 65535 vértices): hazlo más pequeño, con celdas más grandes o con menos objetos";
+		error = tr("el mapa es demasiado grande (más de 65535 vértices): hazlo más pequeño, con celdas más grandes o con menos objetos");
 		return false;
 	}
 

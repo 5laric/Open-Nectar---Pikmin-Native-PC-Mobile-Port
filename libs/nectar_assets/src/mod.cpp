@@ -556,24 +556,31 @@ std::vector<BakedTri> bakeModel(const Model& model)
 	const std::vector<Mat34> pose = model.bindPose();
 	const std::vector<int> mats   = model.meshMaterials();
 	std::vector<BakedTri> out;
+	// Matrices cargadas en cada hueco. Un hueco con -1 en un grupo no se
+	// recarga: conserva la del grupo anterior (como la memoria de GX).
+	std::vector<Mat34> slots(16);
 	for (std::size_t mi = 0; mi < model.meshes.size(); mi++) {
 		const int mat = mats[mi];
 		if (mat < 0 || std::size_t(mat) >= model.materials.size()) continue;
 		if (model.materials[std::size_t(mat)].flags & MOD_MAT_SKIP) continue;
 		const ModMesh& mesh = model.meshes[mi];
 		for (const ModMtxGroup& g : mesh.groups) {
+			for (std::size_t sl = 0; sl < g.deps.size() && sl < slots.size(); sl++) {
+				const int dep = g.deps[sl];
+				if (dep < 0 || std::size_t(dep) >= model.vtxMatrices.size()) continue;
+				const ModVtxMatrix& vm = model.vtxMatrices[std::size_t(dep)];
+				slots[sl]              = vm.joint && std::size_t(vm.index) < pose.size() ? pose[std::size_t(vm.index)] : Mat34 {};
+			}
 			for (const ModTriangle& t : g.tris) {
 				BakedTri b;
 				b.material = mat;
 				for (int k = 0; k < 3; k++) {
 					const ModVertex& v = t.v[k];
 					Mat34 m; // envolvente: ya en la pose de reposo
-					if (v.mtxSlot >= 0 && std::size_t(v.mtxSlot) < g.deps.size()) {
-						const int dep = g.deps[std::size_t(v.mtxSlot)];
-						if (dep >= 0 && std::size_t(dep) < model.vtxMatrices.size()) {
-							const ModVtxMatrix& vm = model.vtxMatrices[std::size_t(dep)];
-							if (vm.joint && std::size_t(vm.index) < pose.size()) m = pose[std::size_t(vm.index)];
-						}
+					// Sin índice de matriz en el vértice, GX usa la primera.
+					const int slot = v.mtxSlot >= 0 ? v.mtxSlot : 0;
+					if (!g.deps.empty() && std::size_t(slot) < slots.size()) {
+						m = slots[std::size_t(slot)];
 					} else if (mesh.parentJoint >= 0 && std::size_t(mesh.parentJoint) < pose.size()) {
 						m = pose[std::size_t(mesh.parentJoint)];
 					}

@@ -3020,6 +3020,17 @@ void Navi::collisionCallback(immut CollEvent& event)
 			Event event(2, collider->getGeneratorID());
 			informEvent(event);
 			mCurrKeyCount++;
+#if defined(PIKI_PC_PORT)
+			{
+				// Destellos y sonido al cogerla (el original no hacía nada).
+				Vector3f pos = collider->mSRT.t;
+				pos.y += 20.0f;
+				effectMgr->create(EffectMgr::EFF_Piki_GrowUp1, pos, nullptr, nullptr);
+				effectMgr->create(EffectMgr::EFF_Piki_GrowUp2, pos, nullptr, nullptr);
+				effectMgr->create(EffectMgr::EFF_Onyon_Sparkles, pos, nullptr, nullptr);
+				SeSystem::playSysSe(SYSSE_WORK_FINISH);
+			}
+#endif
 			collider->kill(false);
 			break;
 		}

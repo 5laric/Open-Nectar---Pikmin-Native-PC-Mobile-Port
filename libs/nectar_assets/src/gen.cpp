@@ -155,6 +155,7 @@ bool parseGen(const std::uint8_t* data, std::size_t size, GenFile& out, std::str
 	}
 	for (int i = 0; i < n; i++) {
 		Generator g;
+		const std::size_t start = r.pos;
 		g.name      = r.id();
 		g.version   = r.id();
 		r.id(); // _70
@@ -183,9 +184,23 @@ bool parseGen(const std::uint8_t* data, std::size_t size, GenFile& out, std::str
 			error = "generador " + std::to_string(i) + " de " + std::to_string(n) + " cortado o desconocido (" + idString(g.object.kind) + ")";
 			return false;
 		}
+		g.raw.assign(data + start, data + r.pos);
 		out.generators.push_back(g);
 	}
 	return true;
+}
+
+std::vector<std::uint8_t> writeGen(const std::vector<std::vector<std::uint8_t>>& generators)
+{
+	std::vector<std::uint8_t> out;
+	auto u32 = [&](std::uint32_t v) {
+		for (int s = 24; s >= 0; s -= 8) out.push_back(std::uint8_t(v >> s));
+	};
+	u32(fourcc("1.0v")); // los id van al revés en el archivo ('v0.1')
+	for (int k = 0; k < 4; k++) u32(0); // capitán en (0, 0, 0) mirando a 0
+	u32(std::uint32_t(generators.size()));
+	for (const auto& g : generators) out.insert(out.end(), g.begin(), g.end());
+	return out;
 }
 
 bool loadGen(const std::string& path, GenFile& out, std::string& error)

@@ -15,6 +15,7 @@ struct Config {
 	std::string lastMap;   ///< último map.json abierto o guardado
 	bool snap = true;
 	bool tutorialDone = false;
+	std::string language = "en"; ///< "en" o "es"
 	float snapStep = 25.0f, snapAngle = 15.0f;
 
 	std::string dataDir() const { return assetsDir + "/dataDir"; }

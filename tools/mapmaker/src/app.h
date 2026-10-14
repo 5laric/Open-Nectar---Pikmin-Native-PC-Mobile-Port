@@ -6,6 +6,8 @@
 // lo que falta para poder jugar.
 
 #include "config.h"
+#include "course_import.h"
+#include "templates.h"
 #include "document.h"
 #include "math3d.h"
 #include "preview.h"
@@ -39,7 +41,7 @@ public:
 
 private:
 	enum class Screen { Setup, Building, Welcome, Editor };
-	enum class Tool { Move, Place, Floor, Height, Plateau, Paint, Water, Walls };
+	enum class Tool { Move, Place, Floor, Height, Plateau, Paint, Water, Walls, Scatter };
 	enum class HeightOp { Raise, Lower, Flatten, Smooth };
 
 	struct Rect {
@@ -79,6 +81,7 @@ private:
 	void drawSidePanel(const Rect& r);
 	void drawSelected();
 	void drawMapPanel();
+	void drawMinimap();
 	void drawChecklist();
 	void drawModals();
 	void drawTutorial();
@@ -92,6 +95,8 @@ private:
 	void drawPaintOptions();
 	void drawWaterOptions();
 	void drawWallOptions();
+	void drawScatterOptions();
+	void scatter(const V3& at);
 	void drawSwatches(bool allowAdd);
 	void handleShortcuts();
 	const char* toolHelp() const;
@@ -129,6 +134,10 @@ private:
 
 	// ── Archivo ──
 	void newMap(nectar::TerrainShape shape);
+	bool coursePickers();
+	bool templatePickers(float size);
+	unsigned templateThumb(const TemplateInfo& t);
+	bool courseMode() const { return !ed_.doc.course.empty(); }
 	void openMap(const std::string& path);
 	void openBuiltIn();
 	bool saveMap(const std::string& path);
@@ -145,6 +154,7 @@ private:
 	void paste();
 	void focusSelection();
 	void rotateSelection(double degrees);
+	void liftSelection(double dy);
 	void placeAt(const V3& at);
 	std::vector<Issue> checkMap() const;
 	double snap(double v) const;
@@ -182,6 +192,7 @@ private:
 	PreviewResult compiled_;
 	std::shared_ptr<GpuModel> baseGpu_;
 	std::vector<V3> waterTris_; ///< superficie del agua del mapa compilado
+	CourseField courseField_;   ///< suelo del escenario del juego (mapas con escenario)
 	int requestedLive_  = -1;
 	double lastRequest_ = 0;
 	std::vector<Toast> toasts_;
@@ -200,6 +211,11 @@ private:
 	bool placeValid_ = false;
 	V3 placePos_;
 	float wallHeight_ = 150.0f, wallThickness_ = 40.0f;
+	// Pincel de decoración
+	std::vector<std::string> scatterSet_ { "objects/weeds/weed1.mod", "objects/plants/hutaba.mod", "objects/plants/hae.mod" };
+	float scatterDensity_ = 6.0f, scatterSizeVar_ = 0.25f;
+	bool scatterErase_ = false, scatterCollide_ = false, scatterFullWarned_ = false;
+	unsigned scatterSeed_ = 12345u;
 	bool drawingWall_ = false;
 	V3 wallStart_;
 	// Arrastre con «Mover»

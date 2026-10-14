@@ -58,6 +58,7 @@ endif()
 option(PIKMIN_GLES "Build with OpenGL ES 3.0 renderer" ${PIKMIN_GLES_DEFAULT})
 # Controles táctiles (la misma capa que Pikmin 1: pc_port/touch).
 option(PIKMIN_TOUCH "Build the touch control layer" ${PIKMIN_GLES_DEFAULT})
+option(NECTAR_ONLINE "Build the experimental direct online co-op layer" OFF)
 
 # ─── Flags de compilación: código decompilado ───
 # Fuerza nuestro header de adaptación ANTES de cualquier include del juego.
@@ -412,6 +413,15 @@ if(PIKMIN2_ENABLE_PORT_LAYER)
     target_compile_options(${P2_GAME} PRIVATE ${NATIVE_COMPILE_OPTIONS} -Wno-unused-parameter)
     # GX-exact spot/distance light attenuation in the shader (see doLights).
     target_compile_definitions(${P2_GAME} PRIVATE PIKMIN2_GX_LIGHT_ATTN=1)
+    if(NECTAR_ONLINE)
+        if(NOT TARGET nectar_net)
+            add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../libs/nectar_net" "${CMAKE_BINARY_DIR}/nectar_net")
+        endif()
+        target_link_libraries(${P2_GAME} PRIVATE nectar_net)
+        target_compile_definitions(${P2_GAME} PRIVATE PIKI_NECTAR_ONLINE=1)
+    else()
+        target_compile_definitions(${P2_GAME} PRIVATE PIKI_NECTAR_ONLINE=0)
+    endif()
     target_include_directories(${P2_GAME} PRIVATE
         ${PC_PORT_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/include

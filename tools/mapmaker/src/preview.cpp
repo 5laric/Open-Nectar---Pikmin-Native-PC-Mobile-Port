@@ -5,7 +5,11 @@
 #include <fstream>
 #include <iterator>
 
+#include "nectar_mapcore/i18n.h"
+
 namespace nm {
+
+using nectar::tr;
 
 namespace {
 
@@ -30,17 +34,26 @@ bool readFile(const std::string& dataDir, std::map<std::string, std::vector<std:
 bool compileDoc(const std::string& dataDir, std::map<std::string, std::vector<std::uint8_t>>* cache, const nectar::MapDoc& doc,
                 PreviewResult& out)
 {
-	out.ok = false;
+	out.ok       = false;
+	out.playable = false;
 	out.error.clear();
+	// La geometría sale aunque el mapa no esté terminado (algo sin suelo,
+	// faltan piezas...): así la vista nunca se queda vacía.
 	nectar::MapData data;
-	if (!nectar::expandMap(doc, data, out.error)) return false;
+	if (!nectar::expandMap(doc, data, out.error, false)) return false;
+	{
+		nectar::MapData checked;
+		std::string why;
+		out.playable = nectar::expandMap(doc, checked, why);
+		if (!out.playable) out.error = why;
+	}
 	auto read = [&](const std::string& p, std::vector<std::uint8_t>& o) { return readFile(dataDir, cache, p, o); };
 
 	nectar::CompiledMap full;
 	if (!nectar::compileMap(data, read, "courses/vsarena/arena.mod", full, out.error)) return false;
 	std::string err;
 	if (!nectar::parseMod(full.mod.data(), full.mod.size(), out.full, err)) {
-		out.error = "el mapa compilado no se puede leer: " + err;
+		out.error = tr("el mapa compilado no se puede leer: ") + err;
 		return false;
 	}
 	nectar::parseRoutes(out.full.trailingIni, out.routes, err);
@@ -57,12 +70,12 @@ bool compileDoc(const std::string& dataDir, std::map<std::string, std::vector<st
 		nectar::CompiledMap base;
 		if (!nectar::compileMap(data, read, "courses/vsarena/arena.mod", base, out.error)) return false;
 		if (!nectar::parseMod(base.mod.data(), base.mod.size(), out.base, err)) {
-			out.error = "el mapa compilado no se puede leer: " + err;
+			out.error = tr("el mapa compilado no se puede leer: ") + err;
 			return false;
 		}
 	}
 	out.ok = true;
-	return true;
+	return out.playable;
 }
 
 } // namespace
