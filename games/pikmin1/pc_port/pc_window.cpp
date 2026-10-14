@@ -5,6 +5,7 @@
 #include "pc_speedrun.h"
 #include "pc_gyro.h"
 #include "pc_icon.h"
+#include "netplay/pc_netplay_det.h"
 #if PIKI_PC_TOUCH
 #include "gl/pc_gfx.h"
 #include "touch/pc_touch.h"
@@ -1494,8 +1495,9 @@ void pc_window_swap_buffers(void) {
         pc_gfx_end_swap_framebuffer(renderTarget);
 #endif
         // VSync Off must not retain the software presentation limiter. Game
-        // simulation uses the fixed-step scheduler independently.
-        if (sVsyncEnabled) {
+        // simulation uses the fixed-step scheduler independently. Netplay's
+        // unthrottled replay bypasses it too.
+        if (sVsyncEnabled && !pc_netplay_unthrottled()) {
             // The interval is the game's setFrameClamp: retraces per logical
             // frame against a 60 Hz base, so 1 is 60 Hz and 2 is 30 Hz. The
             // port adds 0 for 120 Hz, which has no 60 Hz divisor. Mirror

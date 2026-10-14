@@ -12,6 +12,9 @@
 #include "settings/pc_settings.h"
 #include "timing/pc_render_packet.h"
 #include "mods/pc_vs_arena.h"
+#include "netplay/pc_netplay_det.h"
+#include "netplay/pc_input_log.h"
+#include "netplay/pc_state_hash.h"
 #endif
 
 #include "bigFont.h"
@@ -303,6 +306,39 @@ static bool pc_replay_test_enabled()
 	}();
 	return enabled;
 }
+
+// Netplay: world-sim / whole-tick cost every 600 ticks, to stdout and to
+// PIKMIN_NETPLAY_PROFILE_LOG. No-op unless that variable is set.
+void pc_netplay_det_profile_note_tick()
+{
+	const char* path = pc_netplay_det_profile_path();
+	if (!path) return;
+	const unsigned tick = pc_netplay_tick();
+	if (tick == 0 || tick % 600 != 0) return;
+	const double nowSec = std::chrono::duration<double>(
+	    std::chrono::steady_clock::now().time_since_epoch()).count();
+	// Rate since the previous report (0 on the first one, which covers
+	// startup and loading rather than steady ticks).
+	static unsigned lastTick = 0;
+	static double lastSec    = 0.0;
+	double rate = 0.0;
+	if (lastSec > 0.0 && nowSec > lastSec) rate = (tick - lastTick) / (nowSec - lastSec);
+	lastTick = tick;
+	lastSec  = nowSec;
+	const PcTickStats sim   = pc_tick_profiler_stats(kPcTickWorldSim, 1000.0 / 30.0);
+	const PcTickStats whole = pc_tick_profiler_stats(kPcTickWhole, 1000.0 / 30.0);
+	char line[288];
+	snprintf(line, sizeof(line),
+	    "[netplay-det] tick=%u ticks_per_sec=%.1f world_sim_ms_p50=%.3f p95=%.3f n=%u whole_ms_p50=%.3f p95=%.3f n=%u\n",
+	    tick, rate, sim.median, sim.p95, sim.samples, whole.median,
+	    whole.p95, whole.samples);
+	fputs(line, stdout);
+	fflush(stdout);
+	if (FILE* log = fopen(path, "a")) {
+		fputs(line, log);
+		fclose(log);
+	}
+}
 #endif
 
 void System::run(BaseApp* app)
@@ -337,7 +373,23 @@ void System::run(BaseApp* app)
 
 		// Get schedule from fixed-step scheduler
 		double now = std::chrono::steady_clock::now().time_since_epoch().count() / 1e9;
+#if PIKI_PC_PORT
+		// Netplay, unthrottled replay: one tick per loop iteration without
+		// waiting for the clock. The sim is unchanged, since mDeltaTime stays
+		// fixed in deterministic mode (see updateSysClock).
+		PcFrameSchedule schedule;
+		if (pc_netplay_unthrottled()) {
+			schedule.logicalTicks       = 1;
+			schedule.fixedDelta         = pc_netplay_fixed_dt(mFrameRate);
+			schedule.interpolationAlpha = 1.0;
+			schedule.nextDeadline       = now + schedule.fixedDelta;
+			schedule.discardedTicks     = 0;
+		} else {
+			schedule = frameScheduler.advance(now, mFrameRate);
+		}
+#else
 		PcFrameSchedule schedule = frameScheduler.advance(now, mFrameRate);
+#endif
 
 		if (schedule.logicalTicks > 0) {
 #if PIKI_PC_PORT
@@ -349,11 +401,21 @@ void System::run(BaseApp* app)
 			// timer granularity is coarse enough to overshoot it -- which lost
 			// walking and throw inputs at high refresh rates.
 			mControllerMgr.update();
+			pc_input_log_tick(); // netplay harness: record/replay this tick's pads
 			pc_gfx_enable_capture(pc_replay_test_enabled());
 #endif
 			updateSysClock();
 			OSCheckActiveThreads();
+#if PIKI_PC_PORT
+			// Counts the tick and, in deterministic mode, pins the FP state.
+			pc_netplay_on_tick_begin();
+#endif
 			app->idle();
+#if PIKI_PC_PORT
+			if (pc_netplay_deterministic()) pc_netplay_det_profile_note_tick();
+			pc_input_log_tick_end();
+			pc_state_hash_tick_end(); // netplay harness: hash the sim after this tick
+#endif
 
 			// Identity-replay experiment: re-execute the tick's captured display
 			// lists into a cleared framebuffer and present that. It is NOT the
@@ -458,6 +520,26 @@ f32 System::getTime()
  */
 void System::updateSysClock()
 {
+#if PIKI_PC_PORT
+	if (pc_netplay_deterministic()) {
+		// Netplay: mDeltaTime is the logical tick period, never the wall
+		// clock. The FPS counters below still run off OSGetTick.
+		OSTick tick = OSGetTick();
+		mEngineFrames++;
+		mFrameTicks = tick - mPrevTick;
+		mDeltaTime  = pc_netplay_fixed_dt(mFrameRate);
+		mTotalFrames++;
+		int time = tick - mFpsSampleStart;
+		if (time > OS_TIMER_CLOCK) {
+			// Multiply in f64: the u32 product wraps at unthrottled rates.
+			mFPS                 = (f64)OS_TIMER_CLOCK * (f64)(mEngineFrames - mFramesAtSampleStart) / (f64)time;
+			mFpsSampleStart      = tick;
+			mFramesAtSampleStart = mEngineFrames;
+		}
+		mPrevTick = tick;
+		return;
+	}
+#endif
 	OSTick tick = OSGetTick();
 	mEngineFrames++;
 	mFrameTicks = tick - mPrevTick;

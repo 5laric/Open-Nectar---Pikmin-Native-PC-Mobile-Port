@@ -58,6 +58,9 @@ __declspec(dllexport) int           AmdPowerXpressRequestHighPerformance = 1;
 #include "mods/pc_vs_map.h"
 #include "pc_vs.h"
 #include "settings/pc_settings_p2d.h"
+#include "netplay/pc_netplay_det.h"
+#include "netplay/pc_input_log.h"
+#include "netplay/pc_state_hash.h"
 
 int main(int argc, char* argv[])
 {
@@ -88,6 +91,10 @@ int main(int argc, char* argv[])
         if (settingsResult >= 0) return settingsResult;
     }
 
+    // Netplay determinism switches (--netplay-deterministic and the
+    // PIKMIN_NETPLAY_* variables), before the game starts. Inert unless set.
+    pc_netplay_det_init(argc, argv);
+
     // Before SDL_Init, and before anything can touch GL: on Linux the vendor
     // is selected by libglvnd the first time it is asked, and by the time a
     // context exists the choice has already been made. No-op elsewhere.
@@ -97,6 +104,10 @@ int main(int argc, char* argv[])
     if (argc == 2 && std::strcmp(argv[1], "--audio-self-test") == 0)
         return pc_jaudio_integration_test();
 #endif
+    // Netplay harness: --input-record/--input-replay and --state-hash-log.
+    // No-ops unless those switches (or their env vars) are set.
+    pc_input_log_notify_argv(argc, argv);
+    pc_state_hash_notify_argv(argc, argv);
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--dump-texture-names") == 0)
             pc_gfx_set_dump_texture_names(1);
