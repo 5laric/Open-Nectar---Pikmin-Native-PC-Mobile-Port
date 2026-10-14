@@ -24,6 +24,23 @@ Expectations (--expect):
           gameplay: the navi hash takes many distinct values and both
           captains move (the [netplay-navi] position lines).
   refuse  both exit 4 with a "[netplay] handshake refused:" line.
+  desync  both exit 5 after a desync, and each writes a two-sided
+          desync-report.txt (both peers' sub-hashes) and its session input
+          log. Pair it with a TEST ONLY perturbation, for example
+          --env-join PIKMIN_NETPLAY_TEST_KNOBS=1 PIKMIN_NETPLAY_TEST_DESYNC_NUDGE=1500:navi:1
+          (--desync-nudge 1500:navi:1 sets exactly that on the joiner).
+
+ICE (--ice): the peers use --netplay-host-ice / --netplay-join-ice instead
+of the UDP switches, and this script carries the connection codes through
+files: the host writes its offer (--netplay-code-out), the joiner is started
+with --netplay-join-ice @<that file> and writes its answer, which is copied
+into the host's --netplay-answer-in file. Each peer's launcher run folder is
+<run>/netplay/run-*. By default PIKMIN_NETPLAY_STUN=none and
+PIKMIN_NETPLAY_ICE_BIND=127.0.0.1 (loopback host candidates only, no network
+beyond this PC); --stun/--ice-bind change that. Settings adoption: with
+--ice, --config-join values that differ from the host's are adopted from the
+offer, so --expect sync still holds (the joiner's settings file is checked to
+be unchanged).
 
 Impairment: --latency-ms/--jitter-ms/--loss-pct use the in-exe lossy adapter
 on the GekkoNet channel (PIKMIN_NETPLAY_TEST_*); --proxy "lat:jit:loss" puts
@@ -49,6 +66,18 @@ PC and the joiner on the other with the same exe, --ticks and --netplay-seed:
                  --ticks 3000 --out run/lan-join --bind 0.0.0.0 --remote <host-ip>:48810
 
 Compare the two hashes.txt afterwards with compare_hashes.py.
+
+Two PCs over ICE (--peer-only with --ice): the host writes
+<out>/host/offer.txt and waits for <out>/host/answer-in.txt; the joiner reads
+the offer from --offer FILE and writes <out>/join/answer.txt. Carry the offer
+to the joiner's PC and the answer back to the host's answer-in.txt by any
+means (a shared folder, scp). --ice-bind any and the default STUN servers
+(--stun default) are needed between two PCs:
+
+    host PC: py tools/netplay/run_pair.py --peer-only host --ice --ice-bind any --stun default \\
+                 --exe ... --assets ... --ticks 3000 --out run/ice-host
+    join PC: py tools/netplay/run_pair.py --peer-only join --ice --ice-bind any --stun default \\
+                 --exe ... --assets ... --ticks 3000 --out run/ice-join --offer <copied offer.txt>
 """
 
 import argparse
@@ -280,6 +309,44 @@ def check_sync(h, j, args):
     return ok
 
 
+def launcher_run_dir(run):
+    dirs = sorted((run / "netplay").glob("run-*")) if (run / "netplay").is_dir() else []
+    return dirs[-1] if dirs else None
+
+
+def check_desync(h, j, args):
+    ok = True
+    for name, p in (("host", h), ("join", j)):
+        run = args.out / name
+        if p["rc"] != 5:
+            print(f"run_pair: FAIL: {name} exit={p['rc']} (want 5)")
+            ok = False
+        if not p["desync"]:
+            print(f"run_pair: FAIL: {name} logged no 'desync detected' line")
+            ok = False
+        fdir = launcher_run_dir(run) if args.ice else run
+        report = fdir / "desync-report.txt" if fdir else None
+        if report is None or not report.exists():
+            print(f"run_pair: FAIL: {name} wrote no desync-report.txt")
+            ok = False
+            continue
+        text = report.read_text(errors="replace")
+        peer = "join" if name == "host" else "host"
+        two_sided = f"desync subs {name} " in text and f"desync subs {peer} " in text
+        print(f"run_pair: {name}: {report} ({len(text.splitlines())} lines, "
+              f"{'both sides' if two_sided else 'ONE SIDE ONLY'})")
+        for ln in text.splitlines():
+            if "first differing tick" in ln or "differs:" in ln or "objects at tick" in ln:
+                print(f"run_pair: {name}:   {ln.strip()}")
+        if not two_sided:
+            ok = False
+        log = fdir / "session-inputs.pknl"
+        if not log.exists():
+            print(f"run_pair: FAIL: {name} has no session input log {log}")
+            ok = False
+    return ok
+
+
 def check_refuse(h, j):
     ok = True
     for name, p in (("host", h), ("join", j)):
@@ -301,6 +368,45 @@ def exe_variant(exe, run):
     with open(dst, "ab") as f:
         f.write(b"\0")
     return dst
+
+
+def ice_env(args):
+    env = dict(PIKMIN_NETPLAY_NO_CLIPBOARD="1", PIKMIN_NETPLAY_BANNER_MS="0",
+               PIKMIN_NETPLAY_ICE_TIMEOUT_MS=str(int(min(args.timeout, 1800) * 1000)))
+    if args.stun != "default":
+        env["PIKMIN_NETPLAY_STUN"] = args.stun
+    if args.ice_bind != "any":
+        env["PIKMIN_NETPLAY_ICE_BIND"] = args.ice_bind
+    if args.turn:
+        env["PIKMIN_NETPLAY_TURN"] = args.turn
+    return env
+
+
+def wait_for_file(path, proc, timeout):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if path.exists() and path.stat().st_size > 0:
+            return True
+        if proc is not None and proc.poll() is not None:
+            return False
+        time.sleep(0.2)
+    return False
+
+
+def ice_host_args(run):
+    return ["--netplay-host-ice", "--netplay-code-out", str(run / "offer.txt"),
+            "--netplay-answer-in", str(run / "answer-in.txt"), "--netplay-run-root", str(run / "netplay")]
+
+
+def ice_join_args(run, offer):
+    return ["--netplay-join-ice", "@" + str(offer), "--netplay-code-out", str(run / "answer.txt"),
+            "--netplay-run-root", str(run / "netplay")]
+
+
+def clear_codes(run):
+    for stale in ("offer.txt", "answer.txt", "answer-in.txt"):
+        if (run / stale).exists():
+            (run / stale).unlink()
 
 
 def free_udp_port(preferred):
@@ -342,7 +448,15 @@ def main(argv=None):
     p.add_argument("--proxy", default=None, metavar="LAT:JIT:LOSS",
                    help="route the joiner through netplay_impair_proxy with this impairment")
     p.add_argument("--proxy-exe", type=Path, default=None, help="netplay_impair_proxy (default next to --exe)")
-    p.add_argument("--expect", choices=("sync", "refuse"), default="sync")
+    p.add_argument("--expect", choices=("sync", "refuse", "desync"), default="sync")
+    p.add_argument("--desync-nudge", default=None, metavar="FRAME[:KIND[:ORD]]",
+                   help="TEST ONLY: the joiner moves one object (piki|navi|teki, default piki 0) at FRAME "
+                        "(PIKMIN_NETPLAY_TEST_DESYNC_NUDGE)")
+    p.add_argument("--ice", action="store_true", help="connect over ICE with codes exchanged through files")
+    p.add_argument("--stun", default="none", help="--ice: PIKMIN_NETPLAY_STUN (none, host:port, or default)")
+    p.add_argument("--ice-bind", default="127.0.0.1", help="--ice: PIKMIN_NETPLAY_ICE_BIND (or any)")
+    p.add_argument("--turn", default=None, help="--ice: PIKMIN_NETPLAY_TURN host:port:user:pass")
+    p.add_argument("--offer", type=Path, default=None, help="--peer-only join --ice: the host's offer file")
     p.add_argument("--min-distinct-navi", type=int, default=100)
     p.add_argument("--min-travel", type=float, default=50.0, help="world units each captain must move")
     p.add_argument("--throttled", action="store_true", help="run at the real 30 Hz pace")
@@ -362,15 +476,28 @@ def main(argv=None):
         shared_env.update(PIKMIN_NETPLAY_TEST_LATENCY_MS=str(a.latency_ms),
                           PIKMIN_NETPLAY_TEST_JITTER_MS=str(a.jitter_ms),
                           PIKMIN_NETPLAY_TEST_LOSS_PCT=str(a.loss_pct))
+    if a.ice:
+        shared_env.update(ice_env(a))
     shared_env.update(parse_kv(a.env, "env"))
     config = parse_kv(a.config, "config")
+    if a.desync_nudge is not None:
+        a.env_join = list(a.env_join) + ["PIKMIN_NETPLAY_TEST_KNOBS=1",
+                                         f"PIKMIN_NETPLAY_TEST_DESYNC_NUDGE={a.desync_nudge}"]
 
     if a.peer_only:
         role = a.peer_only
         run = a.out / role
         cfg = dict(config, **parse_kv(a.config_host if role == "host" else a.config_join, "config"))
         pkni = prepare_run(run, assets, cfg, a.ticks, a.seed_host if role == "host" else a.seed_join)
-        if role == "host":
+        if a.ice:
+            clear_codes(run)
+            if role == "host":
+                args = ice_host_args(run)
+            else:
+                if not a.offer or not a.offer.exists():
+                    raise SystemExit("run_pair: --peer-only join --ice needs --offer <the host's offer.txt>")
+                args = ice_join_args(run, a.offer.resolve())
+        elif role == "host":
             args = ["--netplay-host", str(a.port)]
         else:
             if not a.remote:
@@ -381,6 +508,17 @@ def main(argv=None):
         print(f"run_pair: {role}: exe={a.exe.resolve()} sha256={sha256_file(a.exe)} bind={a.bind}")
         proc, out = launch(a.exe, run, args + ["--netplay-input", str(pkni)], env, not a.throttled, a.ticks)
         print(f"run_pair: {role}: pid {proc.pid}, log {run / 'native.log'}")
+        if a.ice and role == "host":
+            if wait_for_file(run / "offer.txt", proc, 120):
+                print(f"run_pair: host: offer written to {run / 'offer.txt'}; put the joiner's answer in "
+                      f"{run / 'answer-in.txt'}")
+            else:
+                print("run_pair: host: no offer was written")
+        elif a.ice:
+            if wait_for_file(run / "answer.txt", proc, 120):
+                print(f"run_pair: join: answer written to {run / 'answer.txt'}; copy it to the host's answer-in.txt")
+            else:
+                print("run_pair: join: no answer was written")
         rcs = wait_all([(role, proc)], a.timeout)
         out.close()
         info = peer_summary(role, run, rcs[role])
@@ -389,6 +527,8 @@ def main(argv=None):
         print(f"run_pair: {'PASS' if ok else 'FAIL'} (single peer; compare hashes.txt with the other PC's)")
         return 0 if ok else 1
 
+    if a.ice and a.proxy:
+        raise SystemExit("run_pair: --proxy is UDP only")
     port = free_udp_port(a.port)
     exe_host = a.exe
     exe_join = a.exe_join or a.exe
@@ -421,17 +561,43 @@ def main(argv=None):
         print(f"run_pair: proxy pid {proxy.pid} :{join_target} -> :{port} lat={lat} jit={jit} loss={loss}")
         time.sleep(0.5)
     loop_env = dict(shared_env, PIKMIN_NETPLAY_UDP_BIND="127.0.0.1")
-    hproc, hout = launch(exe_host, host_run, ["--netplay-host", str(port), "--netplay-input", str(host_pkni)],
+    if not a.ice and a.expect == "desync":
+        # UDP runs keep their forensics in the run directory.
+        loop_env["PIKMIN_NETPLAY_INPUT_LOG"] = "session-inputs.pknl"
+    join_own = dict(config, **parse_kv(a.config_join, "config"))
+    if a.ice:
+        clear_codes(host_run)
+        clear_codes(join_run)
+        host_args = ice_host_args(host_run)
+    else:
+        host_args = ["--netplay-host", str(port)]
+    hproc, hout = launch(exe_host, host_run, host_args + ["--netplay-input", str(host_pkni)],
                          dict(loop_env, **parse_kv(a.env_host, "env")), not a.throttled, a.ticks)
     procs.append(("host", hproc))
     files.append(hout)
-    time.sleep(0.5)
-    jproc, jout = launch(exe_join, join_run,
-                         ["--netplay-join", f"127.0.0.1:{join_target}", "--netplay-input", str(join_pkni)],
+    if a.ice:
+        if not wait_for_file(host_run / "offer.txt", hproc, 120):
+            print("run_pair: FAIL: the host wrote no offer code")
+            wait_all(procs, 5)
+            return 1
+        print(f"run_pair: offer code: {host_run / 'offer.txt'} ({(host_run / 'offer.txt').stat().st_size} B)")
+        join_args = ice_join_args(join_run, host_run / "offer.txt")
+    else:
+        time.sleep(0.5)
+        join_args = ["--netplay-join", f"127.0.0.1:{join_target}"]
+    jproc, jout = launch(exe_join, join_run, join_args + ["--netplay-input", str(join_pkni)],
                          dict(loop_env, **parse_kv(a.env_join, "env")), not a.throttled, a.ticks)
     procs.append(("join", jproc))
     files.append(jout)
-    print(f"run_pair: host pid {hproc.pid} :{port}, join pid {jproc.pid}")
+    if a.ice:
+        if not wait_for_file(join_run / "answer.txt", jproc, 120):
+            print("run_pair: FAIL: the joiner wrote no answer code")
+            wait_all(procs, 30)
+            return 1
+        shutil.copyfile(join_run / "answer.txt", host_run / "answer-in.tmp")
+        os.replace(host_run / "answer-in.tmp", host_run / "answer-in.txt")
+        print(f"run_pair: answer code: {join_run / 'answer.txt'} -> {host_run / 'answer-in.txt'}")
+    print(f"run_pair: host pid {hproc.pid}{'' if a.ice else f' :{port}'}, join pid {jproc.pid}")
     start = time.time()
     rcs = wait_all(procs, a.timeout)
     secs = time.time() - start
@@ -443,7 +609,30 @@ def main(argv=None):
     print(f"run_pair: both peers done in {secs:.1f}s")
     h = peer_summary("host", host_run, rcs["host"])
     j = peer_summary("join", join_run, rcs["join"])
-    ok = check_sync(h, j, a) if a.expect == "sync" else check_refuse(h, j)
+    if a.ice:
+        for name, info in (("host", h), ("join", j)):
+            for ln in lines_with(info["text"], "[netplay] ice transport ready") + lines_with(info["text"], "adopted the host"):
+                print(f"run_pair: {name}:   {ln.strip()}")
+    if a.expect == "sync":
+        ok = check_sync(h, j, a)
+    elif a.expect == "desync":
+        ok = check_desync(h, j, a)
+    else:
+        ok = check_refuse(h, j)
+    if a.ice and join_own:
+        # Adoption is for the session only: the joiner's file keeps its own values.
+        on_disk = {}
+        conf = join_run / "pikmin_settings.conf"
+        for ln in (conf.read_text(errors="replace").splitlines() if conf.exists() else []):
+            if "=" in ln and not ln.lstrip().startswith("#"):
+                k, v = ln.split("=", 1)
+                on_disk[k.strip()] = v.strip()
+        kept = {k: on_disk.get(k) for k in join_own}
+        if all(str(v) == kept[k] for k, v in join_own.items()):
+            print(f"run_pair: the joiner's settings file keeps its own values {kept}")
+        else:
+            print(f"run_pair: FAIL: the joiner's settings file has {kept}, want its own {join_own}")
+            ok = False
     print(f"run_pair: {'PASS' if ok else 'FAIL'} (expect {a.expect})")
     return 0 if ok else 1
 
