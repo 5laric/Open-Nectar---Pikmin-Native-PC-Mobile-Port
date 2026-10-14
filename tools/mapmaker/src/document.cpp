@@ -5,7 +5,11 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "nectar_mapcore/i18n.h"
+
 namespace nm {
+
+using nectar::tr;
 
 using namespace nectar;
 
@@ -53,6 +57,8 @@ const std::vector<DecorItem>& decorItems()
 		{ "objects/bomb/bomb.mod", "Roca bomba (adorno)", "Rocas y obstáculos" },
 		{ "objects/cylinder/cylinder.mod", "Columna", "Rocas y obstáculos" },
 		{ "objects/rope/bou.mod", "Palo", "Rocas y obstáculos" },
+		{ "objects/rope/bobase.mod", "Base del palo", "Rocas y obstáculos" },
+		{ "objects/hinderrock/cube10.mod", "Caja", "Rocas y obstáculos" },
 		{ "objects/plants/clover.mod", "Trébol", "Plantas" },
 		{ "objects/plants/tanpopo.mod", "Diente de león", "Plantas" },
 		{ "objects/plants/ooinu_l.mod", "Flor azul grande", "Plantas" },
@@ -66,6 +72,13 @@ const std::vector<DecorItem>& decorItems()
 		{ "objects/plants/mizukusa.mod", "Planta de agua", "Plantas" },
 		{ "objects/plants/wakame_l.mod", "Alga grande", "Plantas" },
 		{ "objects/plants/wakame_s.mod", "Alga pequeña", "Plantas" },
+		{ "pikis/happas/flower.mod", "Flor de Pikmin", "Plantas" },
+		{ "cinemas/demo02/deadufo.mod", "Nave estrellada", "Recuerdos de la historia" },
+		{ "cinemas/demo01/meteor.mod", "Meteorito", "Recuerdos de la historia" },
+		{ "objects/rocket/key.mod", "Llave del cohete", "Curiosidades" },
+		{ "objects/rocket/kuribo.mod", "Goomba", "Curiosidades" },
+		{ "objects/rocket/mario.mod", "Mario", "Curiosidades" },
+		{ "objects/rocket/red3.mod", "Pikmin rojo de prueba", "Curiosidades" },
 	};
 	return list;
 }
@@ -73,7 +86,7 @@ const std::vector<DecorItem>& decorItems()
 const char* friendlyAssetName(const std::string& path)
 {
 	for (const DecorItem& d : decorItems()) {
-		if (path == d.path) return d.name;
+		if (path == d.path) return tr(d.name);
 	}
 	return nullptr;
 }
@@ -100,9 +113,14 @@ ItemCaps itemCaps(ItemType t)
 	case ItemType::Wall:
 	case ItemType::Enemy:
 	case ItemType::Object:
+		c.height    = true;
 		c.removable = true;
 		c.twinned   = true;
 		c.rotateY   = true;
+		break;
+	case ItemType::Gen: // del escenario: se mueve, se sube o se quita
+		c.removable = true;
+		c.height    = true;
 		break;
 	case ItemType::Prop:
 		c.removable = true;
@@ -129,6 +147,7 @@ bool itemExists(const MapDoc& d, const ItemRef& r)
 	case ItemType::Piece: return r.index >= 0 && std::size_t(r.index) < d.pieces.size();
 	case ItemType::Guard: return r.index >= 0 && std::size_t(r.index) < d.guards.size();
 	case ItemType::Prop: return r.index >= 0 && std::size_t(r.index) < d.props.size();
+	case ItemType::Gen: return r.index >= 0 && std::size_t(r.index) < d.gens.size();
 	case ItemType::Wall: return r.index >= 0 && std::size_t(r.index) < d.walls.size();
 	case ItemType::Pond: return r.index >= 0 && std::size_t(r.index) < d.ponds.size();
 	case ItemType::Enemy: return r.index >= 0 && std::size_t(r.index) < d.enemies.size();
@@ -182,10 +201,18 @@ Xform getXform(const MapDoc& d, const ItemRef& r)
 		x.x  = d.objects[std::size_t(r.index)].x;
 		x.z  = d.objects[std::size_t(r.index)].z;
 		x.ry = d.objects[std::size_t(r.index)].face;
+		x.y  = d.objects[std::size_t(r.index)].y; // sobre el suelo
 		break;
 	case ItemType::Prop: {
 		const DocProp& p = d.props[std::size_t(r.index)];
 		x                = { p.x, p.y, p.z, p.rx, p.ry, p.rz, p.scale };
+		break;
+	}
+	case ItemType::Gen: {
+		const DocGen& g = d.gens[std::size_t(r.index)];
+		x.x             = g.x;
+		x.y             = g.y;
+		x.z             = g.z;
 		break;
 	}
 	case ItemType::Wall: {
@@ -251,6 +278,14 @@ void setXform(MapDoc& d, const ItemRef& r, const Xform& x)
 		o.x          = x.x;
 		o.z          = x.z;
 		o.face       = wrapDeg(x.ry);
+		o.y          = x.y;
+		break;
+	}
+	case ItemType::Gen: {
+		DocGen& g = d.gens[std::size_t(r.index)];
+		g.x       = x.x;
+		g.y       = x.y;
+		g.z       = x.z;
 		break;
 	}
 	case ItemType::Prop: {
@@ -289,38 +324,39 @@ void setXform(MapDoc& d, const ItemRef& r, const Xform& x)
 std::string itemName(const MapDoc& d, const ItemRef& r)
 {
 	static const char* const onionNames[] = { "azul", "roja", "amarilla" };
-	static const char* const pieceNames[] = { "Pieza de la nave (pequeña)", "Pieza de la nave (pequeña)", "Pieza de la nave (pequeña)",
-		                                      "Pieza de la nave (vigilada)", "Pieza de la nave (en el agua)" };
+	const char* const pieceNames[] = { tr("Pieza de la nave (pequeña)"), tr("Pieza de la nave (pequeña)"), tr("Pieza de la nave (pequeña)"),
+		                                      tr("Pieza de la nave (vigilada)"), tr("Pieza de la nave (en el agua)") };
 	static const char* const colours[]    = { "roja", "azul", "amarilla" };
 	char buf[160];
-	const char* player = r.index == 0 ? "Jugador 1" : "Jugador 2";
+	const char* player = r.index == 0 ? tr("Jugador 1") : tr("Jugador 2");
 	switch (r.type) {
-	case ItemType::Base: snprintf(buf, sizeof(buf), "Salida del %s", player); break;
-	case ItemType::Rocket: snprintf(buf, sizeof(buf), "Cohete del %s", player); break;
-	case ItemType::Gate: snprintf(buf, sizeof(buf), "Puerta de roca del %s", player); break;
-	case ItemType::BombPile: snprintf(buf, sizeof(buf), "Rocas bomba del %s", player); break;
-	case ItemType::Onion: snprintf(buf, sizeof(buf), "Cebolla %s del %s", onionNames[r.sub], player); break;
+	case ItemType::Base: snprintf(buf, sizeof(buf), tr("Salida del %s"), player); break;
+	case ItemType::Rocket: snprintf(buf, sizeof(buf), tr("Cohete del %s"), player); break;
+	case ItemType::Gate: snprintf(buf, sizeof(buf), tr("Puerta de roca del %s"), player); break;
+	case ItemType::BombPile: snprintf(buf, sizeof(buf), tr("Rocas bomba del %s"), player); break;
+	case ItemType::Onion: snprintf(buf, sizeof(buf), tr("Cebolla %s del %s"), tr(onionNames[r.sub]), player); break;
 	case ItemType::Pellet: {
 		const std::string& id = d.pellets[std::size_t(r.index)].id;
 		const int c           = id.size() > 1 ? (id[1] == 'b' ? 1 : id[1] == 'y' ? 2 : 0) : 0;
-		snprintf(buf, sizeof(buf), "Pastilla %s de %d", colours[c], id.size() == 4 ? std::atoi(id.c_str() + 2) : 1);
+		snprintf(buf, sizeof(buf), tr("Pastilla %s de %d"), tr(colours[c]), id.size() == 4 ? std::atoi(id.c_str() + 2) : 1);
 		break;
 	}
 	case ItemType::Piece: {
 		const int k = d.pieces[std::size_t(r.index)].kind;
-		snprintf(buf, sizeof(buf), "%s", k >= 0 && k < 5 ? pieceNames[k] : "Pieza de la nave");
+		snprintf(buf, sizeof(buf), "%s", k >= 0 && k < 5 ? pieceNames[k] : tr("Pieza de la nave"));
 		break;
 	}
-	case ItemType::BigPiece: snprintf(buf, sizeof(buf), "Pieza grande (aparece durante la partida)"); break;
-	case ItemType::Guard: snprintf(buf, sizeof(buf), "Bulborb dormido"); break;
+	case ItemType::BigPiece: snprintf(buf, sizeof(buf), tr("Pieza grande (aparece durante la partida)")); break;
+	case ItemType::Guard: snprintf(buf, sizeof(buf), tr("Bulborb dormido")); break;
 	case ItemType::Prop: snprintf(buf, sizeof(buf), "%s", assetLabel(d.props[std::size_t(r.index)].asset).c_str()); break;
-	case ItemType::Wall: snprintf(buf, sizeof(buf), "%s", d.walls[std::size_t(r.index)].isArc ? "Muro curvo" : "Muro"); break;
-	case ItemType::Pond: snprintf(buf, sizeof(buf), "Charca"); break;
+	case ItemType::Gen: snprintf(buf, sizeof(buf), "%s", d.gens[std::size_t(r.index)].label.c_str()); break;
+	case ItemType::Wall: snprintf(buf, sizeof(buf), "%s", d.walls[std::size_t(r.index)].isArc ? tr("Muro curvo") : tr("Muro")); break;
+	case ItemType::Pond: snprintf(buf, sizeof(buf), tr("Charca")); break;
 	case ItemType::Enemy: {
 		const std::string& t = d.enemies[std::size_t(r.index)].type;
 		const char* label    = t.c_str();
 		for (const EnemyInfo& e : enemyTypes()) {
-			if (t == e.id) label = e.label;
+			if (t == e.id) label = tr(e.label);
 		}
 		snprintf(buf, sizeof(buf), "%s", label);
 		break;
@@ -329,7 +365,7 @@ std::string itemName(const MapDoc& d, const ItemRef& r)
 		const std::string& k = d.objects[std::size_t(r.index)].kind;
 		const char* label    = k.c_str();
 		for (const ObjectInfo& o : objectKinds()) {
-			if (k == o.id) label = o.label;
+			if (k == o.id) label = tr(o.label);
 		}
 		snprintf(buf, sizeof(buf), "%s", label);
 		break;
@@ -357,6 +393,7 @@ std::vector<ItemRef> allItems(const MapDoc& d)
 	for (std::size_t i = 0; i < d.walls.size(); i++) out.push_back({ ItemType::Wall, int(i), 0 });
 	for (std::size_t i = 0; i < d.ponds.size(); i++) out.push_back({ ItemType::Pond, int(i), 0 });
 	for (std::size_t i = 0; i < d.props.size(); i++) out.push_back({ ItemType::Prop, int(i), 0 });
+	for (std::size_t i = 0; i < d.gens.size(); i++) out.push_back({ ItemType::Gen, int(i), 0 });
 	return out;
 }
 
@@ -451,6 +488,7 @@ void removeItems(MapDoc& d, std::vector<ItemRef> items)
 		case ItemType::Pond: d.ponds.erase(d.ponds.begin() + long(i)); break;
 		case ItemType::Enemy: d.enemies.erase(d.enemies.begin() + long(i)); break;
 		case ItemType::Object: d.objects.erase(d.objects.begin() + long(i)); break;
+		case ItemType::Gen: d.gens.erase(d.gens.begin() + long(i)); break;
 		default: break;
 		}
 	}
@@ -467,6 +505,7 @@ MapDoc copyItems(const MapDoc& d, const std::vector<ItemRef>& items)
 	clip.guards.clear();
 	clip.enemies.clear();
 	clip.objects.clear();
+	clip.gens.clear();
 	for (const ItemRef& r : items) {
 		if (!itemExists(d, r)) continue;
 		const auto i = std::size_t(r.index);
@@ -479,6 +518,7 @@ MapDoc copyItems(const MapDoc& d, const std::vector<ItemRef>& items)
 		case ItemType::Pond: clip.ponds.push_back(d.ponds[i]); break;
 		case ItemType::Enemy: clip.enemies.push_back(d.enemies[i]); break;
 		case ItemType::Object: clip.objects.push_back(d.objects[i]); break;
+		case ItemType::Gen: clip.gens.push_back(d.gens[i]); break;
 		default: break;
 		}
 	}
@@ -533,6 +573,12 @@ std::vector<ItemRef> pasteItems(MapDoc& d, const MapDoc& clip, double dx, double
 		o.z += dz;
 		d.objects.push_back(o);
 		out.push_back({ ItemType::Object, int(d.objects.size()) - 1, 0 });
+	}
+	for (DocGen g : clip.gens) {
+		g.x += dx;
+		g.z += dz;
+		d.gens.push_back(g);
+		out.push_back({ ItemType::Gen, int(d.gens.size()) - 1, 0 });
 	}
 	for (DocPond p : clip.ponds) {
 		p.cx += dx;

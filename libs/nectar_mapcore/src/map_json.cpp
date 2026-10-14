@@ -8,6 +8,9 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "nectar_mapcore/i18n.h"
+#include "nectar_assets/gen.h"
+
 namespace nectar {
 
 using json = nlohmann::json;
@@ -32,7 +35,7 @@ void pos2(const json& j, double& x, double& z)
 int playerOf(const json& j)
 {
 	const int p = j.at("player").get<int>();
-	if (p != 0 && p != 1) throw std::runtime_error("player debe ser 0 o 1");
+	if (p != 0 && p != 1) throw std::runtime_error(tr("player debe ser 0 o 1"));
 	return p;
 }
 
@@ -48,7 +51,7 @@ void perPlayer(const json& list, DocSpot out[2], const char* what)
 		out[p]  = s;
 		seen[p] = true;
 	}
-	if (!seen[0] || !seen[1]) throw std::runtime_error(std::string("vs.") + what + ": falta un jugador");
+	if (!seen[0] || !seen[1]) throw std::runtime_error(std::string("vs.") + what + tr(": falta un jugador"));
 }
 
 int pieceKind(const std::string& s)
@@ -56,7 +59,7 @@ int pieceKind(const std::string& s)
 	for (int i = 0; i < 5; i++) {
 		if (s == kPieceNames[i]) return i;
 	}
-	throw std::runtime_error("tipo de pieza desconocido: " + s);
+	throw std::runtime_error(tr("tipo de pieza desconocido: ") + s);
 }
 
 int onionColor(const std::string& s)
@@ -64,7 +67,7 @@ int onionColor(const std::string& s)
 	for (int i = 0; i < 3; i++) {
 		if (s == kOnionNames[i]) return i;
 	}
-	throw std::runtime_error("color de cebolla desconocido: " + s);
+	throw std::runtime_error(tr("color de cebolla desconocido: ") + s);
 }
 
 std::uint32_t fourcc(const std::string& s)
@@ -78,7 +81,7 @@ std::uint32_t pelletId(const std::string& s)
 	// Las del juego: p + color (r, b, y) + valor (01, 05, 10, 20).
 	const bool ok = s.size() == 4 && s[0] == 'p' && s[1] && std::strchr("rby", s[1])
 	             && (s.compare(2, 2, "01") == 0 || s.compare(2, 2, "05") == 0 || s.compare(2, 2, "10") == 0 || s.compare(2, 2, "20") == 0);
-	if (!ok) throw std::runtime_error("pastilla desconocida: \"" + s + "\" (pr01, pb05, py10...)");
+	if (!ok) throw std::runtime_error(tr("pastilla desconocida: \"") + s + tr("\" (pr01, pb05, py10...)"));
 	return (std::uint32_t(std::uint8_t(s[0])) << 24) | (std::uint32_t(std::uint8_t(s[1])) << 16) | (std::uint32_t(std::uint8_t(s[2])) << 8)
 	     | std::uint8_t(s[3]);
 }
@@ -110,7 +113,7 @@ std::vector<std::uint8_t> fromBase64(const std::string& in)
 		const char* p = std::strchr(kB64, c);
 		if (!c || !p) {
 			if (c == '=' || c == '\n' || c == '\r' || c == ' ') continue;
-			throw std::runtime_error("terreno: datos en base64 rotos");
+			throw std::runtime_error(tr("terreno: datos en base64 rotos"));
 		}
 		v = (v << 6) | std::uint32_t(p - kB64);
 		bits += 6;
@@ -129,8 +132,8 @@ DocMaterial parseMaterial(const json& j)
 	m.index     = j.at("index").get<int>();
 	m.attribute = j.value("attribute", 2);
 	m.uvScale   = j.value("uvScale", 0.0);
-	if (m.index < 0) throw std::runtime_error("terreno: material con índice negativo");
-	if (m.attribute < 0 || m.attribute > 4) throw std::runtime_error("terreno: atributo de material desconocido");
+	if (m.index < 0) throw std::runtime_error(tr("terreno: material con índice negativo"));
+	if (m.attribute < 0 || m.attribute > 4) throw std::runtime_error(tr("terreno: atributo de material desconocido"));
 	return m;
 }
 
@@ -143,10 +146,10 @@ json materialJson(const DocMaterial& m)
 
 void parseDoc(const json& root, MapDoc& m)
 {
-	if (root.at("format").get<int>() != 1) throw std::runtime_error("versión de formato no soportada");
-	if (root.at("mode").get<std::string>() != "vs") throw std::runtime_error("solo hay mapas \"vs\"");
+	if (root.at("format").get<int>() != 1) throw std::runtime_error(tr("versión de formato no soportada"));
+	if (root.at("mode").get<std::string>() != "vs") throw std::runtime_error(tr("solo hay mapas \"vs\""));
 	const std::string sym = root.value("symmetry", "none");
-	if (sym != "none" && sym != "rotate180") throw std::runtime_error("simetría desconocida: " + sym);
+	if (sym != "none" && sym != "rotate180") throw std::runtime_error(tr("simetría desconocida: ") + sym);
 	m.symmetric = sym == "rotate180";
 
 	const json& meta = root.at("meta");
@@ -168,7 +171,7 @@ void parseDoc(const json& root, MapDoc& m)
 
 	const json& t          = root.at("terrain");
 	const std::string type = t.at("type").get<std::string>();
-	if (type != "flat" && type != "grid") throw std::runtime_error("terreno desconocido: \"" + type + "\" (flat o grid)");
+	if (type != "flat" && type != "grid") throw std::runtime_error(tr("terreno desconocido: \"") + type + tr("\" (flat o grid)"));
 	m.sourceMod = t.at("source").get<std::string>();
 	m.cell      = t.at("cell").get<double>();
 	if (type == "grid") {
@@ -176,23 +179,25 @@ void parseDoc(const json& root, MapDoc& m)
 		g.grid        = true;
 		g.nx          = t.at("size").at(0).get<int>();
 		g.nz          = t.at("size").at(1).get<int>();
-		if (g.nx < 1 || g.nz < 1 || g.nx > 400 || g.nz > 400) throw std::runtime_error("terreno: tamaño fuera de 1..400 celdas");
+		if (g.nx < 1 || g.nz < 1 || g.nx > 400 || g.nz > 400) throw std::runtime_error(tr("terreno: tamaño fuera de 1..400 celdas"));
 		const std::vector<std::uint8_t> h = fromBase64(t.at("heights").get<std::string>());
 		const std::size_t nv              = g.vertexCount();
-		if (h.size() != nv * 2) throw std::runtime_error("terreno: las alturas no cuadran con el tamaño");
+		if (h.size() != nv * 2) throw std::runtime_error(tr("terreno: las alturas no cuadran con el tamaño"));
 		g.heights.resize(nv);
 		for (std::size_t i = 0; i < nv; i++) g.heights[i] = std::int16_t(h[2 * i] | (h[2 * i + 1] << 8));
 		for (const json& mj : t.value("palette", json::array())) g.palette.push_back(parseMaterial(mj));
-		if (g.palette.empty() || g.palette.size() > 250) throw std::runtime_error("terreno: hacen falta entre 1 y 250 materiales");
+		if (g.palette.empty() || g.palette.size() > 250) throw std::runtime_error(tr("terreno: hacen falta entre 1 y 250 materiales"));
 		if (t.contains("border")) g.border = parseMaterial(t.at("border"));
 		if (t.contains("floor")) {
 			// Por punto.
 			g.floor = fromBase64(t.at("floor").get<std::string>());
 			g.water = t.contains("water") ? fromBase64(t.at("water").get<std::string>()) : std::vector<std::uint8_t>(nv, 0);
 			for (const json& lj : t.value("layers", json::array())) g.layers.push_back(fromBase64(lj.get<std::string>()));
-			if (g.floor.size() != nv || g.water.size() != nv || g.layers.size() != g.palette.size()) throw std::runtime_error("terreno: los datos no cuadran con el tamaño");
+			// Mapas guardados con un material añadido sin su capa: capa vacía.
+			while (g.layers.size() < g.palette.size()) g.layers.emplace_back(nv, std::uint8_t(0));
+			if (g.floor.size() != nv || g.water.size() != nv || g.layers.size() != g.palette.size()) throw std::runtime_error(tr("terreno: los datos no cuadran con el tamaño"));
 			for (const auto& l : g.layers) {
-				if (l.size() != nv) throw std::runtime_error("terreno: un material no cuadra con el tamaño");
+				if (l.size() != nv) throw std::runtime_error(tr("terreno: un material no cuadra con el tamaño"));
 			}
 		} else {
 			// Formato por celdas (primeras versiones): cada punto toma la
@@ -200,7 +205,7 @@ void parseDoc(const json& root, MapDoc& m)
 			const std::vector<std::uint8_t> cells = fromBase64(t.at("cells").get<std::string>());
 			const std::size_t nc                  = std::size_t(g.nx) * std::size_t(g.nz);
 			std::vector<std::uint8_t> wet         = t.contains("water") ? fromBase64(t.at("water").get<std::string>()) : std::vector<std::uint8_t>(nc, 0);
-			if (cells.size() != nc || wet.size() != nc) throw std::runtime_error("terreno: las celdas no cuadran con el tamaño");
+			if (cells.size() != nc || wet.size() != nc) throw std::runtime_error(tr("terreno: las celdas no cuadran con el tamaño"));
 			g.floor.assign(nv, 0);
 			g.water.assign(nv, 0);
 			g.layers.assign(g.palette.size(), std::vector<std::uint8_t>(nv, 0));
@@ -213,7 +218,7 @@ void parseDoc(const json& root, MapDoc& m)
 						if (cx < 0 || cz < 0 || cx >= g.nx || cz >= g.nz) continue;
 						around++;
 						const std::uint8_t c = cells[std::size_t(cz * g.nx + cx)];
-						if (c > g.palette.size()) throw std::runtime_error("terreno: una celda usa un material que no está en la paleta");
+						if (c > g.palette.size()) throw std::runtime_error(tr("terreno: una celda usa un material que no está en la paleta"));
 						if (!c) continue;
 						solid++;
 						mats[c - 1]++;
@@ -263,6 +268,19 @@ void parseDoc(const json& root, MapDoc& m)
 		d.surface = p.at("surface").get<double>();
 		m.ponds.push_back(d);
 	}
+	m.course = root.value("course", std::string());
+	for (const json& gj : root.value("gens", json::array())) {
+		DocGen g;
+		g.file        = gj.value("file", std::string("default"));
+		g.data        = gj.at("data").get<std::string>();
+		const json& o = gj.at("pos");
+		g.x           = o.at(0).get<double>();
+		g.y           = o.at(1).get<double>();
+		g.z           = o.at(2).get<double>();
+		g.label       = gj.value("label", std::string());
+		g.model       = gj.value("model", std::string());
+		m.gens.push_back(g);
+	}
 	for (const json& p : root.value("props", json::array())) {
 		DocProp d;
 		d.asset       = p.at("asset").get<std::string>();
@@ -281,7 +299,7 @@ void parseDoc(const json& root, MapDoc& m)
 	}
 
 	const json& r = root.at("routes");
-	if (!r.at("auto").get<bool>()) throw std::runtime_error("de momento los caminos solo pueden ser automáticos");
+	if (!r.at("auto").get<bool>()) throw std::runtime_error(tr("de momento los caminos solo pueden ser automáticos"));
 	m.routeStep   = r.at("step").get<double>();
 	m.routeMargin = r.at("margin").get<double>();
 	for (const json& x : r.value("barrierX", json::array())) m.barrierX.push_back(x.get<double>());
@@ -303,7 +321,7 @@ void parseDoc(const json& root, MapDoc& m)
 	}
 	for (int p = 0; p < 2; p++) {
 		for (int c = 0; c < 3; c++) {
-			if (!onion[p][c]) throw std::runtime_error("vs.onions: falta una cebolla");
+			if (!onion[p][c]) throw std::runtime_error(tr("vs.onions: falta una cebolla"));
 		}
 	}
 	for (const json& j : vs.value("pellets", json::array())) {
@@ -340,6 +358,7 @@ void parseDoc(const json& root, MapDoc& m)
 		o.face = j.value("face", 0.0);
 		o.push = j.value("push", 300.0);
 		o.work = j.value("work", 2);
+		o.y    = j.value("y", 0.0);
 		m.objects.push_back(o);
 	}
 }
@@ -350,48 +369,48 @@ void check(const MapData& m)
 	auto inside = [&](float x, float z, const char* what) {
 		if (x <= m.minX || x >= m.maxX || z <= m.minZ || z >= m.maxZ) {
 			char buf[128];
-			snprintf(buf, sizeof(buf), "%s fuera del mapa (%.0f, %.0f)", what, x, z);
+			snprintf(buf, sizeof(buf), tr("%s fuera del mapa (%.0f, %.0f)"), what, x, z);
 			throw std::runtime_error(buf);
 		}
-		if (!terrainSolid(m, x, z)) {
+		if (m.course.empty() && !terrainSolid(m, x, z)) {
 			char buf[128];
-			snprintf(buf, sizeof(buf), "%s sin suelo debajo (%.0f, %.0f)", what, x, z);
+			snprintf(buf, sizeof(buf), tr("%s sin suelo debajo (%.0f, %.0f)"), what, x, z);
 			throw std::runtime_error(buf);
 		}
 	};
-	if (m.minX >= m.maxX || m.minZ >= m.maxZ) throw std::runtime_error("bounds vacíos");
-	if (m.cell <= 0.0f) throw std::runtime_error("terrain.cell debe ser positivo");
-	if (m.routeStep <= 0.0f) throw std::runtime_error("routes.step debe ser positivo");
+	if (m.minX >= m.maxX || m.minZ >= m.maxZ) throw std::runtime_error(tr("bounds vacíos"));
+	if (m.cell <= 0.0f) throw std::runtime_error(tr("terrain.cell debe ser positivo"));
+	if (m.routeStep <= 0.0f) throw std::runtime_error(tr("routes.step debe ser positivo"));
 	for (int p = 0; p < 2; p++) {
-		inside(m.bases[p].x, m.bases[p].z, "base");
-		inside(m.rockets[p].x, m.rockets[p].z, "cohete");
-		inside(m.gates[p].x, m.gates[p].z, "compuerta");
-		inside(m.bombPiles[p].x, m.bombPiles[p].z, "montón de bombas");
-		for (const MapSpot& o : m.onions[p]) inside(o.x, o.z, "cebolla");
+		inside(m.bases[p].x, m.bases[p].z, tr("base"));
+		inside(m.rockets[p].x, m.rockets[p].z, tr("cohete"));
+		inside(m.gates[p].x, m.gates[p].z, tr("compuerta"));
+		inside(m.bombPiles[p].x, m.bombPiles[p].z, tr("montón de bombas"));
+		for (const MapSpot& o : m.onions[p]) inside(o.x, o.z, tr("cebolla"));
 	}
-	for (const MapPellet& s : m.pellets) inside(s.x, s.z, "pastilla");
-	for (const MapPiece& s : m.pieces) inside(s.x, s.z, "pieza");
-	for (const MapSpot& s : m.guards) inside(s.x, s.z, "guardián");
-	for (const MapEnemy& s : m.enemies) inside(s.x, s.z, "enemigo");
-	for (const MapObject& s : m.objects) inside(s.x, s.z, "construcción");
-	if (m.enemies.size() + m.guards.size() > 40) throw std::runtime_error("demasiados enemigos (máximo 40, contando los del otro lado)");
-	if (m.objects.size() > 24) throw std::runtime_error("demasiadas construcciones (máximo 24, contando las del otro lado)");
-	for (const MapProp& s : m.props) inside(s.x, s.z, "objeto");
-	inside(m.bigPiece.x, m.bigPiece.z, "pieza grande");
-	if (m.pieces.empty()) throw std::runtime_error("hace falta al menos una pieza");
-	if (m.pellets.size() > kMaxPellets) throw std::runtime_error("demasiadas pastillas (máximo 16, contando las de J2)");
-	if (m.pieces.size() > kMaxPieces) throw std::runtime_error("demasiadas piezas (máximo 16, contando las de J2)");
-	if (m.guards.size() > kMaxGuards) throw std::runtime_error("demasiados guardianes (máximo 4, contando los de J2)");
+	for (const MapPellet& s : m.pellets) inside(s.x, s.z, tr("pastilla"));
+	for (const MapPiece& s : m.pieces) inside(s.x, s.z, tr("pieza"));
+	for (const MapSpot& s : m.guards) inside(s.x, s.z, tr("guardián"));
+	for (const MapEnemy& s : m.enemies) inside(s.x, s.z, tr("enemigo"));
+	for (const MapObject& s : m.objects) inside(s.x, s.z, tr("construcción"));
+	if (m.enemies.size() + m.guards.size() > 40) throw std::runtime_error(tr("demasiados enemigos (máximo 40, contando los del otro lado)"));
+	if (m.objects.size() > 24) throw std::runtime_error(tr("demasiadas construcciones (máximo 24, contando las del otro lado)"));
+	for (const MapProp& s : m.props) inside(s.x, s.z, tr("objeto"));
+	inside(m.bigPiece.x, m.bigPiece.z, tr("pieza grande"));
+	if (m.pieces.empty()) throw std::runtime_error(tr("hace falta al menos una pieza"));
+	if (m.pellets.size() > kMaxPellets) throw std::runtime_error(tr("demasiadas pastillas (máximo 16, contando las de J2)"));
+	if (m.pieces.size() > kMaxPieces) throw std::runtime_error(tr("demasiadas piezas (máximo 16, contando las de J2)"));
+	if (m.guards.size() > kMaxGuards) throw std::runtime_error(tr("demasiados guardianes (máximo 4, contando los de J2)"));
 	for (const MapPond& p : m.ponds) {
-		if (p.rx <= 0.0f || p.rz <= 0.0f || p.depth <= 0.0f) throw std::runtime_error("charca con radio u hondura no positivos");
+		if (p.rx <= 0.0f || p.rz <= 0.0f || p.depth <= 0.0f) throw std::runtime_error(tr("charca con radio u hondura no positivos"));
 	}
 	for (const MapWall& w : m.walls) {
-		if (w.ax == w.bx && w.az == w.bz) throw std::runtime_error("muro de longitud cero");
+		if (w.ax == w.bx && w.az == w.bz) throw std::runtime_error(tr("muro de longitud cero"));
 	}
 	for (const MapProp& p : m.props) {
-		if (p.asset.size() < 5 || p.asset.compare(p.asset.size() - 4, 4, ".mod") != 0) throw std::runtime_error("objeto que no es un .mod: " + p.asset);
-		if (p.asset.find("..") != std::string::npos || p.asset[0] == '/') throw std::runtime_error("ruta de objeto no válida: " + p.asset);
-		if (!(p.scale > 0.0f)) throw std::runtime_error("objeto con escala no positiva: " + p.asset);
+		if (p.asset.size() < 5 || p.asset.compare(p.asset.size() - 4, 4, ".mod") != 0) throw std::runtime_error(tr("objeto que no es un .mod: ") + p.asset);
+		if (p.asset.find("..") != std::string::npos || p.asset[0] == '/') throw std::runtime_error(tr("ruta de objeto no válida: ") + p.asset);
+		if (!(p.scale > 0.0f)) throw std::runtime_error(tr("objeto con escala no positiva: ") + p.asset);
 	}
 }
 
@@ -421,7 +440,7 @@ bool parseMapDoc(const std::string& text, MapDoc& out, std::string& error)
 	}
 }
 
-bool expandMap(const MapDoc& d, MapData& m, std::string& error)
+bool expandMap(const MapDoc& d, MapData& m, std::string& error, bool validate)
 {
 	try {
 		m           = MapData();
@@ -429,6 +448,24 @@ bool expandMap(const MapDoc& d, MapData& m, std::string& error)
 		m.author    = d.author;
 		m.baseStage = d.baseStage;
 		m.sourceMod = d.sourceMod;
+		m.course    = d.course;
+		{
+			// Generadores del escenario: a su .gen, con la posición del editor.
+			std::vector<std::vector<std::uint8_t>> def, plants;
+			for (const DocGen& g : d.gens) {
+				std::vector<std::uint8_t> raw = fromBase64(g.data);
+				if (raw.size() < kGenPosOffset + 12) throw std::runtime_error(tr("generador roto"));
+				const float pos[3] = { float(g.x), float(g.y), float(g.z) };
+				for (int k = 0; k < 3; k++) {
+					std::uint32_t v;
+					std::memcpy(&v, &pos[k], 4);
+					for (int b = 0; b < 4; b++) raw[kGenPosOffset + std::size_t(k) * 4 + std::size_t(b)] = std::uint8_t(v >> (24 - 8 * b));
+				}
+				(g.file == "plants" ? plants : def).push_back(std::move(raw));
+			}
+			if (!def.empty()) m.genDefault = writeGen(def);
+			if (!plants.empty()) m.genPlants = writeGen(plants);
+		}
 		m.minX      = float(d.minX);
 		m.maxX      = float(d.maxX);
 		m.minZ      = float(d.minZ);
@@ -439,7 +476,7 @@ bool expandMap(const MapDoc& d, MapData& m, std::string& error)
 			const DocTerrain& g = d.terrain;
 			const std::size_t nv = g.vertexCount();
 			if (g.heights.size() != nv || g.floor.size() != nv || g.water.size() != nv || g.layers.size() != g.palette.size())
-				throw std::runtime_error("terreno: los datos no cuadran con el tamaño");
+				throw std::runtime_error(tr("terreno: los datos no cuadran con el tamaño"));
 			m.grid = true;
 			m.nx   = g.nx;
 			m.nz   = g.nz;
@@ -470,7 +507,7 @@ bool expandMap(const MapDoc& d, MapData& m, std::string& error)
 				// Arco en tramos rectos (mismas cuentas que la arena de serie).
 				const float cx = float(w.cx), cz = float(w.cz), r = float(w.radius), from = float(w.from), span = float(w.to) - from;
 				const int segs = w.segments;
-				if (segs < 1) throw std::runtime_error("arc.segments debe ser >= 1");
+				if (segs < 1) throw std::runtime_error(tr("arc.segments debe ser >= 1"));
 				for (int k = 0; k < segs; k++) {
 					const float a0 = (from + k * span / float(segs)) * 3.14159265f / 180.0f;
 					const float a1 = (from + (k + 1) * span / float(segs)) * 3.14159265f / 180.0f;
@@ -519,12 +556,12 @@ bool expandMap(const MapDoc& d, MapData& m, std::string& error)
 			if (twin) m.pellets.push_back({ -p.x, -p.z, p.id });
 		}
 		for (const DocPiece& s : d.pieces) {
-			if (s.kind < 0 || s.kind > 4) throw std::runtime_error("tipo de pieza desconocido");
+			if (s.kind < 0 || s.kind > 4) throw std::runtime_error(tr("tipo de pieza desconocido"));
 			std::uint32_t part = 0;
 			if (!s.part.empty()) {
 				bool known = false;
 				for (const ShipPartInfo& sp : shipParts()) known = known || s.part == sp.id;
-				if (!known) throw std::runtime_error("pieza de la nave desconocida: " + s.part);
+				if (!known) throw std::runtime_error(tr("pieza de la nave desconocida: ") + s.part);
 				part = fourcc(s.part);
 			}
 			const MapPiece p { float(s.x), float(s.z), s.kind, part };
@@ -536,7 +573,7 @@ bool expandMap(const MapDoc& d, MapData& m, std::string& error)
 			for (const EnemyInfo& t : enemyTypes()) {
 				if (e.type == t.id) info = &t;
 			}
-			if (!info) throw std::runtime_error("enemigo desconocido: " + e.type);
+			if (!info) throw std::runtime_error(tr("enemigo desconocido: ") + e.type);
 			const MapEnemy me { float(e.x), float(e.z), deg(float(e.face)), info->teki, info->boss };
 			m.enemies.push_back(me);
 			if (twin) m.enemies.push_back({ -me.x, -me.z, deg(float(e.face) + 180.0f), me.teki, me.boss });
@@ -546,10 +583,10 @@ bool expandMap(const MapDoc& d, MapData& m, std::string& error)
 			for (std::size_t k = 0; k < objectKinds().size(); k++) {
 				if (o.kind == objectKinds()[k].id) kind = int(k);
 			}
-			if (kind < 0) throw std::runtime_error("construcción desconocida: " + o.kind);
-			const MapObject mo { kind, float(o.x), float(o.z), deg(float(o.face)), float(o.push), std::max(1, std::min(9, o.work)) };
+			if (kind < 0) throw std::runtime_error(tr("construcción desconocida: ") + o.kind);
+			const MapObject mo { kind, float(o.x), float(o.z), deg(float(o.face)), float(o.push), std::max(1, std::min(9, o.work)), float(o.y) };
 			m.objects.push_back(mo);
-			if (twin) m.objects.push_back({ kind, -mo.x, -mo.z, deg(float(o.face) + 180.0f), mo.push, mo.work });
+			if (twin) m.objects.push_back({ kind, -mo.x, -mo.z, deg(float(o.face) + 180.0f), mo.push, mo.work, mo.y });
 		}
 		m.bigPiece = { float(d.bigX), float(d.bigZ), deg(0.0f) };
 		for (const DocGuard& s : d.guards) {
@@ -557,7 +594,7 @@ bool expandMap(const MapDoc& d, MapData& m, std::string& error)
 			m.guards.push_back(g);
 			if (twin) m.guards.push_back({ -g.x, -g.z, g.face });
 		}
-		check(m);
+		if (validate) check(m);
 		return true;
 	} catch (const std::exception& e) {
 		error = e.what();
@@ -613,7 +650,7 @@ std::string writeMapDoc(const MapDoc& d)
 	for (const DocGuard& s : d.guards) guards.push_back({ { "enemy", s.enemy }, { "pos", { s.x, s.z } } });
 	json enemies = json::array(), objects = json::array();
 	for (const DocEnemy& e : d.enemies) enemies.push_back({ { "type", e.type }, { "pos", { e.x, e.z } }, { "face", e.face } });
-	for (const DocObject& o : d.objects) objects.push_back({ { "kind", o.kind }, { "pos", { o.x, o.z } }, { "face", o.face }, { "push", o.push }, { "work", o.work } });
+	for (const DocObject& o : d.objects) objects.push_back({ { "kind", o.kind }, { "pos", { o.x, o.z } }, { "face", o.face }, { "push", o.push }, { "work", o.work }, { "y", o.y } });
 	for (std::size_t i = 0; i < d.pieces.size(); i++) {
 		if (!d.pieces[i].part.empty()) pieces[i]["part"] = d.pieces[i].part;
 	}
@@ -644,6 +681,13 @@ std::string writeMapDoc(const MapDoc& d)
 		root["terrain"]["layers"] = layers;
 		if (std::find_if(g.water.begin(), g.water.end(), [](std::uint8_t w) { return w != 0; }) != g.water.end()) root["terrain"]["water"] = toBase64(g.water);
 	}
+	if (!d.course.empty()) {
+		root["course"] = d.course;
+		json gens      = json::array();
+		for (const DocGen& g : d.gens)
+			gens.push_back({ { "file", g.file }, { "data", g.data }, { "pos", { g.x, g.y, g.z } }, { "label", g.label }, { "model", g.model } });
+		root["gens"] = gens;
+	}
 	root["walls"]       = walls;
 	root["ponds"]       = ponds;
 	root["props"]       = props;
@@ -661,14 +705,11 @@ MapDoc defaultMapDoc()
 {
 	// La disposición de bases de la arena de serie sobre un campo vacío.
 	MapDoc d;
-	d.walls = {
-		DocWall { false, -1150, -900, -1150, -560, 0, 0, 0, 0, 0, 3, 40, 150 },
-		DocWall { false, -1150, -330, -1150, -110, 0, 0, 0, 0, 0, 3, 40, 150 },
-		DocWall { false, -1150, 110, -1150, 330, 0, 0, 0, 0, 0, 3, 40, 150 },
-		DocWall { false, -1150, 560, -1150, 900, 0, 0, 0, 0, 0, 3, 40, 150 },
-	};
-	d.barrierX = { -1150, 1150 };
-	d.passes   = { { -1150, 0 }, { 1150, 0 }, { -1150, -445 }, { -1150, 445 }, { 1150, -445 }, { 1150, 445 } };
+	// Muralla curva de cada base (centro detrás del borde del mapa): hueco
+	// en medio para la puerta de roca y un paso a cada lado. Los muros ya
+	// cortan los caminos, así que no hace falta línea de barrera.
+	auto arc = [](double from, double to, int segs) { return DocWall { true, 0, 0, 0, 0, -2300, 0, 1150, from, to, segs, 40, 150 }; };
+	d.walls  = { arc(-51.5, -27.3, 6), arc(-18.3, -6.0, 3), arc(6.0, 18.3, 3), arc(27.3, 51.5, 6) };
 	for (int p = 0; p < 2; p++) {
 		const double s = p == 0 ? 1.0 : -1.0;
 		d.bases[p]     = { p, s * -1260, 0, p == 0 ? 90.0 : -90.0 };
@@ -849,6 +890,9 @@ const std::vector<ObjectInfo>& objectKinds()
 		{ "gate_soft", "Puerta de papel", "objects/gate/gt_soft.mod", "Los Pikmin la derriban a golpes." },
 		{ "gate_hard", "Puerta de piedra", "objects/gate/gt_hard.mod", "Muy resistente: los Pikmin tardan mucho en derribarla." },
 		{ "gate_bomb", "Puerta de roca negra", "objects/gate/gt_hard.mod", "Solo se rompe con rocas bomba (Pikmin amarillos)." },
+		{ "key", "Llave", "objects/key.mod", "El capitán la coge al tocarla. Sirve para abrir una puerta con cerradura." },
+		{ "key_door", "Puerta con cerradura", "objects/door.mod", "Se abre si el capitán la toca llevando una llave (y la gasta)." },
+		{ "nectar", "Fuente de néctar", "objects/fl_water/fl_water.mod", "Cae una gota de néctar de vez en cuando: los Pikmin que la beben florecen." },
 	};
 	return list;
 }

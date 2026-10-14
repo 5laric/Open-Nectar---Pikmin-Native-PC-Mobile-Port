@@ -19,6 +19,7 @@
 #include "mods/pc_vs_arena.h"
 #include "pc_vs.h"
 #include "BuildingItem.h"
+#include "DoorItem.h"
 #include "PikiAI.h"
 #include "ItemObject.h"
 #include "UfoItem.h"
@@ -1007,6 +1008,15 @@ static int sVsSerial       = -1;
 static f32 sEmptyFor[2]    = { 0.0f, 0.0f };
 static f32 sReinforceCd[2] = { 0.0f, 0.0f };
 
+// Fuentes de néctar: cada una deja caer una gota (FallWater, sin usar en el
+// juego original) cuando no hay néctar cerca; al tocar el suelo se vuelve un
+// charco que los Pikmin beben para florecer.
+struct PcVsNectar {
+	f32 x, z, timer;
+};
+static PcVsNectar sVsNectar[16];
+static int sVsNectarCount = 0;
+
 static void pcVsChoosePieces()
 {
 	for (u32& id : sVsPieceIds) id = 0;
@@ -1114,6 +1124,26 @@ static void pcVsUpdate(MapMgr* map)
 				if (dx * dx + dz * dz < 80.0f * 80.0f) busy = true;
 			}
 			if (!busy) pcVsSpawnPellet(map, spots[i].pelletId, spots[i].x, spots[i].z);
+		}
+	}
+	for (int i = 0; i < sVsNectarCount; i++) {
+		PcVsNectar& f = sVsNectar[i];
+		f.timer -= gsys->getFrameTime();
+		if (f.timer > 0.0f) continue;
+		f.timer   = 40.0f;
+		bool busy = false;
+		Iterator it(itemMgr);
+		CI_LOOP(it)
+		{
+			Creature* c = *it;
+			if (c->mObjType != OBJTYPE_Water && c->mObjType != OBJTYPE_FallWater) continue;
+			const f32 dx = c->mSRT.t.x - f.x, dz = c->mSRT.t.z - f.z;
+			if (dx * dx + dz * dz < 150.0f * 150.0f) busy = true;
+		}
+		if (busy) continue;
+		if (Creature* drop = itemMgr->birth(OBJTYPE_FallWater)) {
+			drop->init(Vector3f(f.x, map->getMinY(f.x, f.z, true) + 250.0f, f.z));
+			drop->startAI(0);
 		}
 	}
 	// Asedio: cada Pikmin rival libre junto a un cohete le quita vida y lo
@@ -1424,11 +1454,31 @@ static void pcVsSetupBases(MapMgr* map)
 	// Construcciones: puentes y rampas que construyen los Pikmin, bloques que
 	// se empujan y puertas que se derriban.
 	PcVsObjectSpot objects[32];
-	const int no = pc_vs_arena_object_spots(objects, 32);
+	const int no   = pc_vs_arena_object_spots(objects, 32);
+	sVsNectarCount = 0;
 	for (int i = 0; i < no; i++) {
 		const PcVsObjectSpot& o = objects[i];
 		Vector3f pos(o.x, 0.0f, o.z);
-		pos.y = map->getMinY(pos.x, pos.z, true);
+		pos.y = map->getMinY(pos.x, pos.z, true) + o.y;
+		if (o.kind == PC_VS_OBJ_NECTAR) {
+			if (sVsNectarCount < 16) sVsNectar[sVsNectarCount++] = { o.x, o.z, 10.0f };
+			continue;
+		}
+		if (o.kind == PC_VS_OBJ_KEY || o.kind == PC_VS_OBJ_KEY_DOOR) {
+			// Llave y puerta con cerradura (en el juego, sin usar): el capitán
+			// coge la llave al tocarla y la gasta al tocar la puerta, que se
+			// hunde y desaparece. Ver Navi::collisionCallback.
+			Creature* obj = itemMgr->birth(o.kind == PC_VS_OBJ_KEY ? OBJTYPE_Key : OBJTYPE_Gate);
+			if (!obj) continue;
+			obj->init(pos);
+			obj->mFaceDirection = o.face;
+			obj->mSRT.r.set(0.0f, o.face, 0.0f);
+			if (o.kind == PC_VS_OBJ_KEY_DOOR) static_cast<DoorItem*>(obj)->mLabelText = "";
+			// Sin vida, la colisión las ignora (isAlive mira mHealth > 0).
+			obj->mHealth = obj->mMaxHealth = 1.0f;
+			obj->startAI(0);
+			continue;
+		}
 		if (o.kind >= PC_VS_OBJ_GATE_SOFT) {
 			const int type = o.kind == PC_VS_OBJ_GATE_SOFT ? OBJTYPE_SluiceSoft : o.kind == PC_VS_OBJ_GATE_HARD ? OBJTYPE_SluiceHard : OBJTYPE_SluiceBomb;
 			if (BuildingItem* gate = static_cast<BuildingItem*>(itemMgr->birth(type))) {

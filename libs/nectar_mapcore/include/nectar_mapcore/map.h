@@ -64,6 +64,7 @@ struct DocEnemy {
 struct DocObject {
 	std::string kind = "bridge";
 	double x = 0, z = 0, face = 0;
+	double y    = 0;   ///< altura sobre el suelo (puentes entre mesetas…)
 	double push = 300; ///< roca: cuánto se desplaza al empujarla (hacia donde mira)
 	int work     = 2;   ///< puente: trabajo por tramo (1 poco, 2 normal, 4 mucho)
 };
@@ -109,6 +110,16 @@ struct DocTerrain {
 	std::size_t vertexCount() const { return std::size_t(nx + 1) * std::size_t(nz + 1); }
 };
 
+/// Generador de un escenario del juego, tal cual (enemigo, planta, hierbas,
+/// puente...): el juego lo crea con su propio código. Solo se cambia su
+/// posición.
+struct DocGen {
+	std::string file = "default"; ///< "default" o "plants" (el .gen al que va)
+	std::string data;             ///< el generador en crudo, en base64
+	double x = 0, y = 0, z = 0;
+	std::string label, model; ///< para el editor
+};
+
 /// Formas para empezar un terreno.
 enum class TerrainShape { Rectangle, Oval, Cross, TwoIslands, Ring };
 
@@ -121,6 +132,10 @@ struct MapDoc {
 	std::string sourceMod = "courses/practice/practice.mod";
 	double cell           = 50;
 	DocTerrain terrain;
+	/// Escenario del juego como base (su .mod tal cual, con sus caminos);
+	/// vacío = terreno del editor.
+	std::string course;
+	std::vector<DocGen> gens;
 
 	std::vector<DocWall> walls;
 	std::vector<DocPond> ponds;
@@ -182,11 +197,13 @@ struct MapEnemy {
 	int teki; ///< tipo de enemigo del juego, o -1
 	int boss; ///< tipo de jefe (GENBOSS_*), o -1
 };
-enum MapObjectKind { MAPOBJ_Bridge, MAPOBJ_BridgeLong, MAPOBJ_SlopeUp, MAPOBJ_SlopeDown, MAPOBJ_PushRock, MAPOBJ_GateSoft, MAPOBJ_GateHard, MAPOBJ_GateBomb };
+enum MapObjectKind { MAPOBJ_Bridge, MAPOBJ_BridgeLong, MAPOBJ_SlopeUp, MAPOBJ_SlopeDown, MAPOBJ_PushRock, MAPOBJ_GateSoft, MAPOBJ_GateHard, MAPOBJ_GateBomb,
+                     MAPOBJ_Key, MAPOBJ_KeyDoor, MAPOBJ_Nectar };
 struct MapObject {
 	int kind;
 	float x, z, face, push;
 	int work;
+	float y = 0.0f; ///< sobre el suelo
 };
 struct MapMaterial {
 	std::string source;
@@ -203,6 +220,8 @@ struct MapProp {
 
 struct MapData {
 	std::string name, author, baseStage, sourceMod;
+	std::string course;                               ///< ver MapDoc::course
+	std::vector<std::uint8_t> genDefault, genPlants; ///< .gen listos (vacíos = sin)
 	float minX, maxX, minZ, maxZ, wallHeight, cell;
 	float sunDir[3];
 	// Terreno editable (grid = false: el rectángulo llano).
@@ -258,7 +277,9 @@ const std::vector<ShipPartInfo>& shipParts();
 
 /// Despliega y comprueba que el juego lo aguanta (límites, dentro del
 /// mapa...). false con el motivo si no.
-bool expandMap(const MapDoc& doc, MapData& out, std::string& error);
+/// Con `validate` = false solo se comprueba lo imprescindible para construir
+/// la geometría (el editor dibuja así mapas aún sin terminar).
+bool expandMap(const MapDoc& doc, MapData& out, std::string& error, bool validate = true);
 
 /// Lo de los dos pasos de una vez.
 bool parseMap(const std::string& text, MapData& out, std::string& error);

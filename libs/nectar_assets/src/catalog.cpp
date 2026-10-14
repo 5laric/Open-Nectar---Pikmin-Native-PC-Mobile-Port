@@ -21,7 +21,8 @@ using json   = nlohmann::json;
 namespace {
 
 // Sube si cambia lo que se guarda: la caché vieja se rehace entera.
-constexpr int kIndexVersion = 1;
+constexpr int kIndexVersion = 2; // 2: matrices de GX arrastradas entre grupos (Mario)
+
 constexpr int kThumbSize    = 128;
 
 std::string lower(std::string s)

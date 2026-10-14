@@ -14,6 +14,7 @@ endif()
 
 add_library(nectar_mapcore STATIC
     src/map_json.cpp
+    src/i18n.cpp
     src/compile.cpp
 )
 # Sin las rutas globales de quien la incluya (el juego trae su propio float.h).

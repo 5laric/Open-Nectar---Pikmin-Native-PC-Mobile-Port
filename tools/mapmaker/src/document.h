@@ -10,7 +10,7 @@
 
 namespace nm {
 
-enum class ItemType { Base, Rocket, Gate, BombPile, Onion, Pellet, Piece, BigPiece, Guard, Prop, Wall, Pond, Enemy, Object };
+enum class ItemType { Base, Rocket, Gate, BombPile, Onion, Pellet, Piece, BigPiece, Guard, Prop, Wall, Pond, Enemy, Object, Gen };
 
 struct ItemRef {
 	ItemType type = ItemType::Base;

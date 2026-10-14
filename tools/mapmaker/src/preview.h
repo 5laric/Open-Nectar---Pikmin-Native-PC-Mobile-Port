@@ -21,7 +21,8 @@ namespace nm {
 
 struct PreviewResult {
 	int generation = -1;
-	bool ok        = false;
+	bool ok        = false; ///< hay geometría (aunque el mapa aún no se pueda jugar)
+	bool playable  = false; ///< además, el juego lo aceptaría
 	std::string error;
 	nectar::Model base, full;
 	nectar::Routes routes;

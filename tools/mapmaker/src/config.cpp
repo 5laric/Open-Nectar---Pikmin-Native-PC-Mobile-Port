@@ -19,7 +19,11 @@
 #include <unistd.h>
 #endif
 
+#include "nectar_mapcore/i18n.h"
+
 namespace nm {
+
+using nectar::tr;
 
 namespace fs = std::filesystem;
 using json   = nlohmann::json;
@@ -52,6 +56,7 @@ bool Config::load()
 		recents      = j.value("recents", std::vector<std::string>());
 		snap         = j.value("snap", true);
 		tutorialDone = j.value("tutorialDone", false);
+		language     = j.value("language", std::string("en"));
 		snapStep     = j.value("snapStep", 25.0f);
 		snapAngle    = j.value("snapAngle", 15.0f);
 	} catch (const std::exception&) {
@@ -66,7 +71,7 @@ bool Config::save() const
 	fs::create_directories(directory(), ec);
 	const json j = { { "assetsDir", assetsDir }, { "gameExe", gameExe }, { "lastMap", lastMap }, { "favorites", favorites },
 		             { "recents", recents },     { "snap", snap },       { "snapStep", snapStep }, { "snapAngle", snapAngle },
-		             { "tutorialDone", tutorialDone } };
+		             { "tutorialDone", tutorialDone }, { "language", language } };
 	std::ofstream f(fs::path(directory()) / "config.json");
 	if (!f) return false;
 	f << j.dump(2);
@@ -76,7 +81,7 @@ bool Config::save() const
 std::string resolveAssetsDir(const std::string& chosen, std::string& why)
 {
 	if (chosen.empty()) {
-		why = "elige una carpeta";
+		why = tr("elige una carpeta");
 		return "";
 	}
 	std::error_code ec;
@@ -85,12 +90,12 @@ std::string resolveAssetsDir(const std::string& chosen, std::string& why)
 	if (p.filename() == "dataDir") p = p.parent_path();
 	if (fs::is_directory(p / "assets" / "dataDir", ec) && !fs::is_directory(p / "dataDir", ec)) p = p / "assets";
 	if (!fs::is_directory(p / "dataDir", ec)) {
-		why = "no hay ninguna carpeta dataDir dentro (¿has extraído el disco con el launcher?)";
+		why = tr("no hay ninguna carpeta dataDir dentro (¿has extraído el disco con el launcher?)");
 		return "";
 	}
 	for (const char* need : { "dataDir/courses/practice/practice.mod", "dataDir/stages/chal0.ini" }) {
 		if (!fs::exists(p / need, ec)) {
-			why = std::string("falta ") + need + " (los datos están incompletos)";
+			why = std::string(tr("falta ")) + need + tr(" (los datos están incompletos)");
 			return "";
 		}
 	}
@@ -144,7 +149,7 @@ bool launchGame(const std::string& exe, const std::string& cwd, const std::vecto
 	si.cb = sizeof(si);
 	PROCESS_INFORMATION pi {};
 	if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, fs::path(cwd).wstring().c_str(), &si, &pi)) {
-		error = "no se pudo abrir el juego (" + std::to_string(GetLastError()) + ")";
+		error = tr("no se pudo abrir el juego (") + std::to_string(GetLastError()) + ")";
 		return false;
 	}
 	CloseHandle(pi.hThread);
@@ -153,7 +158,7 @@ bool launchGame(const std::string& exe, const std::string& cwd, const std::vecto
 #else
 	const pid_t pid = fork();
 	if (pid < 0) {
-		error = "no se pudo abrir el juego (fork)";
+		error = tr("no se pudo abrir el juego (fork)");
 		return false;
 	}
 	if (pid == 0) {

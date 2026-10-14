@@ -215,6 +215,9 @@ static int sLogicalRetraceInterval = 1;
 // like the pad's edge-shaped buttons.
 static Uint32 sMousePressedMask = 0; // buttons pressed since the last take
 static int sMouseWheelSteps = 0;
+// Steps that nothing consumes (title, pause, menus) must not pile up. Otherwise a
+// long scroll there changes the captain or the camera zoom once play resumes.
+constexpr int kMaxPendingWheelSteps = 8;
 static float sTouchZoomDelta = 0.0f;
 static float sTouchCameraDrag = 0.0f;
 static float sCameraPitchDrag = 0.0f;
@@ -1150,7 +1153,7 @@ void pc_window_poll_events(PADStatus* pad) {
                 if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
                     steps = -steps;
                 }
-                sMouseWheelSteps += steps;
+                sMouseWheelSteps = std::clamp(sMouseWheelSteps + steps, -kMaxPendingWheelSteps, kMaxPendingWheelSteps);
                 break;
             }
             case SDL_WINDOWEVENT:
@@ -1222,7 +1225,7 @@ void pc_window_poll_events(PADStatus* pad) {
                     printf("[PC Port] Mouse relative mode: OFF (Escape)\n");
                 }
                 // Cycle control modes with F2 key
-                if (event.key.keysym.scancode == SDL_SCANCODE_F2 && !sSettingsMenuOpen) {
+                if (event.key.keysym.scancode == SDL_SCANCODE_F2 && !event.key.repeat && !sSettingsMenuOpen) {
                     pc_window_set_control_mode((sControlMode + 1) % 2);
                     const char* modeNames[] = {"Classic", "Mouse Cursor"};
                     printf("[PC Port] Control mode: %s\n", modeNames[sControlMode]);

@@ -139,6 +139,7 @@ endif()
 option(PIKMIN_BUILD_LAUNCHER "Build the standalone first-run launcher" ${PIKMIN_DESKTOP_DEFAULT})
 option(PIKMIN_BUILD_TESTS "Build the host-run test executables" ${PIKMIN_DESKTOP_DEFAULT})
 option(NECTAR_BUILD_MAPMAKER "Build the VS map editor (tools/mapmaker)" ${PIKMIN_DESKTOP_DEFAULT})
+option(NECTAR_ONLINE "Build the experimental direct online co-op layer" OFF)
 
 if(PIKMIN_BUILD_TESTS)
     enable_testing()
@@ -290,8 +291,10 @@ set(PC_PORT_SOURCES
     pc_port/mods/pc_vs_map.cpp
     # Mapas VS: formato y compilador compartidos con el editor de mapas.
     ${NECTAR_LIBS_DIR}/nectar_mapcore/src/map_json.cpp
+    ${NECTAR_LIBS_DIR}/nectar_mapcore/src/i18n.cpp
     ${NECTAR_LIBS_DIR}/nectar_mapcore/src/compile.cpp
     ${NECTAR_LIBS_DIR}/nectar_assets/src/mod.cpp
+    ${NECTAR_LIBS_DIR}/nectar_assets/src/gen.cpp
     ${NECTAR_LIBS_DIR}/nectar_assets/src/image.cpp
     ${PC_PORT_DIR}/launcher/bti_decode.cpp
     pc_port/pc_vs.cpp
@@ -365,6 +368,7 @@ include_directories(
 # Cabeceras internas de nectar_assets solo para sus fuentes.
 set_source_files_properties(
     ${NECTAR_LIBS_DIR}/nectar_assets/src/mod.cpp
+    ${NECTAR_LIBS_DIR}/nectar_assets/src/gen.cpp
     ${NECTAR_LIBS_DIR}/nectar_assets/src/image.cpp
     PROPERTIES INCLUDE_DIRECTORIES
     "${NECTAR_LIBS_DIR}/nectar_assets/src;${NECTAR_LIBS_DIR}/nectar_assets/third_party;${PC_PORT_DIR}/launcher")
@@ -552,6 +556,15 @@ else()
 endif()
 target_compile_options(${NECTAR_GAME} PRIVATE ${NATIVE_COMPILE_OPTIONS})
 target_link_libraries(${NECTAR_GAME} PRIVATE ${NECTAR_LEGACY})
+if(NECTAR_ONLINE)
+    if(NOT TARGET nectar_net)
+        add_subdirectory("${NECTAR_LIBS_DIR}/nectar_net" "${CMAKE_BINARY_DIR}/nectar_net")
+    endif()
+    target_link_libraries(${NECTAR_GAME} PRIVATE nectar_net)
+    target_compile_definitions(${NECTAR_GAME} PRIVATE PIKI_NECTAR_ONLINE=1)
+else()
+    target_compile_definitions(${NECTAR_GAME} PRIVATE PIKI_NECTAR_ONLINE=0)
+endif()
 
 # GX display lists, game logic and the software audio mixer execute on the host
 # CPU. Keep optimization level, machine-specific ISA and link-time optimization
