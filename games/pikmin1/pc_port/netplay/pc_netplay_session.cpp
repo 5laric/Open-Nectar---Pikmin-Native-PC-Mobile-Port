@@ -71,6 +71,9 @@
 #include "pc_permadeath.h"
 #include "pc_speedrun.h"
 #include "pc_vs.h"
+#include "mods/pc_vs_arena.h"
+#include "mods/pc_vs_map.h"
+#include "Vector.h"
 #include "pc_window.h"
 #include "randomizer/pc_randomizer.h"
 #include "settings/pc_settings.h"
@@ -143,6 +146,9 @@ struct Config {
 	int inputGamepad   = 0;
 	bool ice           = false; // --netplay-host-ice / --netplay-join-ice
 	bool replay        = false; // --netplay-replay-log <file>
+	uint8_t mode       = 1;     // xfer::kModeCoopDirect or kModeVs (--netplay-mode, --vs-map, the offer)
+	bool vsMapFile     = false; // VS: the map is a file (--vs-map, the offer's map.json), not the menu's
+	float testVsMatchSeconds = 0; // TEST ONLY: PIKMIN_NETPLAY_TEST_VS_MATCH_SECONDS
 };
 
 int sArgc     = 0;
@@ -158,6 +164,10 @@ constexpr size_t kHsLen             = xfer::kHsLen;
 using Hello = xfer::Hello;
 
 Hello sLocal;
+std::string sVsMapHexStr;
+// A captain this PC cannot load (a Pikmin 2 one without the local install):
+// the handshake refuses as soon as the peer is heard. -1 when both load.
+int sCaptainMissing = -1;
 std::string sExeHexStr;
 std::string sCfgHexStr;
 std::string sCfgText;
@@ -563,6 +573,12 @@ std::string build_config_string()
 	snprintf(buf, sizeof(buf), "coop=1;captainP1=%d;captainP2=%d;netplaySeed=%u;protocolVersion=%u;",
 	         pc_coop_captain(0), pc_coop_captain(1), (unsigned)sCfg.seed, (unsigned)kProtocolVersion);
 	s += buf;
+	// VS: the mode and the map are the Hello's mode field and digest (so a
+	// mismatch names them); the rules are the vs* keys above.
+	if (sCfg.mode == xfer::kModeVs && sCfg.testVsMatchSeconds > 0) {
+		snprintf(buf, sizeof(buf), "testVsMatchSeconds=%g;", sCfg.testVsMatchSeconds);
+		s += buf;
+	}
 	return s;
 }
 
@@ -579,9 +595,78 @@ void compute_local_hello()
 	pc_netplay_sha::sha256(sCfgText.data(), sCfgText.size(), sLocal.cfg);
 	sCfgHexStr            = pc_netplay_sha::hex(sLocal.cfg, 32);
 	sLocal.seed           = sCfg.seed;
-	sLocal.mode.mode      = pc_coop_direct_requested() ? xfer::kModeCoopDirect : xfer::kModeNone;
+	sLocal.mode.mode      = sCfg.mode;
 	sLocal.mode.captainP1 = (uint8_t)pc_coop_captain(0);
 	sLocal.mode.captainP2 = (uint8_t)pc_coop_captain(1);
+	for (int p = 0; p < 2 && sCaptainMissing < 0; ++p) {
+		if (!pc_captain_available(pc_coop_captain(p))) sCaptainMissing = pc_coop_captain(p);
+	}
+	if (sCaptainMissing >= 0) {
+		printf("[netplay] captain %d is not available on this PC (it needs a local Pikmin 2 install); the session "
+		       "will be refused\n",
+		       sCaptainMissing);
+	}
+	if (sCfg.mode != xfer::kModeVs) return;
+	// VS: both PCs must compile the very same map (pc_vs_arena), so the
+	// handshake compares the digest of the compiled .mod and .ini.
+	if (!sCfg.vsMapFile) pc_vs_map_select(pc_settings_get_vs_map());
+	if (const char* why = pc_vs_arena_prepare()) {
+		printf("[netplay] refusing session: the VS map cannot be played: %s\n", why);
+		fflush(stdout);
+		std::exit(npx::kUsage);
+	}
+	const u8* mod = nullptr;
+	const u8* ini = nullptr;
+	size_t modLen = 0, iniLen = 0;
+	pc_vs_arena_compiled(&mod, &modLen, &ini, &iniLen);
+	pc_netplay_sha::Sha256 sha;
+	sha.update(mod, modLen);
+	sha.update(ini, iniLen);
+	// The places the sim spawns things from (bases, Onions, pellets, pieces,
+	// enemies, objects...) come from the map, not from the compiled files.
+	// Every spot struct is 4-byte fields only, so its bytes are its value.
+	{
+		auto put = [&sha](const void* p, size_t n) { sha.update(static_cast<const uint8_t*>(p), n); };
+		for (int player = 0; player < 2; ++player) {
+			Vector3f pos;
+			f32 face = 0;
+			pc_vs_arena_base(player, pos, face);
+			put(&pos, sizeof(pos));
+			put(&face, sizeof(face));
+			pc_vs_arena_rocket(player, pos, face);
+			put(&pos, sizeof(pos));
+			put(&face, sizeof(face));
+			pc_vs_arena_gate(player, pos, face);
+			put(&pos, sizeof(pos));
+			put(&face, sizeof(face));
+			pc_vs_arena_bomb_pile(player, pos);
+			put(&pos, sizeof(pos));
+			for (int color = 0; color < 3; ++color) {
+				pc_vs_arena_onion(player, color, pos);
+				put(&pos, sizeof(pos));
+			}
+		}
+		Vector3f big;
+		pc_vs_arena_big_piece(big);
+		put(&big, sizeof(big));
+		PcVsPelletSpot pellets[16];
+		put(pellets, sizeof(pellets[0]) * (size_t)pc_vs_arena_pellet_spots(pellets, 16));
+		PcVsPieceSpot pieces[16];
+		put(pieces, sizeof(pieces[0]) * (size_t)pc_vs_arena_piece_spots(pieces, 16));
+		Vector3f guards[4];
+		put(guards, sizeof(guards[0]) * (size_t)pc_vs_arena_guard_spots(guards, 4));
+		PcVsEnemySpot enemies[48];
+		put(enemies, sizeof(enemies[0]) * (size_t)pc_vs_arena_enemy_spots(enemies, 48));
+		PcVsObjectSpot objects[32];
+		put(objects, sizeof(objects[0]) * (size_t)pc_vs_arena_object_spots(objects, 32));
+	}
+	sha.final(sLocal.vsMapSha);
+	sVsMapHexStr       = pc_netplay_sha::hex(sLocal.vsMapSha, 32);
+	const PcVsMap* map = pc_vs_map();
+	printf("[netplay] vs map: \"%s\" (%s) compiled %llu+%llu B, digest (compiled map and spots) %s\n", map ? map->name.c_str() : "?",
+	       sCfg.vsMapFile ? "file" : (pc_settings_get_vs_map()[0] ? pc_settings_get_vs_map() : "built-in arena"),
+	       (unsigned long long)modLen, (unsigned long long)iniLen, sVsMapHexStr.c_str());
+	fflush(stdout);
 }
 
 bool local_ui_open() { return pc_settings_menu_is_open() != 0; }
@@ -1431,12 +1516,61 @@ void parse_config()
 		const unsigned long n = strtoul(ea, &end, 10);
 		if (end != ea && *end == '\0' && n > 0) sCfg.exitAfter = n;
 	}
-	if (pc_vs_direct_requested()) usage_exit("online VS is not supported yet; --vs-map cannot be used with netplay%s", "");
+	// Mode: --netplay-mode coop|vs, --vs-map (VS), the offer (the joiner
+	// follows the host) or the recorded session; co-op otherwise.
+	int asked = 0;
+	if (const char* m = argv_value(sArgc, sArgv, "--netplay-mode")) {
+		if (std::strcmp(m, "coop") == 0) asked = xfer::kModeCoopDirect;
+		else if (std::strcmp(m, "vs") == 0) asked = xfer::kModeVs;
+		else usage_exit("bad --netplay-mode %s (want coop or vs)", m);
+	}
+	const bool vsMapArg = pc_vs_direct_requested();
+	if (vsMapArg && asked == xfer::kModeCoopDirect) usage_exit("--vs-map plays VS; it cannot be used with --netplay-mode coop%s", "");
+	if (vsMapArg) asked = xfer::kModeVs;
+	std::string vsMapJson;
+	if (launch.active && !launch.isHost) {
+		const int offered = launch.mode == 2 ? xfer::kModeVs : xfer::kModeCoopDirect;
+		if (asked != 0 && asked != offered)
+			usage_exit("the host's offer is for %s; join it with the matching mode (Join Co-op or Join VS)",
+			           offered == xfer::kModeVs ? "VS" : "co-op");
+		asked     = offered;
+		vsMapJson = launch.vsMapJson;
+	} else if (sCfg.replay) {
+		const std::string rec = sReplay.log.meta_get("descriptor");
+		if (pc_netplay_launch_parse_mode(rec, &vsMapJson) == 2) asked = xfer::kModeVs;
+	}
+	sCfg.mode = asked == xfer::kModeVs ? xfer::kModeVs : xfer::kModeCoopDirect;
+	if (sCfg.mode == xfer::kModeVs) {
+		sCfg.vsMapFile = vsMapArg;
+		if (!vsMapJson.empty()) {
+			// The host's map.json, written to this run's folder and played as a file.
+			const std::string dir  = launch.active ? launch.runDir : std::string(".");
+			const std::string path = dir + "/" + (sCfg.replay ? "replay-vs-map.json" : "vs-map.json");
+			FILE* f                = fopen(path.c_str(), "wb");
+			const bool written     = f != nullptr && fwrite(vsMapJson.data(), 1, vsMapJson.size(), f) == vsMapJson.size();
+			if (f != nullptr) fclose(f);
+			if (!written) usage_exit("cannot write the host's VS map to %s", path.c_str());
+			if (vsMapArg) printf("[netplay] vs map: --vs-map ignored; playing the host's map from the offer\n");
+			pc_vs_map_select_file(path);
+			sCfg.vsMapFile = true;
+			printf("[netplay] vs map: the host's map.json (%llu B) -> %s\n", (unsigned long long)vsMapJson.size(),
+			       path.c_str());
+		}
+		if (const char* t = getenv_nonempty("PIKMIN_NETPLAY_TEST_VS_MATCH_SECONDS")) {
+			if (env_is_one("PIKMIN_NETPLAY_TEST_KNOBS")) {
+				sCfg.testVsMatchSeconds = (float)atof(t);
+				if (sCfg.testVsMatchSeconds < 0) sCfg.testVsMatchSeconds = 0;
+				pc_vs_set_test_match_seconds(sCfg.testVsMatchSeconds);
+				printf("[netplay] test: VS match length %g s\n", sCfg.testVsMatchSeconds);
+			}
+		}
+	}
 	sLocalRole = sCfg.isHost ? 0 : 1;
 	// Each peer presents its own captain full screen: host P1, joiner P2.
 	pc_netplay_present_set_local_player_default(sLocalRole);
 	pc_netplay_camlead_session_begin(sLocalRole);
-	// Both peers boot straight into two-captain co-op with a fresh save.
+	// Both peers boot straight into two-captain co-op with a fresh save, or
+	// into a VS match (the --vs-map direct boot).
 	PcCoopSwitch sw = pc_coop_switch_parse(sArgc, sArgv);
 	sw.coop         = true;
 	if (launch.active && !launch.isHost && launch.haveCaptains) {
@@ -1452,7 +1586,12 @@ void parse_config()
 		}
 	}
 	pc_coop_switch_apply(sw);
-	pc_coop_direct_request();
+	if (sCfg.mode == xfer::kModeVs) {
+		pc_vs_direct_set_online(true);
+		if (!vsMapArg) pc_vs_direct_request();
+	} else {
+		pc_coop_direct_request();
+	}
 	sPhase = kHandshake;
 }
 
@@ -1465,7 +1604,7 @@ const char* unsupported_run_mode()
 	if (pc_hardmode_active()) return "Hard mode";
 	if (pc_randomizer_active()) return "the save randomizer";
 	if (pc_speedrun_active()) return "Speedrun mode";
-	if (pc_vs_active()) return "VS";
+	if (sCfg.mode != xfer::kModeVs && pc_vs_active()) return "VS";
 	return nullptr;
 }
 
@@ -1534,9 +1673,15 @@ void log_refusal_detail(uint8_t field, const Hello* peer)
 	else if (field == xfer::kFieldSeed)
 		printf("[netplay] refusal: seed local=%u peer=%u (PIKMIN_NETPLAY_SEED)\n", sLocal.seed, peer->seed);
 	else if (field == xfer::kFieldMode)
-		printf("[netplay] refusal: mode local=%s %d,%d peer=%s %d,%d\n", xfer::mode_name(sLocal.mode.mode),
-		       sLocal.mode.captainP1, sLocal.mode.captainP2, xfer::mode_name(peer->mode.mode), peer->mode.captainP1,
-		       peer->mode.captainP2);
+		printf("[netplay] refusal: mode local=%s %d,%d peer=%s %d,%d (both must host/join the same mode, co-op "
+		       "or VS, with the same captains)\n",
+		       xfer::mode_name(sLocal.mode.mode), sLocal.mode.captainP1, sLocal.mode.captainP2,
+		       xfer::mode_name(peer->mode.mode), peer->mode.captainP1, peer->mode.captainP2);
+	else if (field == xfer::kFieldVsMap)
+		printf("[netplay] refusal: vsmap local=%s peer=%s: the two PCs compiled different VS maps. Over ICE the "
+		       "offer carries the host's map.json; otherwise both need the same map file. The game files must be "
+		       "the same version too (the map takes its textures from them).\n",
+		       sVsMapHexStr.c_str(), pc_netplay_sha::hex(peer->vsMapSha, 32).c_str());
 }
 
 [[noreturn]] void refuse_and_exit(uint8_t field, const Hello* peer = nullptr)
@@ -1625,6 +1770,10 @@ bool handshake_pump()
 		if (type != xfer::kHsHello && type != xfer::kHsAck) continue;
 		const uint8_t field = xfer::first_mismatch(sLocal, h);
 		if (field != 0) refuse_and_exit(field, &h);
+		if (sCaptainMissing >= 0) {
+			printf("[netplay] refusal: captain %d needs a local Pikmin 2 install on this PC\n", sCaptainMissing);
+			refuse_and_exit(xfer::kFieldCaptain, &h);
+		}
 		if (type == xfer::kHsHello) {
 			// Ack every Hello at once, echoing its nonce.
 			send_hello_msg(xfer::kHsAck, 0, h.nonce);
@@ -1795,7 +1944,8 @@ void inlog_open()
 	kv("config_sha256", sCfgHexStr);
 	kv("config", sCfgText);
 	kv("settings", pc_settings_netplay_config_text());
-	kv("descriptor", pc_netplay_launch_descriptor(pc_coop_captain(0), pc_coop_captain(1)));
+	kv("descriptor", pc_netplay_launch_descriptor(pc_coop_captain(0), pc_coop_captain(1), sCfg.mode,
+	                                              sCfg.mode == xfer::kModeVs ? pc_vs_map_source_text() : std::string()));
 	kv("netplay_seed", std::to_string(sCfg.seed));
 	kv("delay_start", std::to_string(sCfg.localDelay));
 	kv("first_frame", "0");
@@ -2445,7 +2595,17 @@ void ice_connect(System* sys)
 		pc_netplay_ice::SessionBundle bundle;
 		bundle.seed       = sCfg.seed;
 		bundle.configText = pc_settings_netplay_config_text();
-		bundle.descriptor = pc_netplay_launch_descriptor(pc_coop_captain(0), pc_coop_captain(1));
+		bundle.descriptor = pc_netplay_launch_descriptor(pc_coop_captain(0), pc_coop_captain(1), sCfg.mode,
+		                                                 sCfg.mode == xfer::kModeVs ? pc_vs_map_source_text() : std::string());
+		if (sCfg.mode == xfer::kModeVs) {
+			const size_t json = pc_vs_map_source_text().size();
+			if (json > kPcNetplayVsMapJsonMax)
+				printf("[netplay] vs map: map.json is %llu B, more than the offer carries (%llu B); the joiner needs "
+				       "the same map\n",
+				       (unsigned long long)json, (unsigned long long)kPcNetplayVsMapJsonMax);
+			else
+				printf("[netplay] vs map: the offer carries this map.json (%llu B)\n", (unsigned long long)json);
+		}
 		std::string offer, answer;
 		if (!sIce->host_create_offer(nic, bundle, &offer, &err, pump)) ice_fail(err);
 		ice_emit_code("offer", offer);
@@ -2736,6 +2896,18 @@ bool run_advance(System* sys, BaseApp* app, int frame, const uint8_t* inputs, bo
 	// Test evidence (PIKMIN_NETPLAY_DEBUG_NAVI_POS=1): every captain's
 	// position, so a pair run can prove both captains really moved.
 	if (sNaviPosTrace && sSessionTicks % 150 == 0) pc_state_hash_print_navi_positions(sSessionTicks);
+	// Online VS ends where a VS match goes back to the title (both peers on
+	// the same tick: the choice is synced input).
+	if (sCfg.mode == xfer::kModeVs && pc_vs_left_to_title() > 0) {
+		printf("[netplay] VS: back to the title at frame=%d; the session ends\n", frame);
+		fflush(stdout);
+		pc_state_hash_flush();
+		inlog_end("vs left to title frame=" + std::to_string(frame));
+		stop_session();
+		sPhase = kDone;
+		request_quit();
+		return false;
+	}
 	if (const char* what = unsupported_run_mode()) {
 		printf("[netplay] %s is not supported online yet; stopping the session at frame=%d\n", what, frame);
 		fflush(stdout);

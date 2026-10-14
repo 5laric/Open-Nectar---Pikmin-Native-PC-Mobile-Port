@@ -20,6 +20,7 @@ int sSerial = 0;
 PcVsMap sMap;
 int sState = 0; // 0 sin leer, 1 listo, -1 error
 std::string sError;
+std::string sText; // el map.json del mapa activo
 std::vector<PcVsMapEntry> sList;
 
 bool readText(const std::string& path, std::string& out)
@@ -35,26 +36,29 @@ bool readText(const std::string& path, std::string& out)
 std::string userMapFile(const std::string& id) { return std::string(kUserMaps) + "/" + id + "/map.json"; }
 
 // La arena de serie: la de disco si vale, si no la incluida.
-bool loadBuiltIn(PcVsMap& out, std::string& error)
+bool loadBuiltIn(PcVsMap& out, std::string& error, std::string* source = nullptr)
 {
 	std::string text;
 	if (readText(kDiskMap, text)) {
 		if (nectar::parseMap(text, out, error)) {
 			fprintf(stderr, "[VS map] %s: \"%s\"\n", kDiskMap, out.name.c_str());
+			if (source) *source = text;
 			return true;
 		}
 		fprintf(stderr, "[VS map] %s no es válido (%s); se usa el incluido\n", kDiskMap, error.c_str());
 	}
+	if (source) *source = kPcVsDefaultMap;
 	return nectar::parseMap(kPcVsDefaultMap, out, error);
 }
 
-bool loadPath(const std::string& path, PcVsMap& out, std::string& error)
+bool loadPath(const std::string& path, PcVsMap& out, std::string& error, std::string* source = nullptr)
 {
 	std::string text;
 	if (!readText(path, text)) {
 		error = "no se encuentra " + path;
 		return false;
 	}
+	if (source) *source = text;
 	return nectar::parseMap(text, out, error);
 }
 
@@ -119,15 +123,18 @@ void pc_vs_map_select_file(const std::string& path)
 const std::string& pc_vs_map_selected() { return sSelected; }
 int pc_vs_map_serial() { return sSerial; }
 const std::string& pc_vs_map_error() { return sError; }
+const std::string& pc_vs_map_source_text() { return sText; }
 
 const PcVsMap* pc_vs_map()
 {
 	if (sState) return sState > 0 ? &sMap : nullptr;
 	sError.clear();
+	sText.clear();
 	bool ok;
-	if (!sFile.empty()) ok = loadPath(sFile, sMap, sError);
-	else if (sSelected.empty()) ok = loadBuiltIn(sMap, sError);
-	else ok = loadPath(userMapFile(sSelected), sMap, sError);
+	if (!sFile.empty()) ok = loadPath(sFile, sMap, sError, &sText);
+	else if (sSelected.empty()) ok = loadBuiltIn(sMap, sError, &sText);
+	else ok = loadPath(userMapFile(sSelected), sMap, sError, &sText);
+	if (!ok) sText.clear();
 	if (!ok) {
 		const std::string which = !sFile.empty() ? sFile : (sSelected.empty() ? "arena de serie" : sSelected);
 		fprintf(stderr, "[VS map] %s: %s\n", which.c_str(), sError.c_str());

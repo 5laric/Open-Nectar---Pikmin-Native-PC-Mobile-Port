@@ -47,13 +47,24 @@ struct PcNetplayLaunch {
 	bool haveCaptains = false; // joiner: captains carried in the descriptor
 	int captainP1 = 0;
 	int captainP2 = 1;
+	int mode = 0;            // joiner: the descriptor's mode (1 co-op, 2 VS; 0 = none named, co-op)
+	std::string vsMapJson;   // joiner, VS: the host's map.json (empty when it did not fit)
 };
 
 void pc_netplay_launch_preinit(int argc, char** argv);
 void pc_netplay_launch_post_settings(void);
 const PcNetplayLaunch& pc_netplay_launch_setup(void);
 
-// The session descriptor the host puts in its offer: "key=value;" text.
-std::string pc_netplay_launch_descriptor(int captainP1, int captainP2);
+// The session descriptor the host puts in its offer: "key=value;" text,
+//   captainP1=<n>;captainP2=<n>;            every session
+//   mode=vs;                                VS (no mode key: co-op)
+//   vsMapJson=<the map.json, to the end>    VS, when it fits the offer
+// A co-op descriptor is the same as before VS existed.
+std::string pc_netplay_launch_descriptor(int captainP1, int captainP2, int mode = 1,
+                                         const std::string& vsMapJson = std::string());
 // Parses a descriptor's captains. False when it names none (both stay put).
 bool pc_netplay_launch_parse_descriptor(const std::string& text, int* captainP1, int* captainP2);
+// The descriptor's mode: 2 for VS, 1 otherwise; *json gets its map.json (or "").
+int pc_netplay_launch_parse_mode(const std::string& text, std::string* vsMapJson);
+// Largest map.json the offer carries (bytes).
+constexpr size_t kPcNetplayVsMapJsonMax = 15000;

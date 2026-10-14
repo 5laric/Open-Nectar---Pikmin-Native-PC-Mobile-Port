@@ -42,6 +42,9 @@ int pc_vs_map_serial();
 /// (el motivo, en pc_vs_map_error).
 const PcVsMap* pc_vs_map();
 const std::string& pc_vs_map_error();
+/// El map.json del que salió pc_vs_map() (vacío si no se pudo leer); netplay
+/// lo manda al otro PC con la oferta.
+const std::string& pc_vs_map_source_text();
 
 
 #endif

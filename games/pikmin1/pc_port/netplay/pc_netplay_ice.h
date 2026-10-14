@@ -30,8 +30,9 @@
 //                           sdp | cfg | desc | crc32:u32be)
 //     cfg  = the host's sim-relevant settings text (the joiner adopts it for
 //            the session only, never writing its settings file)
-//     desc = an optional session descriptor, "key=value;" text (the co-op
-//            captains today); empty is valid
+//     desc = an optional session descriptor, "key=value;" text (the
+//            captains; for VS also the mode and the VS map's map.json);
+//            empty is valid
 //     seed = the netplay seed
 
 #include <stddef.h>
@@ -118,7 +119,7 @@ struct SessionBundle {
 // length travels in a u16 field.
 constexpr size_t kMaxBundleSdpBytes    = 8192;
 constexpr size_t kMaxBundleConfigBytes = 8192;
-constexpr size_t kMaxBundleDescBytes   = 4096;
+constexpr size_t kMaxBundleDescBytes   = 16384; // room for a VS map.json
 static_assert(kMaxBundleSdpBytes <= 0xFFFF, "v2 SDP length is a u16 field");
 static_assert(kMaxBundleConfigBytes <= 0xFFFF, "v2 config length is a u16 field");
 static_assert(kMaxBundleDescBytes <= 0xFFFF, "v2 descriptor length is a u16 field");

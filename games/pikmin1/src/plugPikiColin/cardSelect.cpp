@@ -106,9 +106,13 @@ struct CardSelectSetupSection : public Node {
 			// guardadas; J1 teclado + mando 1, J2 mando 2). Si el mapa no se
 			// puede montar, se dice en la consola y se vuelve al título.
 			pc_coop_take_chosen_at_title();
-			pc_window_input_reset_assignment();
-			pc_coop_set_captain(0, PC_CAPTAIN_OLIMAR);
-			pc_coop_set_captain(1, PC_CAPTAIN_LOUIE);
+			// Netplay: each PC drives only its own player with the device the
+			// session assigned, and the captains are the session's.
+			if (!pc_vs_direct_online()) {
+				pc_window_input_reset_assignment();
+				pc_coop_set_captain(0, PC_CAPTAIN_OLIMAR);
+				pc_coop_set_captain(1, PC_CAPTAIN_LOUIE);
+			}
 			if (const char* why = pc_vs_arena_prepare()) {
 				fprintf(stderr, "[VS] --vs-map: el mapa no se puede jugar: %s\n", why);
 				pc_vs_set_pending(false);
