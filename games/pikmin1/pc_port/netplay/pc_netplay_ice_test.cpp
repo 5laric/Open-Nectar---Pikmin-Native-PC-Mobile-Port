@@ -73,9 +73,12 @@ int main()
 		set_env("PIKMIN_NETPLAY_STUN", "");
 		set_env("PIKMIN_NETPLAY_TURN", "");
 		IceNetConfig def = ice_net_config_from_env();
-		CHECK(def.stun.size() == 2 && def.stun[0].host == "stun.l.google.com" && def.stun[0].port == 19302
-		          && def.stun[1].host == "stun.cloudflare.com" && def.stun[1].port == 3478,
-		      "default STUN servers");
+		CHECK(def.stun.empty(), "no STUN by default");
+		set_env("PIKMIN_NETPLAY_STUN", "public");
+		IceNetConfig pub = ice_net_config_from_env();
+		CHECK(pub.stun.size() == 2 && pub.stun[0].host == "stun.l.google.com" && pub.stun[0].port == 19302
+		          && pub.stun[1].host == "stun.cloudflare.com" && pub.stun[1].port == 3478,
+		      "public STUN servers");
 		CHECK(def.turn.empty() && def.bindAddress.empty() && !def.turnOnly, "no TURN, any interface by default");
 		set_env("PIKMIN_NETPLAY_STUN", "none");
 		CHECK(ice_net_config_from_env().stun.empty(), "STUN none");

@@ -201,15 +201,20 @@ std::vector<std::string> split_list(const std::string& text)
 
 } // namespace
 
+const char* const kPublicStunServers = "stun.l.google.com:19302,stun.cloudflare.com:3478";
+
 IceNetConfig ice_net_config_from_env()
 {
 	IceNetConfig cfg;
+	// No STUN unless asked for: by default the codes carry this PC's own
+	// addresses only (LAN, VPN such as Tailscale/ZeroTier, public IPv6) and
+	// no third-party server is contacted. "public" opts into public STUN.
 	const char* stun = getenv_nonempty("PIKMIN_NETPLAY_STUN");
-	const std::string stunText = stun != nullptr ? stun : "stun.l.google.com:19302,stun.cloudflare.com:3478";
+	std::string stunText = stun != nullptr ? stun : "none";
 	std::string stunLower = trim(stunText);
 	for (char& c : stunLower)
 		if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
-	// "none": host candidates only, so tests need no external network.
+	if (stunLower == "public") stunText = kPublicStunServers;
 	if (stunLower != "none" && stunLower != "off" && stunLower != "empty") {
 		for (const std::string& entry : split_list(stunText)) {
 			StunServer s;

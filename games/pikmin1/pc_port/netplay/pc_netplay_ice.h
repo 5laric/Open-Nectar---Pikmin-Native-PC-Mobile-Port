@@ -80,15 +80,17 @@ struct IceNetConfig {
 	std::string bindAddress;
 };
 
-// Defaults: STUN stun.l.google.com:19302 (then stun.cloudflare.com:3478); no
-// TURN; ephemeral local ports; any interface. Overridable:
-//   PIKMIN_NETPLAY_STUN     "host:port[,host:port...]" ("none" = no STUN)
+// Defaults: no STUN and no TURN, so no third-party server is contacted;
+// ephemeral local ports; any interface. Overridable:
+//   PIKMIN_NETPLAY_STUN     "host:port[,host:port...]", "public" (the servers
+//                           in kPublicStunServers) or "none" (the default)
 //   PIKMIN_NETPLAY_TURN     "host:port:user:pass[,...]" (empty = none)
 //   PIKMIN_NETPLAY_ICE_PORT_BEGIN / _END
 //   PIKMIN_NETPLAY_ICE_TURN_ONLY=1
 //   PIKMIN_NETPLAY_ICE_BIND "ip" (empty = any)
 //   PIKMIN_NETPLAY_ICE_TIMEOUT_MS (answer and connect waits; default 600000)
 //   PIKMIN_NETPLAY_ICE_GATHER_TIMEOUT_MS (default 15000)
+extern const char* const kPublicStunServers;
 IceNetConfig ice_net_config_from_env();
 // One log line describing the configuration (servers, never TURN passwords).
 std::string ice_net_config_text(const IceNetConfig& cfg);
