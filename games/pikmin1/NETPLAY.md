@@ -125,20 +125,33 @@ already match.
 
 ## Firewall and NAT
 
-The codes carry each PC's possible addresses (its LAN addresses and, through
-a public STUN server, its internet address), and the two games try every pair
-until one connects. This works for most home routers.
+The codes carry each PC's own addresses (LAN, VPN and any public IPv6
+address), and the two games try every pair until one connects. By default the
+game contacts no third-party server, so out of the box it connects:
+
+- on the same LAN;
+- over a VPN such as **Tailscale** or ZeroTier: install it on both PCs and sign
+  in to the same network. The codes then include the VPN addresses. No
+  setting is needed;
+- between two PCs that both have public IPv6.
+
+Across the internet without a VPN, the games also need each PC's public IPv4
+address. That is what a STUN server reports:
+
+- `$env:PIKMIN_NETPLAY_STUN = "public"` on both PCs uses the public servers
+  `stun.l.google.com:19302` and `stun.cloudflare.com:3478`. Those servers see
+  each PC's IP address; no gameplay goes through them. This works for most
+  home routers.
+- `$env:PIKMIN_NETPLAY_STUN = "host:port"` uses a STUN server of your choice.
+
+Other notes:
 
 - The first time, Windows may ask whether the game may use the network.
   Allow it (private networks are enough between two PCs at home). The game
   never adds a firewall rule itself.
-- STUN servers: `stun.l.google.com:19302` by default; set
-  `$env:PIKMIN_NETPLAY_STUN = "host:port"` for another, or `none` for LAN only.
-- If the games never connect (`ICE connect timed out`), one of the routers
-  does not allow a direct path. Two fallbacks:
-  - **Tailscale** (or ZeroTier): install it on both PCs and sign in to the
-    same network. The codes then include the VPN addresses, and the games
-    connect over them. No setting is needed.
+- If the games never connect (`ICE connect timed out`), there is no direct
+  path between the two networks. Fallbacks:
+  - a VPN, as above;
   - **Your own TURN server** (for example coturn), set on both PCs:
     `$env:PIKMIN_NETPLAY_TURN = "turn.example.org:3478:user:password"`.
     `$env:PIKMIN_NETPLAY_ICE_TURN_ONLY = "1"` forces the relay.
@@ -224,7 +237,7 @@ Two PCs over ICE, with the codes carried between them by any means (a shared
 folder, scp). Host PC:
 
 ```powershell
-py -3.12 tools\netplay\run_pair.py --peer-only host --ice --ice-bind any --stun default `
+py -3.12 tools\netplay\run_pair.py --peer-only host --ice --ice-bind any --stun public `
     --exe <build>\bin\nectar.exe --assets <assets> --ticks 3000 --out <scratch>\two-pc
 # then copy <scratch>\two-pc\host\offer.txt to the joiner's PC
 ```
@@ -232,7 +245,7 @@ py -3.12 tools\netplay\run_pair.py --peer-only host --ice --ice-bind any --stun 
 Joiner PC:
 
 ```powershell
-py -3.12 tools\netplay\run_pair.py --peer-only join --ice --ice-bind any --stun default `
+py -3.12 tools\netplay\run_pair.py --peer-only join --ice --ice-bind any --stun public `
     --exe <build>\bin\nectar.exe --assets <assets> --ticks 3000 --out <scratch>\two-pc `
     --offer <copied offer.txt>
 # then copy <scratch>\two-pc\join\answer.txt to the host's <scratch>\two-pc\host\answer-in.txt

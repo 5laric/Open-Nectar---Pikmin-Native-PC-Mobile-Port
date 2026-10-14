@@ -80,12 +80,12 @@ Two PCs over ICE (--peer-only with --ice): the host writes
 <out>/host/offer.txt and waits for <out>/host/answer-in.txt; the joiner reads
 the offer from --offer FILE and writes <out>/join/answer.txt. Carry the offer
 to the joiner's PC and the answer back to the host's answer-in.txt by any
-means (a shared folder, scp). --ice-bind any and the default STUN servers
-(--stun default) are needed between two PCs:
+means (a shared folder, scp). --ice-bind any is needed between two PCs, and
+--stun public (public STUN) across the internet without a VPN:
 
-    host PC: py tools/netplay/run_pair.py --peer-only host --ice --ice-bind any --stun default \\
+    host PC: py tools/netplay/run_pair.py --peer-only host --ice --ice-bind any --stun public \\
                  --exe ... --assets ... --ticks 3000 --out run/ice-host
-    join PC: py tools/netplay/run_pair.py --peer-only join --ice --ice-bind any --stun default \\
+    join PC: py tools/netplay/run_pair.py --peer-only join --ice --ice-bind any --stun public \\
                  --exe ... --assets ... --ticks 3000 --out run/ice-join --offer <copied offer.txt>
 """
 
@@ -502,7 +502,7 @@ def main(argv=None):
                    help="TEST ONLY: the joiner moves one object (piki|navi|teki, default piki 0) at FRAME "
                         "(PIKMIN_NETPLAY_TEST_DESYNC_NUDGE)")
     p.add_argument("--ice", action="store_true", help="connect over ICE with codes exchanged through files")
-    p.add_argument("--stun", default="none", help="--ice: PIKMIN_NETPLAY_STUN (none, host:port, or default)")
+    p.add_argument("--stun", default="none", help="--ice: PIKMIN_NETPLAY_STUN: none (the default), public, host:port, or default (leave it unset)")
     p.add_argument("--ice-bind", default="127.0.0.1", help="--ice: PIKMIN_NETPLAY_ICE_BIND (or any)")
     p.add_argument("--turn", default=None, help="--ice: PIKMIN_NETPLAY_TURN host:port:user:pass")
     p.add_argument("--offer", type=Path, default=None, help="--peer-only join --ice: the host's offer file")
