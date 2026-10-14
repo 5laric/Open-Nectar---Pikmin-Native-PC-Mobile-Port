@@ -1,4 +1,6 @@
 #include "pc_vs.h"
+#include "netplay/pc_netplay_det.h"
+#include "system.h"
 
 #include <chrono>
 #include <cstdio>
@@ -32,6 +34,11 @@ constexpr double kStartMsg = 0.9; // "START"
 
 double nowSeconds()
 {
+	// Netplay: the countdown gates the match, so deterministic mode counts
+	// sim ticks instead of the wall clock.
+	if (pc_netplay_deterministic()) {
+		return pc_netplay_tick() * (double)pc_netplay_fixed_dt(gsys ? gsys->mFrameRate : 2);
+	}
 	return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 } // namespace
