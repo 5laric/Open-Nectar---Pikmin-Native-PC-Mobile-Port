@@ -13,6 +13,9 @@
 #include "types.h"
 #include <stddef.h>
 #include <stdlib.h>
+#if defined(PIKI_PC_PORT)
+#include "netplay/pc_sim_rng.h"
+#endif
 
 struct DGXGraphics;
 class BaseApp;
@@ -206,8 +209,14 @@ public:
 	static char* stringDup(immut char*);
 
 	// Inline functions
+#if defined(PIKI_PC_PORT)
+	// Netplay: the sim RNG stream, rand() unless deterministic mode is on.
+	f32 getRand(f32 max) { return pc_sim_randf(max); }
+	f32 getHalfRand(f32 max) { return max * (pc_sim_randf(1.0f) - 0.5f); }
+#else
 	f32 getRand(f32 max) { return max * (rand() / f32(RAND_MAX)); }
 	f32 getHalfRand(f32 max) { return max * (rand() / f32(RAND_MAX) - 0.5f); }
+#endif
 	f32 getFade() { return mCurrentFade; }
 	void setFade(f32 target, f32 rate = 3.0f)
 	{

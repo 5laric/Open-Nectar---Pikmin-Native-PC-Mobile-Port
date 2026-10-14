@@ -56,6 +56,8 @@ static f32 pcNaviHurt(f32 damage) { return damage; }
 #include "NaviMgr.h"
 #if defined(PIKI_PC_PORT)
 #include "timing/pc_render_phase.h"
+#include "netplay/pc_netplay_det.h"
+#include "netplay/pc_input_log.h"
 #endif
 #include "NaviState.h"
 #include "Pcam/Camera.h"
@@ -1139,6 +1141,11 @@ void Navi::pcUpdateBombCommand()
 {
 	// Se consume siempre, como Lock-On, para que no salte sola al activarlo.
 	const bool pressed = pc_window_take_bomb_press(mNaviID == 1 ? 1 : 0);
+	// Netplay: the Bomb button lives outside PADStatus, so deterministic mode
+	// drains and ignores it.
+	if (pc_netplay_deterministic()) {
+		return;
+	}
 	if (!pressed || !pc_settings_get_bomb_control() || !pikiMgr) {
 		return;
 	}
@@ -1317,6 +1324,16 @@ void Navi::pcUpdateLockOn()
 	const bool lockPressed   = pc_window_take_lockon_press();
 	const bool chargePressed = pc_window_take_swarm_press();
 	const int mode           = pc_settings_get_lock_on();
+
+	// Netplay: the lock-on and charge presses live outside PADStatus, and the
+	// automatic mode follows the local cursor, so deterministic mode drains
+	// them and never locks.
+	if (pc_netplay_deterministic()) {
+		mPcLockTarget = nullptr;
+		mPcLockIgnore = nullptr;
+		pc_settings_note_lock_on(0);
+		return;
+	}
 
 	static const bool kDebug = getenv("NECTAR_LOCKON_DEBUG") != nullptr;
 	if (kDebug && lockPressed) {
@@ -2099,6 +2116,13 @@ void Navi::pcPinCursorToLock()
  */
 void Navi::pcPinCursorFirstPerson()
 {
+#if defined(PIKI_PC_PORT)
+	// Netplay: the pin reads the local view matrix, so deterministic mode
+	// keeps the classic stick cursor.
+	if (pc_netplay_deterministic()) {
+		return;
+	}
+#endif
 	if (!pc_first_person_active_for(mNaviID)) {
 		return;
 	}
@@ -3106,6 +3130,60 @@ void Navi::reviseController(Vector3f& stickPos)
 	STACK_PAD_VAR(2);
 }
 
+#if defined(PIKI_PC_PORT)
+// Netplay: per-player control yaw as input.
+//
+// In deterministic mode the stick basis comes from the per-tick input yaw of
+// this Navi's pad (mNaviID), never from a camera, so peers whose cameras
+// differ still move the same. The pre-sim capture below fills the yaw from
+// the live control camera before the tick runs, so a tick's input is
+// complete before its sim, and a replay feeds the recorded value instead.
+// The basis is built once from the quantised (sin, cos) through
+// Matrix4f::makeRotate(axis, sin, cos). A miss (no Navi or camera at capture
+// time) uses yaw 0, never a camera read. With the switch off this returns
+// false and the camera path runs unchanged.
+static bool pcNaviControlSincos(int naviID, f32* outSin, f32* outCos)
+{
+	if (!pc_netplay_deterministic()) return false;
+	if (naviID < 0 || naviID > 3) return false;
+	f32 s = 0.0f, c = 1.0f;
+	if (!pc_netplay_control_yaw(naviID, &s, &c)) {
+		s = 0.0f;
+		c = 1.0f;
+	}
+	*outSin = s;
+	*outCos = c;
+	return true;
+}
+
+// Pre-sim yaw capture, run by pc_input_log_tick after PADRead. Fills every
+// slot without a replayed value from that pad's control camera, quantised
+// before use so record and replay are bit-identical. Does nothing unless
+// deterministic mode or a record needs the yaw.
+static void pcNaviCaptureControlYaw()
+{
+	const bool detMode = pc_netplay_deterministic();
+	if (!detMode && !pc_input_log_is_record_active()) return;
+	if (naviMgr == nullptr) return;
+	const int count = naviMgr->getNaviCount();
+	for (int i = 0; i < count; ++i) {
+		Navi* navi = naviMgr->getNavi(i);
+		if (navi == nullptr) continue;
+		const int pad = navi->mNaviID;
+		if (pad < 0 || pad > 3 || pc_input_log_yaw_valid(pad)) continue;
+		Camera* cam = navi->controlCamera();
+		if (cam == nullptr) {
+			if (detMode) pc_input_log_yaw_set(pad, 0, pc_input_log::kFlagsNone);
+			continue;
+		}
+		const f32 liveAngle = NMathF::atan2(cam->mViewXAxis.z, cam->mViewXAxis.x);
+		pc_input_log_yaw_set(pad, pc_input_log_yaw_quantise(liveAngle), pc_input_log::kFlagsNone);
+	}
+}
+
+static const bool sPcYawCaptureRegistered = (pc_input_log_set_yaw_capture_fn(&pcNaviCaptureControlYaw), true);
+#endif
+
 /**
  * @todo: Documentation
  *
@@ -3141,11 +3219,25 @@ void Navi::makeVelocity(bool isSunset)
 	} else {
 		mMainStick.set(0.0f, 0.0f, 0.0f);
 	}
+#if defined(PIKI_PC_PORT)
+	// Netplay: deterministic mode builds the basis from the input yaw.
+	Camera* ctrlCam             = controlCamera();
+	NTransform3D NRef transform = NTransform3D();
+	f32 yawSin, yawCos;
+	if (pcNaviControlSincos(mNaviID, &yawSin, &yawCos)) {
+		transform.makeRotate(Vector3f(0.0f, 1.0f, 0.0f), yawSin, yawCos);
+	} else {
+		f32 angle                   = NMathF::atan2(ctrlCam->mViewXAxis.z, ctrlCam->mViewXAxis.x);
+		NAxisAngle4f NRef axisAngle = NAxisAngle4f(NVector3f(0.0f, 1.0f, 0.0f), angle);
+		transform.inputAxisAngle(axisAngle);
+	}
+#else
 	Camera* ctrlCam             = controlCamera();
 	f32 angle                   = NMathF::atan2(ctrlCam->mViewXAxis.z, ctrlCam->mViewXAxis.x);
 	NAxisAngle4f NRef axisAngle = NAxisAngle4f(NVector3f(0.0f, 1.0f, 0.0f), angle);
 	NTransform3D NRef transform = NTransform3D();
 	transform.inputAxisAngle(axisAngle);
+#endif
 
 	if (!isSunset) {
 		mTargetVelocity.set(0.0f, 0.0f, 0.0f);
@@ -3194,10 +3286,17 @@ void Navi::makeVelocity(bool isSunset)
 	#ifdef PIKI_PC_PORT
 	// El ratón y el cursor virtual van con el jugador que tiene el teclado;
 	// el otro usa siempre el modo clásico.
-	const bool mouseIsMine = mNaviID == pc_window_get_keyboard_owner();
+	// Netplay: mouse deltas, the virtual cursor and the gyro recenter are
+	// local state outside PADStatus, so in deterministic mode every captain
+	// takes the classic stick path; the edges are drained.
+	const bool detMode     = pc_netplay_deterministic();
+	const bool mouseIsMine = !detMode && mNaviID == pc_window_get_keyboard_owner();
 	// "Gyro Recenter": el cursor vuelve delante del capitán, en la dirección
 	// de la cámara, para corregir la deriva acumulada del giroscopio.
-	if (mouseIsMine && pc_gyro_take_recenter_cursor()) {
+	if (detMode) {
+		pc_gyro_take_recenter_cursor();
+		pc_window_clear_mouse_cursor_delta();
+	} else if (mouseIsMine && pc_gyro_take_recenter_cursor()) {
 		Vector3f fwd(-ctrlCam->mLookAtMtx.mMtx[2][0], 0.0f, -ctrlCam->mLookAtMtx.mMtx[2][2]);
 		const f32 len = speedy_sqrtf(fwd.x * fwd.x + fwd.z * fwd.z);
 		if (len > 0.0001f) {
@@ -3359,7 +3458,7 @@ void Navi::makeVelocity(bool isSunset)
 	// For cursor-facing logic, use virtual cursor in mouse modes
 	#ifdef PIKI_PC_PORT
 	f32 cursorStickMag = moveStickMag;
-	if (mNaviID == pc_window_get_keyboard_owner() && pc_window_get_control_mode() != PC_CONTROL_CLASSIC) {
+	if (!detMode && mNaviID == pc_window_get_keyboard_owner() && pc_window_get_control_mode() != PC_CONTROL_CLASSIC) {
 		cursorStickMag = sqrtf(
 			(pc_window_get_virtual_cursor_x() / 127.0f) * (pc_window_get_virtual_cursor_x() / 127.0f) +
 			(pc_window_get_virtual_cursor_y() / 127.0f) * (pc_window_get_virtual_cursor_y() / 127.0f)
@@ -3404,12 +3503,28 @@ void Navi::makeVelocity(bool isSunset)
  */
 void Navi::makeCStick(bool isSunset)
 {
+#if defined(PIKI_PC_PORT)
+	// Netplay: deterministic mode builds the basis from the input yaw.
+	Camera* ctrlCam             = controlCamera();
+	f32 cameraYaw               = 0.0f;
+	NTransform3D NRef transform = NTransform3D();
+	f32 yawSin, yawCos;
+	if (pcNaviControlSincos(mNaviID, &yawSin, &yawCos)) {
+		cameraYaw = atan2f(yawSin, yawCos);
+		transform.makeRotate(Vector3f(0.0f, 1.0f, 0.0f), yawSin, yawCos);
+	} else {
+		cameraYaw                   = NMathF::atan2(ctrlCam->mViewXAxis.z, ctrlCam->mViewXAxis.x);
+		NAxisAngle4f NRef axisAngle = NAxisAngle4f(NVector3f(0.0f, 1.0f, 0.0f), cameraYaw);
+		transform.inputAxisAngle(axisAngle);
+	}
+#else
 	Camera* ctrlCam             = controlCamera();
 	f32 cameraYaw               = NMathF::atan2(ctrlCam->mViewXAxis.z, ctrlCam->mViewXAxis.x);
 	NAxisAngle4f NRef axisAngle = NAxisAngle4f(NVector3f(0.0f, 1.0f, 0.0f), cameraYaw);
 
 	NTransform3D NRef transform = NTransform3D();
 	transform.inputAxisAngle(axisAngle);
+#endif
 
 	NVector3f cStickInput(mKontroller->getSubStickX(), 0.0f, -mKontroller->getSubStickY());
 
@@ -3424,7 +3539,9 @@ void Navi::makeCStick(bool isSunset)
 	// Con el Charge activo el botón de swarm pasa a lanzar la carga contra el
 	// objetivo fijado, así que aquí deja de dirigir al pelotón.
 	const bool swarmIsCharge = pc_settings_get_charge() != 0;
-	const bool swarmHeld     = mNaviID == 0 ? pc_window_swarm_held() : pc_window_swarm_held_p2();
+	// Netplay: the held swarm button lives outside PADStatus, so
+	// deterministic mode treats it as released.
+	const bool swarmHeld = !pc_netplay_deterministic() && (mNaviID == 0 ? pc_window_swarm_held() : pc_window_swarm_held_p2());
 	// Durante el Charge el empuje va al objetivo fijado en vez de al cursor.
 	const bool charging = mPcChargeTime > 0.0f && mPcLockTarget;
 	// Con el Charge activo el botón solo carga si hay a quién: sin objetivo
