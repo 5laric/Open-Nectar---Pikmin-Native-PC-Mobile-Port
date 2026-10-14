@@ -660,16 +660,16 @@ struct Hub {
              / ("session-" + std::to_string(platform::currentProcessId()) + "-" + std::to_string(stamp));
     }
 
-    void openCoop(bool host)
+    void openCoop(bool host, bool vs = false)
     {
         coopError.clear();
         std::fill(coopInput.begin(), coopInput.end(), '\0');
         CoopFlow& flow = coopFlow();
         if (host) {
             std::string err;
-            flow.startHost(coopExchangeDir(), err);
+            flow.startHost(coopExchangeDir(), err, {}, vs);
         } else {
-            flow.startJoin(coopExchangeDir());
+            flow.startJoin(coopExchangeDir(), {}, vs);
         }
         coopOpen = true;
     }
@@ -947,6 +947,11 @@ struct Hub {
                 if (glassButton("Host Co-op", ImVec2(coopW, 44.0f))) openCoop(true);
                 ImGui::SetCursorScreenPos(ImVec2(x + coopW + 12.0f, below + 38.0f + 44.0f + 10.0f));
                 if (glassButton("Join Co-op", ImVec2(coopW, 44.0f))) openCoop(false);
+                // Online VS: a 1v1 match on two PCs, on the host's VS map.
+                ImGui::SetCursorScreenPos(ImVec2(x, below + 38.0f + 2.0f * (44.0f + 10.0f)));
+                if (glassButton("Host VS", ImVec2(coopW, 44.0f))) openCoop(true, true);
+                ImGui::SetCursorScreenPos(ImVec2(x + coopW + 12.0f, below + 38.0f + 2.0f * (44.0f + 10.0f)));
+                if (glassButton("Join VS", ImVec2(coopW, 44.0f))) openCoop(false, true);
             }
 #endif
             ImGui::PopID();
@@ -1527,7 +1532,7 @@ struct Hub {
         dl->AddRect(a, b, col(kOrange), 22.0f, 0, 3.0f);
         const bool host = flow.role() == CoopFlow::Role::Host;
         dl->AddText(fonts.title, 32.0f, ImVec2(a.x + 34.0f, a.y + 28.0f), col(kOrange),
-                    host ? "Host Co-op" : "Join Co-op");
+                    flow.vs() ? (host ? "Host VS" : "Join VS") : (host ? "Host Co-op" : "Join Co-op"));
 
         const float innerW = panel.x - 68.0f;
         ImGui::SetCursorScreenPos(ImVec2(a.x + 34.0f, a.y + 80.0f));

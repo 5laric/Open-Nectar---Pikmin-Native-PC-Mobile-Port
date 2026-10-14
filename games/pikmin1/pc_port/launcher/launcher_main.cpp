@@ -932,15 +932,18 @@ void usage(const char* argv0)
 // CoopFlow and game start as the panel, with the paste replaced by files.
 //   --coop-smoke host --exchange DIR --answer-file FILE --game EXE --data-root DIR [--coop-arg A]...
 //   --coop-smoke join --exchange DIR --offer-file FILE  --game EXE --data-root DIR [--coop-arg A]...
+// --vs runs Host VS / Join VS instead.
 // Prints each stage; returns the game's exit code.
 int coopSmoke(int argc, char** argv)
 {
     std::string role, exchange, answerFile, offerFile, game, dataRoot;
     std::vector<std::string> extra;
+    bool vs = false;
     for (int i = 2; i < argc; ++i) {
         const std::string arg = argv[i];
         const bool more = i + 1 < argc;
         if (arg == "host" || arg == "join") role = arg;
+        else if (arg == "--vs") vs = true;
         else if (arg == "--exchange" && more) exchange = argv[++i];
         else if (arg == "--answer-file" && more) answerFile = argv[++i];
         else if (arg == "--offer-file" && more) offerFile = argv[++i];
@@ -973,12 +976,12 @@ int coopSmoke(int argc, char** argv)
     };
     std::string error;
     if (role == "host") {
-        if (!flow.startHost(exchange, error, extra)) {
+        if (!flow.startHost(exchange, error, extra, vs)) {
             std::cerr << "coop-smoke: " << error << '\n';
             return 1;
         }
     } else {
-        flow.startJoin(exchange, extra);
+        flow.startJoin(exchange, extra, vs);
     }
     auto last = pikmin::launcher::CoopFlow::Stage::Idle;
     for (;;) {
