@@ -674,7 +674,13 @@ if(PIKMIN_NETPLAY_BUILD AND NOT ANDROID)
     find_package(Threads REQUIRED)
     target_link_libraries(juice PRIVATE Threads::Threads)
     target_sources(${NECTAR_GAME} PRIVATE
-        pc_port/netplay/pc_netplay_ice.cpp)
+        pc_port/netplay/pc_netplay_ice.cpp
+        # Session HUD, desync forensics and the failure-path diagnostics.
+        pc_port/netplay/pc_netplay_forensics.cpp
+        pc_port/netplay/pc_netplay_inlog.cpp
+        pc_port/netplay/pc_state_dump.cpp
+        pc_port/netplay/pc_netplay_diag.cpp
+        pc_port/netplay/pc_netplay_diag_bt.cpp)
     target_link_libraries(${NECTAR_GAME} PRIVATE juice)
 endif()
 
@@ -1140,6 +1146,19 @@ if(PIKMIN_BUILD_TESTS)
     target_include_directories(pc_audio_source_test PRIVATE pc_port)
     target_compile_options(pc_audio_source_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
     add_test(NAME pc_audio_source_test COMMAND pc_audio_source_test)
+
+    # Netplay session HUD model and the desync forensics data model / input log.
+    add_executable(pc_netplay_hud_model_test pc_port/netplay/pc_netplay_hud_model_test.cpp)
+    target_include_directories(pc_netplay_hud_model_test PRIVATE pc_port)
+    target_compile_options(pc_netplay_hud_model_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
+    add_test(NAME pc_netplay_hud_model_test COMMAND pc_netplay_hud_model_test)
+    add_executable(pc_netplay_forensics_test
+        pc_port/netplay/pc_netplay_forensics_test.cpp
+        pc_port/netplay/pc_netplay_forensics.cpp
+        pc_port/netplay/pc_netplay_inlog.cpp)
+    target_include_directories(pc_netplay_forensics_test PRIVATE pc_port)
+    target_compile_options(pc_netplay_forensics_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
+    add_test(NAME pc_netplay_forensics_test COMMAND pc_netplay_forensics_test)
 
     # Netplay handshake Hello codec, --netplay-input parse and the co-op switch.
     add_executable(pc_netplay_transfer_test pc_port/netplay/pc_netplay_transfer_test.cpp)
