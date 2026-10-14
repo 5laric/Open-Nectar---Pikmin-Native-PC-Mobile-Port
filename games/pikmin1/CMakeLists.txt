@@ -1084,6 +1084,12 @@ if(PIKMIN_BUILD_TESTS)
     target_compile_options(pc_netplay_camlead_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
     add_test(NAME pc_netplay_camlead_test COMMAND pc_netplay_camlead_test)
 
+    # Netplay audio ownership gate (header-only).
+    add_executable(pc_audio_source_test pc_port/audio/pc_audio_source_test.cpp)
+    target_include_directories(pc_audio_source_test PRIVATE pc_port)
+    target_compile_options(pc_audio_source_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
+    add_test(NAME pc_audio_source_test COMMAND pc_audio_source_test)
+
     # PKNI input-file format, yaw quantisation and the per-tick yaw slots.
     add_executable(pc_input_log_test
         pc_port/netplay/pc_input_log_test.cpp
