@@ -198,6 +198,36 @@ Other notes:
   a bug report. A recorded session replays offline with
   `tools/netplay/replay_session.py`.
 
+## One-code online mode (experimental, host-authoritative)
+
+The new online layer (`libs/nectar_net`, see `ONLINE_COOP_IMPLEMENTATION_PLAN.md`)
+replaces the two-code ICE exchange and lockstep with one code from the host
+and a host that never waits for the guest. Only the two captains are
+replicated so far, so it is a development preview, not a way to play a
+campaign yet.
+
+```sh
+# Build: the dependencies once (pinned, checksummed, static), then the game.
+scripts/netplay-deps.sh linux
+cmake -S games/pikmin1 -B build-online -DPIKMIN_NETPLAY_BUILD=ON -DNECTAR_ONLINE=ON \
+      -DNECTAR_NET_ENABLE_GNS=ON -DCMAKE_PREFIX_PATH=$HOME/.cache/open-nectar/netplay-deps/install/linux
+# Host: opens the room (PCP/NAT-PMP/UPnP, IPv6) and writes its code to a file.
+nectar --online-host 0 --online-code-out code.txt
+# Guest: the code itself, or @file.
+nectar --online-join @code.txt
+```
+
+The code is a secret: share it only with the friend who joins. The log never
+prints it. A wrong code, another game version or region, a full room and an
+unreachable host are reported as such.
+
+Two processes on one PC, with an optional bad link simulated by GNS:
+
+```sh
+SDL_VIDEODRIVER=offscreen python3 tools/netplay/run_online_pair.py --exe <build>/bin/nectar \
+    --assets <assets> --ticks 3000 --lag 75 --jitter 30 --loss 5 --out run/online
+```
+
 ## Building
 
 ```powershell

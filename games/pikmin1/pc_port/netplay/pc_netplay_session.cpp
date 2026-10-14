@@ -82,6 +82,21 @@
 
 #include "gekkonet.h"
 
+#if PIKI_NECTAR_ONLINE && defined(NECTAR_NET_HAS_GNS)
+#define PC_ONLINE 1
+#include "netplay/pc_online_navi.h"
+#include "nectar_net/clock.h"
+#include "nectar_net/input.h"
+#include "nectar_net/limits.h"
+#include "nectar_net/protocol.h"
+#include "nectar_net/replication.h"
+#include "nectar_net/room.h"
+#include "nectar_net/scene.h"
+#include <memory>
+#else
+#define PC_ONLINE 0
+#endif
+
 #include "system.h"
 #include "BaseApp.h"
 #include "Dolphin/os.h"
@@ -112,6 +127,7 @@
 #include <mmsystem.h>
 #include <synchapi.h>
 #else
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -150,6 +166,12 @@ struct Config {
 	uint8_t mode       = 1;     // xfer::kModeCoopDirect or kModeVs (--netplay-mode, --vs-map, the offer)
 	bool vsMapFile     = false; // VS: the map is a file (--vs-map, the offer's map.json), not the menu's
 	float testVsMatchSeconds = 0; // TEST ONLY: PIKMIN_NETPLAY_TEST_VS_MATCH_SECONDS
+	// Host-authoritative online co-op over nectar_net (--online-host /
+	// --online-join): one code, no lockstep. See ONLINE_COOP_IMPLEMENTATION_PLAN 10.1.1.
+	bool online            = false;
+	uint16_t onlinePort    = 0;  // --online-host <port>; 0 = random high port
+	std::string onlineCode;      // --online-join <code | @file>
+	std::string onlineCodeOut;   // --online-code-out <file>: the host writes its code there
 };
 
 int sArgc     = 0;
@@ -1385,8 +1407,15 @@ void loadguard_summary()
 
 void inlog_flush();
 
+#if PC_ONLINE
+void online_teardown();
+#endif
+
 void stop_session()
 {
+#if PC_ONLINE
+	online_teardown();
+#endif
 	inlog_flush();
 	adaptive_final_stats();
 	loadguard_summary();
@@ -1439,9 +1468,47 @@ void parse_config()
 	const char* replayCli = argv_value(sArgc, sArgv, "--netplay-replay-log");
 	const char* replayVal = replayCli != nullptr ? replayCli : getenv_nonempty("PIKMIN_NETPLAY_REPLAY_LOG");
 	if (hostVal != nullptr && joinVal != nullptr) usage_exit("--netplay-host and --netplay-join are exclusive%s", "");
+	const char* onlineHost = argv_value(sArgc, sArgv, "--online-host");
+	const char* onlineJoin = argv_value(sArgc, sArgv, "--online-join");
+	if (onlineHost != nullptr || onlineJoin != nullptr) {
+		if (onlineHost != nullptr && onlineJoin != nullptr) usage_exit("--online-host and --online-join are exclusive%s", "");
+		if (hostVal != nullptr || joinVal != nullptr || replayVal != nullptr || launch.active)
+			usage_exit("--online-host/--online-join run alone, without the lockstep switches%s", "");
+#if !(PIKI_NECTAR_ONLINE && defined(NECTAR_NET_HAS_GNS))
+		usage_exit("this build has no online transport (configure with -DNECTAR_ONLINE=ON -DNECTAR_NET_ENABLE_GNS=ON)%s", "");
+#endif
+	}
 	if (replayVal != nullptr && (hostVal != nullptr || joinVal != nullptr || launch.active))
 		usage_exit("--netplay-replay-log runs alone, without a host or join switch%s", "");
-	if (launch.active) {
+	if (onlineHost != nullptr) {
+		char* end    = nullptr;
+		const long p = strtol(onlineHost, &end, 10);
+		if (end == onlineHost || *end != '\0' || p < 0 || p > 65535) usage_exit("bad --online-host port %s", onlineHost);
+		sCfg.isHost     = true;
+		sCfg.active     = true;
+		sCfg.online     = true;
+		sCfg.onlinePort = (uint16_t)p;
+		// The code is a secret and never goes to the log; until the launcher
+		// shows it, the host must name a file for it.
+		const char* out = argv_value(sArgc, sArgv, "--online-code-out");
+		if (out == nullptr) usage_exit("--online-host needs --online-code-out <file> to hand over its code%s", "");
+		sCfg.onlineCodeOut = out;
+	} else if (onlineJoin != nullptr) {
+		std::string code = onlineJoin;
+		if (!code.empty() && code[0] == '@') {
+			FILE* f = fopen(code.c_str() + 1, "rb");
+			if (f == nullptr) usage_exit("cannot read the online code file %s", code.c_str() + 1);
+			char buf[512];
+			const size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+			fclose(f);
+			buf[n] = '\0';
+			code   = buf;
+			while (!code.empty() && (code.back() == '\n' || code.back() == '\r' || code.back() == ' ')) code.pop_back();
+		}
+		sCfg.active     = true;
+		sCfg.online     = true;
+		sCfg.onlineCode = code;
+	} else if (launch.active) {
 		sCfg.isHost = launch.isHost;
 		sCfg.active = true;
 		sCfg.ice    = true;
@@ -3005,6 +3072,455 @@ int handle_game_events(System* sys, BaseApp* app)
 }
 
 // First turn: force the modes, hash the local Hello and bring the socket up.
+
+#if PC_ONLINE
+// ---- host-authoritative online co-op (nectar_net) ----
+//
+// The host ticks at 30 Hz on its own clock and never waits: P1 is its local
+// input, P2 the guest's input from an InputReceiver. After every tick it sends
+// both captains' authoritative state. The guest runs ahead of the host by the
+// input lead, applies its own input at once (prediction), corrects its captain
+// from the host's states and shows the host's captain interpolated. Only the
+// captains are replicated so far (Phase 4); the rest of the guest's world is
+// local. Both peers reuse run_advance, so hashes, traces and exit-after work
+// as in lockstep.
+
+namespace nnet = nectar::net;
+
+constexpr std::uint16_t kOnlineProtocolMajor = 1;
+constexpr std::uint16_t kOnlineSceneEpoch    = 1;
+constexpr double kOnlineSlotMs               = 1000.0 / 30.0;
+
+struct OnlineState {
+	std::unique_ptr<nnet::HostRoom> room;
+	std::unique_ptr<nnet::GuestJoin> join;
+	nnet::GatedTransport* link = nullptr;
+	nnet::InputReceiver receiver;
+	nnet::ClockEstimator clock;
+	nnet::PredictionCorrector corrector;
+	nnet::SnapshotInterpolator remote;
+	std::vector<nnet::NetInputFrame> sent; // guest: last frames, newest first
+	uint64_t nextTick     = 0;  // next tick this peer simulates
+	double startMs        = 0;  // host: wall time of tick 0
+	bool started          = false;
+	bool hostStartSeen    = false;
+	uint32_t pingId       = 0;
+	double nextPingMs     = 0;
+	// Diagnostics (no addresses, no secrets).
+	uint64_t live = 0, repeated = 0, neutral = 0;
+	double errSum = 0, errMax = 0;
+	uint64_t errCount = 0;
+	uint32_t lead = 1;
+	bool peerGone = false;
+	bool guestConnected = false;
+};
+OnlineState* sOnline = nullptr;
+
+nnet::CompatibilityInfo online_compat()
+{
+	nnet::CompatibilityInfo info;
+	info.protocolMinor = nnet::kProtocolMinor;
+	info.game          = static_cast<uint8_t>(nnet::GameId::Pikmin1);
+	uint8_t digest[32];
+	pc_netplay_build::digest(digest); // source tree, simulation ABI and retail version
+	std::memcpy(info.build.data(), digest, 32);
+	info.region = digest[0] == 0 ? 1 : digest[0]; // already part of the digest; kept for the UI
+	return info;
+}
+
+nnet::NetInputFrame to_net_input(const PcNetplayInput& in, uint64_t tick)
+{
+	nnet::NetInputFrame f;
+	f.tick     = tick;
+	f.held     = in.buttons;
+	f.stickX   = in.stickX;
+	f.stickY   = in.stickY;
+	f.cstickX  = in.substickX;
+	f.cstickY  = in.substickY;
+	f.triggerL = in.triggerL;
+	f.triggerR = in.triggerR;
+	f.flags    = in.ext;
+	f.cursorDx = in.cursorRotate;
+	f.cursorDy = (int16_t)in.controlYaw;
+	return f;
+}
+
+PcNetplayInput from_net_input(const nnet::NetInputFrame& f)
+{
+	PcNetplayInput in;
+	in.buttons      = f.held;
+	in.stickX       = f.stickX;
+	in.stickY       = f.stickY;
+	in.substickX    = f.cstickX;
+	in.substickY    = f.cstickY;
+	in.triggerL     = f.triggerL;
+	in.triggerR     = f.triggerR;
+	in.ext          = f.flags;
+	in.cursorRotate = f.cursorDx;
+	in.controlYaw   = (uint16_t)f.cursorDy;
+	return in;
+}
+
+nnet::InputLimits online_input_limits()
+{
+	nnet::InputLimits limits;
+	limits.flagMask          = pc_input_log::kExtKnown;
+	limits.allowStickMinimum = true; // SDL axes may reach -128
+	return limits;
+}
+
+// The guest's transport changes while GuestJoin tries the code's endpoints,
+// so it is looked up every time instead of kept.
+nnet::GatedTransport* online_link()
+{
+	if (sOnline == nullptr) return nullptr;
+	if (sOnline->join) return sOnline->join->transport();
+	return sOnline->link;
+}
+
+void online_send(nnet::MessageType type, uint64_t tick, const std::vector<uint8_t>& payload, nnet::Delivery delivery)
+{
+	nnet::GatedTransport* link = online_link();
+	if (link == nullptr) return;
+	nnet::Message message;
+	message.header.type           = type;
+	message.header.simulationTick = tick;
+	message.header.sceneEpoch     = kOnlineSceneEpoch;
+	message.payload               = payload;
+	std::vector<uint8_t> bytes;
+	if (nnet::encodeMessage(message, bytes)) link->send(delivery, bytes.data(), bytes.size());
+}
+
+// Closes the room (removes the router mapping, forgets the secret).
+void online_teardown()
+{
+	delete sOnline;
+	sOnline = nullptr;
+}
+
+void online_setup()
+{
+	sOnline = new OnlineState();
+	nnet::InputPolicy policy;
+	policy.continuousFlags = pc_input_log::kExtSwarm;
+	sOnline->receiver      = nnet::InputReceiver(policy);
+	const std::uint64_t nowUnix = (std::uint64_t)time(nullptr);
+	if (sCfg.isHost) {
+		nnet::RoomConfig room;
+		room.protocolMajor = kOnlineProtocolMajor;
+		room.compatibility = online_compat();
+		room.localPort     = sCfg.onlinePort;
+		// TEST ONLY: loopback runs skip the router and advertise 127.0.0.1.
+		if (env_is_one("PIKMIN_ONLINE_TEST_LOOPBACK")) {
+			room.automaticPortMapping = false;
+			room.includeLanEndpoint   = false;
+			nnet::DirectEndpoint loopback;
+			loopback.address = { 127, 0, 0, 1 };
+			loopback.port    = sCfg.onlinePort;
+			room.manualEndpoints.push_back(loopback);
+		}
+		sOnline->room = std::make_unique<nnet::HostRoom>();
+		nnet::RoomStatus status;
+		const nnet::RoomError error = sOnline->room->open(room, nowUnix, status);
+		if (error != nnet::RoomError::None) {
+			printf("[online] could not open the room: %s\n", nnet::roomErrorString(error));
+			fflush(stdout);
+			std::exit(npx::kTransport);
+		}
+		sOnline->link = sOnline->room->transport();
+		// The code is a secret: it goes to the UI or a file, never to the log.
+		if (!sCfg.onlineCodeOut.empty()) {
+#ifdef _WIN32
+			FILE* f = fopen(sCfg.onlineCodeOut.c_str(), "wb");
+#else
+			// Readable by this user only: the code admits whoever holds it.
+			const int fd = open(sCfg.onlineCodeOut.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+			FILE* f      = fd >= 0 ? fdopen(fd, "wb") : nullptr;
+#endif
+			const bool ok = f != nullptr && fwrite(status.code.data(), 1, status.code.size(), f) == status.code.size();
+			if (f != nullptr) fclose(f);
+			if (!ok) usage_exit("cannot write the online code to %s", sCfg.onlineCodeOut.c_str());
+		}
+		printf("[online] room open: port=%u reachability=%s method=%s code=%s\n", (unsigned)status.localPort,
+		       nnet::reachabilityString(status.reachability), nnet::mappingMethodString(status.method),
+		       "(written to the code file)");
+	} else {
+		sOnline->join = std::make_unique<nnet::GuestJoin>();
+		const nnet::JoinFailure failure = sOnline->join->start(sCfg.onlineCode, online_compat(), kOnlineProtocolMajor,
+		                                                       nowUnix, (std::uint64_t)now_ms());
+		if (failure != nnet::JoinFailure::None) {
+			printf("[online] cannot join: %s\n", nnet::joinFailureString(failure));
+			fflush(stdout);
+			std::exit(npx::kRefused);
+		}
+		printf("[online] joining\n");
+	}
+	fflush(stdout);
+}
+
+void online_send_captains(uint64_t tick)
+{
+	std::vector<nnet::EntityRecord> records;
+	for (int player = 0; player < 2; ++player) {
+		PcOnlineCaptain c;
+		if (!pc_online_read_captain(player, &c)) continue;
+		nnet::CaptainState state;
+		state.position      = { c.position[0], c.position[1], c.position[2] };
+		state.velocity      = { c.velocity[0], c.velocity[1], c.velocity[2] };
+		state.faceDirection = c.faceDirection;
+		state.player        = (uint8_t)player;
+		records.push_back(nnet::captainRecord(kOnlineSceneEpoch, state));
+	}
+	if (records.empty()) return;
+	online_send(nnet::MessageType::WorldDelta, tick, nnet::encodeWorldDelta(0, records), nnet::Delivery::Unreliable);
+}
+
+// Decodes one session message; false for anything malformed (dropped).
+bool online_decode(const nnet::TransportEvent& event, nnet::Message& message)
+{
+	return event.type == nnet::TransportEventType::Message
+	    && nnet::decodeMessage(event.payload.data(), event.payload.size(), message, nnet::limits::kMaxNormalPayloadBytes)
+	           == nnet::DecodeError::None;
+}
+
+void online_host_events()
+{
+	nnet::TransportEvent event;
+	while (sOnline->link->poll(event)) {
+		if (event.type == nnet::TransportEventType::Disconnected || event.type == nnet::TransportEventType::Error) {
+			// The room stays open; P2 gets neutral input until someone joins.
+			printf("[online] guest left at tick=%llu; P2 is neutral\n", (unsigned long long)sOnline->nextTick);
+			fflush(stdout);
+			continue;
+		}
+		nnet::Message message;
+		if (!online_decode(event, message)) continue;
+		if (message.header.type == nnet::MessageType::InputBundle) {
+			std::vector<nnet::NetInputFrame> frames;
+			if (nnet::decodeInputBundle(message.payload.data(), message.payload.size(), online_input_limits(), frames))
+				sOnline->receiver.receive(frames, sOnline->nextTick);
+		} else if (message.header.type == nnet::MessageType::Ping) {
+			nnet::PingPayload ping;
+			if (!nnet::decodePing(message.payload.data(), message.payload.size(), ping)) continue;
+			const double sinceTick = now_ms() - (sOnline->startMs + (double)sOnline->nextTick * kOnlineSlotMs);
+			nnet::PongPayload pong;
+			pong.id              = ping.id;
+			pong.echoTimeMs      = ping.senderTimeMs;
+			pong.hostTick        = sOnline->nextTick;
+			pong.hostTickPhaseMs = sinceTick < 0 ? 0 : sinceTick > 33 ? 33 : (uint32_t)sinceTick;
+			online_send(nnet::MessageType::Pong, sOnline->nextTick, nnet::encodePong(pong), nnet::Delivery::Unreliable);
+		}
+	}
+}
+
+void online_guest_events()
+{
+	nnet::TransportEvent event;
+	bool hasEvent = false;
+	for (;;) {
+		const nnet::JoinProgress progress = sOnline->join->poll((std::uint64_t)now_ms(), event, hasEvent);
+		sOnline->guestConnected = progress == nnet::JoinProgress::Connected;
+		if (progress == nnet::JoinProgress::Failed) {
+			if (!sOnline->peerGone) {
+				printf("[online] connection ended: %s\n", nnet::joinFailureString(sOnline->join->failure()));
+				fflush(stdout);
+			}
+			sOnline->peerGone = true;
+			return;
+		}
+		if (!hasEvent) return;
+		nnet::Message message;
+		if (!online_decode(event, message)) continue;
+		if (message.header.type == nnet::MessageType::Pong) {
+			nnet::PongPayload pong;
+			if (nnet::decodePong(message.payload.data(), message.payload.size(), pong))
+				sOnline->clock.addSample(pong, (std::uint64_t)now_ms());
+		} else if (message.header.type == nnet::MessageType::SceneStart) {
+			sOnline->hostStartSeen = true;
+		} else if (message.header.type == nnet::MessageType::WorldDelta) {
+			uint8_t flags = 0;
+			std::vector<nnet::EntityRecord> records;
+			if (!nnet::decodeWorldDelta(message.payload.data(), message.payload.size(), kOnlineSceneEpoch,
+			                            nnet::WorldDeltaLimits{}, flags, records))
+				continue;
+			const uint64_t tick = message.header.simulationTick;
+			for (const nnet::EntityRecord& record : records) {
+				nnet::CaptainState state;
+				if (record.schema != nnet::kCaptainSchema
+				    || !nnet::decodeCaptainState(record.data.data(), record.data.size(), state))
+					continue;
+				if (state.player == (uint8_t)sLocalRole) {
+					const float err = sOnline->corrector.reconcile(tick, state.position);
+					if (err > 0) {
+						sOnline->errSum += err;
+						sOnline->errMax = std::max(sOnline->errMax, (double)err);
+						++sOnline->errCount;
+					}
+				} else {
+					sOnline->remote.push(tick, state);
+				}
+			}
+		}
+	}
+}
+
+// Connection phase. True once the session can start ticking.
+bool online_connect_pump()
+{
+	const double now = now_ms();
+	if (sCfg.isHost) {
+		online_host_events();
+		if (sOnline->link->state() != nnet::TransportState::Connected) return false;
+		sOnline->startMs  = now;
+		sOnline->nextTick = 0;
+		online_send(nnet::MessageType::SceneStart, 0, nnet::encodeSceneStart({ kOnlineSceneEpoch, 0 }),
+		            nnet::Delivery::ReliableOrdered);
+		printf("[online] guest joined; host ticking\n");
+		fflush(stdout);
+		return true;
+	}
+	online_guest_events();
+	if (sOnline->peerGone) {
+		std::exit(npx::kRefused);
+	}
+	if (sOnline->guestConnected && now >= sOnline->nextPingMs) {
+		nnet::PingPayload ping;
+		ping.id           = ++sOnline->pingId;
+		ping.senderTimeMs = (std::uint64_t)now;
+		online_send(nnet::MessageType::Ping, 0, nnet::encodePing(ping), nnet::Delivery::Unreliable);
+		sOnline->nextPingMs = now + 100;
+	}
+	// Start once the host has started and the clock has a few samples.
+	if (!sOnline->hostStartSeen || !sOnline->clock.ready() || sOnline->pingId < 4) return false;
+	sOnline->nextTick = 0; // catches up to the host quickly (the boot is mostly loading)
+	printf("[online] joined; rtt=%u ms jitter=%u ms\n", sOnline->clock.rttMs(), sOnline->clock.jitterMs());
+	fflush(stdout);
+	return true;
+}
+
+void online_start()
+{
+	pc_state_hash_set_netplay_capture(true);
+	load_scripted_file();
+	sNaviPosTrace   = env_is_one("PIKMIN_NETPLAY_DEBUG_NAVI_POS");
+	sSessionStartMs = now_ms();
+	sPhase          = kSession;
+	printf("[netplay] session started: role=%s online=host-authoritative\n", sCfg.isHost ? "host/P1" : "joiner/P2");
+	fflush(stdout);
+}
+
+void online_log(uint64_t tick)
+{
+	if (sCfg.isHost) {
+		printf("[online] tick=%llu guest-input live=%llu repeated=%llu neutral=%llu ignored=%llu\n",
+		       (unsigned long long)tick, (unsigned long long)sOnline->live, (unsigned long long)sOnline->repeated,
+		       (unsigned long long)sOnline->neutral, (unsigned long long)sOnline->receiver.ignoredFrames());
+	} else {
+		printf("[online] tick=%llu rtt=%u jitter=%u lead=%u corrections=%llu snaps=%llu err-avg=%.2f err-max=%.2f\n",
+		       (unsigned long long)tick, sOnline->clock.rttMs(), sOnline->clock.jitterMs(), sOnline->lead,
+		       (unsigned long long)sOnline->corrector.corrections(), (unsigned long long)sOnline->corrector.snaps(),
+		       sOnline->errCount ? sOnline->errSum / (double)sOnline->errCount : 0.0, sOnline->errMax);
+	}
+	fflush(stdout);
+}
+
+bool online_advance(System* sys, BaseApp* app, uint64_t tick, const PcNetplayInput& p0, const PcNetplayInput& p1)
+{
+	uint8_t inputs[32];
+	pc_netplay_input_encode(p0, inputs);
+	pc_netplay_input_encode(p1, inputs + 16);
+	return run_advance(sys, app, (int)tick, inputs, false);
+}
+
+bool online_turn(System* sys, BaseApp* app)
+{
+	sys->mControllerMgr.update();
+	accum_add_current();
+	const double now = now_ms();
+	int advances     = 0;
+	if (sCfg.isHost) {
+		online_host_events();
+		const uint64_t due = (uint64_t)((now - sOnline->startMs) / kOnlineSlotMs);
+		while (sOnline->nextTick <= due && advances < 2) {
+			const uint64_t tick = sOnline->nextTick;
+			const PcNetplayInput p0 = build_local_input();
+			nnet::InputHealth health;
+			const nnet::NetInputFrame remote = sOnline->receiver.consume(tick, health);
+			if (health == nnet::InputHealth::Live) ++sOnline->live;
+			else if (health == nnet::InputHealth::Repeated) ++sOnline->repeated;
+			else ++sOnline->neutral;
+			if (!online_advance(sys, app, tick, p0, from_net_input(remote))) return true;
+			online_send_captains(tick);
+			sOnline->nextTick = tick + 1;
+			++advances;
+			if (tick % 150 == 149) online_log(tick + 1);
+		}
+		// After a long load the host does not race to catch up: it resumes.
+		if (due > sOnline->nextTick + 5) sOnline->startMs = now - (double)sOnline->nextTick * kOnlineSlotMs;
+	} else {
+		online_guest_events();
+		if (sOnline->peerGone) {
+			pc_state_hash_flush();
+			stop_session();
+			sPhase = kDone;
+			std::exit(npx::kTransport);
+		}
+		if (now >= sOnline->nextPingMs) {
+			nnet::PingPayload ping;
+			ping.id           = ++sOnline->pingId;
+			ping.senderTimeMs = (std::uint64_t)now;
+			online_send(nnet::MessageType::Ping, sOnline->nextTick, nnet::encodePing(ping), nnet::Delivery::Unreliable);
+			sOnline->nextPingMs = now + 250;
+		}
+		sOnline->lead       = nnet::inputLeadTicks(sOnline->clock.rttMs(), sOnline->clock.jitterMs());
+		uint32_t phaseMs    = 0;
+		const uint64_t host = sOnline->clock.hostTickAt((std::uint64_t)now, &phaseMs);
+		const uint64_t target = host + sOnline->lead;
+		const int cap = sOnline->nextTick + 30 < target ? 8 : 2; // catch up fast after joining
+		while (sOnline->nextTick <= target && advances < cap) {
+			const uint64_t tick     = sOnline->nextTick;
+			const PcNetplayInput p1 = build_local_input();
+			// Redundant input: this tick and up to five before it, consecutive.
+			if (!sOnline->sent.empty() && sOnline->sent.front().tick + 1 != tick) sOnline->sent.clear();
+			sOnline->sent.insert(sOnline->sent.begin(), to_net_input(p1, tick));
+			if (sOnline->sent.size() > nnet::kMaxInputFrames) sOnline->sent.pop_back();
+			online_send(nnet::MessageType::InputBundle, tick, nnet::encodeInputBundle(sOnline->sent),
+			            nnet::Delivery::Unreliable);
+			if (!online_advance(sys, app, tick, pc_netplay_input_neutral(), p1)) return true;
+			// Own captain: apply any pending correction, then remember the prediction.
+			bool snapped           = false;
+			const nnet::Vec3 offset = sOnline->corrector.step(snapped);
+			if (offset.x != 0 || offset.y != 0 || offset.z != 0 || snapped)
+				pc_online_nudge_captain(sLocalRole, offset.x, offset.y, offset.z, snapped);
+			PcOnlineCaptain own;
+			if (pc_online_read_captain(sLocalRole, &own))
+				sOnline->corrector.recordPredicted(tick, { own.position[0], own.position[1], own.position[2] });
+			// Host's captain: shown a little in the past, interpolated.
+			const uint64_t nowThousandths = host * 1000 + (uint64_t)phaseMs * 30;
+			const uint64_t delay          = (uint64_t)sOnline->clock.interpolationDelayMs() * 30;
+			nnet::CaptainState shown;
+			if (nowThousandths > delay && sOnline->remote.sample(nowThousandths - delay, shown)) {
+				PcOnlineCaptain c;
+				c.position[0]   = shown.position.x;
+				c.position[1]   = shown.position.y;
+				c.position[2]   = shown.position.z;
+				c.velocity[0]   = shown.velocity.x;
+				c.velocity[1]   = shown.velocity.y;
+				c.velocity[2]   = shown.velocity.z;
+				c.faceDirection = shown.faceDirection;
+				pc_online_write_captain(1 - sLocalRole, c);
+			}
+			sOnline->nextTick = tick + 1;
+			++advances;
+			if (tick % 150 == 149) online_log(tick + 1);
+		}
+	}
+	if (advances == 0) sleep_hires_ms(1.0, 0.0);
+	return true;
+}
+
+#endif // PC_ONLINE
+
 void session_setup(System* sys)
 {
 	pc_netplay_det_force_on();
@@ -3015,6 +3531,13 @@ void session_setup(System* sys)
 		replay_start();
 		return;
 	}
+#if PC_ONLINE
+	if (sCfg.online) {
+		online_setup();
+		netplay_timer_power_opt(true);
+		return;
+	}
+#endif
 	if (sCfg.ice) {
 		printf("[netplay] mode=%s (ice) delay=%s seed=%u\n", sCfg.isHost ? "host" : "join",
 		       sCfg.delayAuto ? "auto" : std::to_string(sCfg.localDelay).c_str(), sCfg.seed);
@@ -3201,6 +3724,17 @@ bool pc_netplay_session_drive(System* sys, BaseApp* app)
 		return true;
 	}
 
+#if PC_ONLINE
+	if (sCfg.online) {
+		if (sPhase == kHandshake) {
+			sys->mControllerMgr.update();
+			if (online_connect_pump()) online_start();
+			else sleep_hires_ms(1.0, 0.0);
+			return true;
+		}
+		return online_turn(sys, app);
+	}
+#endif
 	if (sPhase == kHandshake) {
 		// mControllerMgr.update() pumps the window through PADRead. Poll
 		// about every 1 ms on the waitable timer, so the RTT samples measure

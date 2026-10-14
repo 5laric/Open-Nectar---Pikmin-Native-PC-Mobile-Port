@@ -810,6 +810,30 @@ La primera demo debe usar un mapa controlado y sólo:
 
 No se añaden Pikmin/enemigos hasta que captura, tick, reconexión y errores sean observables.
 
+### 10.1.1 Diseño de la primera vertical (14-10-2026)
+
+Modo nuevo `--online-host` / `--online-join <código>`, separado del lockstep
+(que sigue intacto como herramienta), sobre `nectar_net` (GNS +
+`GatedTransport` + `HostRoom`/`GuestJoin`):
+
+- **Host:** ticks a 30 Hz con su propio reloj, sin esperar nunca al invitado.
+  Pad 0 = input local; pad 1 = `InputReceiver` del invitado (repite el último
+  estado ante pérdidas y pasa a neutro si se alarga). Tras cada tick envía el
+  estado autoritativo de ambos capitanes (posición, velocidad, orientación,
+  estado) por el canal no fiable, y responde a los pings.
+- **Invitado:** ticks a 30 Hz alineados con `ClockEstimator`. Su input se
+  aplica en el acto a su capitán (predicción) y se envía con redundancia,
+  etiquetado con el tick del host en el que debe aplicarse. Guarda un
+  histórico de su capitán por tick; al llegar el estado autoritativo de ese
+  tick, el error se corrige de forma suave (o de golpe si es imposible). El
+  capitán del host se muestra interpolado con el retardo del reloj.
+- Mientras sólo se replican capitanes, el resto del mundo del invitado no es
+  autoritativo: por eso la vertical usa un mapa controlado y mide sólo los
+  capitanes. Pikmin, objetos y enemigos entran en la Fase 5.
+- Pruebas con dos procesos reales (`run_pair.py` con `SDL_VIDEODRIVER=
+  offscreen`) y degradación de red de GNS (lag/pérdida simulados), midiendo
+  el error de posición del capitán a lo largo de la sesión.
+
 ### 10.2 Hooks
 
 - Después de `pc_window_poll_events`: construir input local.
@@ -1401,7 +1425,33 @@ Entregables:
 
 Puerta: cobertura de todos los tipos y corpus sin fallos bajo sanitizers.
 
-### Fase 4 — Pikmin 1: capitanes
+### Fase 4 — Pikmin 1: capitanes — **EN CURSO**
+
+Primera vertical funcionando (14-10-2026, Linux, dos procesos reales con
+`tools/netplay/run_online_pair.py` y degradación de GNS):
+
+- [x] modo `--online-host`/`--online-join` con un solo código, sobre la sala
+  de `nectar_net` (cuarentena, compatibilidad, puerto); el lockstep sigue
+  intacto (misma prueba de 3.000 ticks con hashes idénticos y las mismas
+  cifras que antes);
+- [x] host autoritativo a 30 Hz sin esperar; input del invitado inyectado en
+  P2 desde `InputReceiver`; estado de ambos capitanes cada tick;
+- [x] invitado adelantado según `inputLeadTicks`, predicción de su capitán,
+  corrección suave/snap (`PredictionCorrector`) y capitán del host
+  interpolado (`SnapshotInterpolator`), compartidos para Pikmin 2;
+- [x] **puerta de transporte superada**: 30 min reales a RTT ~182 ms
+  (lag 75 ms por sentido), jitter 30 ms y 5 % de pérdida: input del
+  invitado en vivo en 53.793/53.850 ticks (99,89 %), error medio del
+  capitán del invitado 4,9 unidades en 360 muestras sin deriva acumulada,
+  RTT estable y sin colas crecientes;
+- [x] el código nunca aparece en logs; el archivo del código se crea 0600;
+- [ ] limitación conocida: cinemáticas y eventos del mundo aún son locales;
+  una cinemática disparada en distinto momento en el invitado (demo04)
+  provocó 34 snaps en 20 s y se recuperó sola al terminar (Fase 5:
+  escenas/cinemáticas autoritativas);
+- [ ] cámaras/HUD por peer, pausa, reglas del host, espectador y
+  reincorporación;
+- [ ] Windows/Android reales y prueba de juego del mantenedor.
 
 Entregables:
 

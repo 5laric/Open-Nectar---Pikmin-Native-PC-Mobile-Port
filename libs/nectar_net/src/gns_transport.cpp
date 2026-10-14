@@ -3,6 +3,7 @@
 #include <steam/steamnetworkingsockets.h>
 #include <steam/isteamnetworkingutils.h>
 
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <limits>
@@ -40,6 +41,7 @@ struct GnsTransport::Impl {
                 return;
             }
         }
+        if (users == 0) applyTestImpairment();
         ++users;
         acquired = true;
         sockets = SteamNetworkingSockets();
@@ -56,6 +58,30 @@ struct GnsTransport::Impl {
         if (acquired && users != 0 && --users == 0) {
             GameNetworkingSockets_Kill();
             libraryReady = false;
+        }
+    }
+
+    // TEST ONLY: with NECTAR_NET_TEST_IMPAIR=1, GNS degrades every packet this
+    // process sends (lag, jitter, loss), so two real processes can rehearse a
+    // bad Internet link on loopback. Never set by the game itself.
+    static void applyTestImpairment()
+    {
+        const char* on = std::getenv("NECTAR_NET_TEST_IMPAIR");
+        if (on == nullptr || std::strcmp(on, "1") != 0) return;
+        auto number = [](const char* name) {
+            const char* value = std::getenv(name);
+            return value != nullptr ? std::atof(value) : 0.0;
+        };
+        ISteamNetworkingUtils* utils = SteamNetworkingUtils();
+        const int lag = static_cast<int>(number("NECTAR_NET_TEST_LAG_MS"));
+        const int jitter = static_cast<int>(number("NECTAR_NET_TEST_JITTER_MS"));
+        const float loss = static_cast<float>(number("NECTAR_NET_TEST_LOSS_PCT"));
+        utils->SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_FakePacketLag_Send, lag);
+        utils->SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketLoss_Send, loss);
+        if (jitter > 0) {
+            utils->SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_FakePacketJitter_Send_Avg, jitter / 2);
+            utils->SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_FakePacketJitter_Send_Max, jitter);
+            utils->SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketJitter_Send_Pct, 100.0f);
         }
     }
 
