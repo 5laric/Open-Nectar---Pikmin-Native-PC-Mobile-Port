@@ -167,9 +167,12 @@ def main(argv=None):
         ok = False
     if a.record is not None:
         # The record covers exactly --ticks ticks; compare it with that much
-        # of a v2 replay (header 10 bytes, 56 bytes per tick).
+        # of the replay (header 10 bytes, then 56 bytes per tick for v2 or 64
+        # for v3; a v1 replay records as v2, so it never matches).
         recorded = a.record.read_bytes() if a.record.exists() else b""
-        expected = a.replay.read_bytes()[: 10 + 56 * a.ticks]
+        source = a.replay.read_bytes()
+        rec = int.from_bytes(source[8:10], "little") if len(source) >= 10 else 56
+        expected = source[: 10 + rec * a.ticks]
         same = recorded == expected
         print(f"run_replay: record {'matches' if same else 'DIFFERS from'} the replay "
               f"({len(recorded)} vs {len(expected)} bytes)")
