@@ -69,3 +69,7 @@ bool pc_state_hash_current(uint64_t* total, uint64_t subs[7], uint64_t* tick);
 // Source for the mode column. Null (the default) hashes 0.
 typedef uint64_t (*PcStateHashModeFn)(void);
 void pc_state_hash_set_mode_fn(PcStateHashModeFn fn);
+
+// Prints one "[netplay-navi] tick=<tick> navi=<id> pos=(x y z)" line per
+// captain (test evidence for netplay pair runs). Nothing without a stage.
+void pc_state_hash_print_navi_positions(uint64_t tick);

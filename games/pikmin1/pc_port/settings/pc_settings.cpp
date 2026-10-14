@@ -1073,7 +1073,38 @@ void pc_settings_set_language(unsigned char language) {
 
 namespace {
 
+#if PIKI_NETPLAY_BUILD
+// Netplay: every setting that changes the simulation. Both peers hash these
+// in the handshake and they are locked for the session. Window, graphics,
+// audio, bindings, camera feel and other local-only rows are not here.
+#define PC_NETPLAY_SESSION_FIELDS(X)                                                          \
+    X(fpsMode) X(chainActions) X(holdToPluck) X(betterPathfinding) X(bluesOnlyWater)         \
+    X(idleCounter) X(naviHealthPct) X(tekiHealthPct) X(infiniteDay) X(freeCamera)            \
+    X(whistleRadiusPct) X(throwSpeedPct) X(throwCancelB) X(quickGrab) X(noTrip)              \
+    X(whistlePluck) X(bombControl) X(hideOlimarText) X(onionStep10) X(instantWhistle)        \
+    X(pikiInvincible) X(allFlowers) X(carrySpeedPct) X(naviSpeedPct) X(unlockZones)          \
+    X(noDayAdvance) X(allOnions) X(breakableGates) X(eternalNight) X(fireflies)              \
+    X(p2Selection) X(vsDuration) X(vsRocketWin) X(vsRocketHp) X(vsBigPiece) X(vsPikiLimit)   \
+    X(vsPellets) X(lockOn) X(charge) X(throwWhileMoving) X(firstPerson) X(pikiLimit)         \
+    X(dayMinutes) X(coopSplit) X(coopMergeCamera) X(debugKeys) X(gyroEnabled)
+
+bool sNetplaySessionLocked = false;
+PcConfig sNetplaySessionConfig;
+
+void netplayRelockSessionFields() {
+    if (!sNetplaySessionLocked) return;
+#define PC_NETPLAY_RELOCK(f) sConfig.f = sNetplaySessionConfig.f; sPending.f = sNetplaySessionConfig.f;
+    PC_NETPLAY_SESSION_FIELDS(PC_NETPLAY_RELOCK)
+#undef PC_NETPLAY_RELOCK
+    sConfig.vsMap  = sNetplaySessionConfig.vsMap;
+    sPending.vsMap = sNetplaySessionConfig.vsMap;
+}
+#endif
+
 void saveConfig() {
+#if PIKI_NETPLAY_BUILD
+    netplayRelockSessionFields();
+#endif
     std::string path = std::string(kConfigFilename);
     std::ofstream out(path, std::ios::out | std::ios::trunc);
     if (!out) {
@@ -7033,6 +7064,28 @@ int pc_settings_get_hd_model_enabled(int row) {
 int pc_settings_get_debug_keys(void) { if (pc_speedrun_active()) return 0;
     return sConfig.debugKeys;
 }
+
+#if PIKI_NETPLAY_BUILD
+const char* pc_settings_netplay_config_text(void) {
+    static std::string text;
+    text.clear();
+    char cell[96];
+#define PC_NETPLAY_TEXT_FIELD(f)                                        \
+    snprintf(cell, sizeof(cell), "%s=%d;", #f, (int)sConfig.f);        \
+    text += cell;
+    PC_NETPLAY_SESSION_FIELDS(PC_NETPLAY_TEXT_FIELD)
+#undef PC_NETPLAY_TEXT_FIELD
+    text += "vsMap=" + sConfig.vsMap + ";";
+    return text.c_str();
+}
+
+void pc_settings_netplay_session_begin(void) {
+    sNetplaySessionConfig = sConfig;
+    sNetplaySessionLocked = true;
+    printf("[PC Settings] netplay session: sim-relevant settings locked for the session\n");
+    fflush(stdout);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Modelo de filas para otras interfaces (pc_settings_rows.h)

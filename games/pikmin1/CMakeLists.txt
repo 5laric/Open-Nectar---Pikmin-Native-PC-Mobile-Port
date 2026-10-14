@@ -648,6 +648,13 @@ if(PIKMIN_NETPLAY_BUILD AND NOT ANDROID)
             "-iquote${GEKKONET_DIR}/include"
             "-iquote${GEKKONET_DIR}/thirdparty")
     endif()
+    target_sources(${NECTAR_GAME} PRIVATE
+        pc_port/netplay/pc_netplay_session.cpp
+        pc_port/netplay/pc_netplay_udp.cpp)
+    target_link_libraries(${NECTAR_GAME} PRIVATE gekkonet)
+    if(WIN32)
+        target_link_libraries(${NECTAR_GAME} PRIVATE ws2_32 winmm)
+    endif()
 endif()
 
 option(PIKMIN_ENABLE_IPO "Enable portable interprocedural/link-time optimization" ON)

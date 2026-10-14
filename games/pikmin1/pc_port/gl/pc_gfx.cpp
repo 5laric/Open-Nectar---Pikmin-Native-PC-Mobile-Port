@@ -35,6 +35,11 @@
 #include "../timing/pc_render_phase.h"
 #include "../timing/pc_tick_profiler.h"
 #include "../netplay/pc_netplay_present.h"
+#include "../netplay/pc_netplay_loadguard.h"
+
+// Netplay keep-alive (pc_netplay_loadguard.h): strong-defined by
+// pc_netplay_session.cpp in netplay builds only, null otherwise.
+__attribute__((weak)) void pc_netplay_load_keepalive(int site);
 
 #include "pc_opengl.h"
 #ifdef __ANDROID__
@@ -6873,6 +6878,9 @@ static void use_program_for_current_state() {
     printf("[PC GX] specialised TEV program #%zu: %u stages, %.1f ms%s\n",
            sTevPrograms.size() + 1, (unsigned)sNumTevStages, submit_clock_ms() - compileT0,
            program ? "" : " (FAILED)");
+    // A burst of these blocks one netplay tick; between two programs the
+    // netplay keep-alive polls the network.
+    if (pc_netplay_load_keepalive != nullptr) pc_netplay_load_keepalive(pc_netplay_loadguard::kSiteShader);
     if (!program) {
         // One failure is treated as a permanent fallback: a configuration this
         // generator cannot express must not be retried for every draw.

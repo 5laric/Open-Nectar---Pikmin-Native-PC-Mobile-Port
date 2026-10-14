@@ -63,6 +63,10 @@ __declspec(dllexport) int           AmdPowerXpressRequestHighPerformance = 1;
 #include "netplay/pc_state_hash.h"
 #include "netplay/pc_coop_switch.h"
 
+// Netplay session switches: strong-defined by pc_netplay_session.cpp in
+// netplay builds only, null otherwise.
+__attribute__((weak)) void pc_netplay_session_notify_argv(int argc, char** argv);
+
 int main(int argc, char* argv[])
 {
     // Disable stdout buffering so we see logs immediately before any crash
@@ -130,6 +134,9 @@ int main(int argc, char* argv[])
             pc_coop_direct_request();
         }
     }
+    // --netplay-host / --netplay-join. A session also takes the co-op direct
+    // boot. No-op unless a netplay switch is set.
+    if (pc_netplay_session_notify_argv != nullptr) pc_netplay_session_notify_argv(argc, argv);
     (void)argc;
     (void)argv;
 

@@ -346,6 +346,20 @@ void pc_state_hash_set_netplay_capture(bool on) { sNetplayCapture = on; }
 
 void pc_state_hash_set_mode_fn(PcStateHashModeFn fn) { sModeFn = fn; }
 
+void pc_state_hash_print_navi_positions(uint64_t tick)
+{
+	if (naviMgr == nullptr) return;
+	Iterator it(naviMgr);
+	CI_LOOP(it)
+	{
+		Navi* n = static_cast<Navi*>(*it);
+		if (n == nullptr) continue;
+		std::printf("[netplay-navi] tick=%llu navi=%d pos=(%.2f %.2f %.2f)\n", (unsigned long long)tick, n->mNaviID,
+		            n->mSRT.t.x, n->mSRT.t.y, n->mSRT.t.z);
+	}
+	std::fflush(stdout);
+}
+
 bool pc_state_hash_current(uint64_t* total, uint64_t subs[7], uint64_t* tick)
 {
 	if (!sNetplayHaveHash) return false;

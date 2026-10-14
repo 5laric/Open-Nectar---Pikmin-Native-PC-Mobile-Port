@@ -9,6 +9,11 @@
 #include "pc_permadeath.h"
 #include "pc_day_history.h"
 #include "randomizer/pc_randomizer.h"
+#include "netplay/pc_netplay_loadguard.h"
+// Netplay keep-alive (pc_netplay_loadguard.h): a save waits here for the card
+// thread inside one netplay tick. Strong-defined by pc_netplay_session.cpp in
+// netplay builds only, null otherwise.
+__attribute__((weak)) void pc_netplay_load_keepalive(int site);
 #endif
 #include "system.h"
 #include <string.h>
@@ -540,6 +545,7 @@ void MemoryCard::waitPolling()
 	// sin ceder deja el núcleo saturado durante todo el guardado. Cedemos la
 	// CPU igual que `CardUtilIdleWhileBusy()`.
 	while (!hasCardFinished()) {
+		if (pc_netplay_load_keepalive != nullptr) pc_netplay_load_keepalive(pc_netplay_loadguard::kSiteSave);
 		OSYieldThread();
 	}
 #else

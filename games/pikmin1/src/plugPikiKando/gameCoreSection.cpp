@@ -2500,8 +2500,12 @@ void GameCoreSection::update()
 	}
 #endif
 #if defined(PIKI_PC_PORT) && PIKI_DEBUG_KEYS
-	pcDebugKeys();
-	pcVsMarkKey();
+	// The debug keys read the local keyboard inside the sim: never in
+	// deterministic (netplay) mode.
+	if (!pc_netplay_deterministic()) {
+		pcDebugKeys();
+		pcVsMarkKey();
+	}
 #endif
 	if (!gameflow.mMoviePlayer->mIsActive && !mDoneSundownWarn && gameflow.mWorldClock.mTimeOfDay >= gameflow.mParameters->mNightWarning()
 	    && (flowCont.mGameEndFlag != GAMEEND_PikminExtinction || flowCont.mGameEndFlag != GAMEEND_NaviDown)) {
