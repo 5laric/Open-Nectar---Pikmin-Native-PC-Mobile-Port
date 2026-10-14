@@ -1963,10 +1963,12 @@ void inlog_open()
 		path = forensics_path("session-inputs.pknl");
 	}
 	std::string m;
+	// A meta value is one line: the VS map.json in the descriptor has line
+	// breaks, which are JSON whitespace, so they become spaces.
 	auto kv = [&](const char* k, const std::string& v) {
 		m += k;
 		m += ' ';
-		m += v;
+		for (char c : v) m += (c == '\n' || c == '\r') ? ' ' : c;
 		m += '\n';
 	};
 	kv("format", "pknl-1");
