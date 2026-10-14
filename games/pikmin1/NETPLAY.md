@@ -45,6 +45,52 @@ Join:
 Closing the panel does not stop the game. Each code works once: start a new
 session with new codes every time.
 
+## Online VS
+
+**Host VS** and **Join VS** work the same way and start a 1v1 VS match
+instead: the host is P1, the joiner P2, and each PC shows its own side. The
+host's VS rules (the vs* rows of its VS menu) and VS map decide the match; the
+offer code carries the host's `map.json`, so the joiner does not need the map
+file (a `map.json` over 15000 bytes does not fit: the joiner then needs the
+same map, under the same name). Both PCs compile the map from their own game
+files and the games compare the result before they start: a different map, or
+game files of another version, is refused (`handshake refused: vsmap`).
+
+- The countdown, the pause after the match and the end screen run on the
+  shared game clock, never on either PC's wall clock: a slow frame on one PC
+  cannot make the two games disagree.
+- The in-game pause menu (Start) is shared: either player's Start pauses both
+  games, and its Rematch / Back to title choices apply to both. The F1 menu
+  is local and pauses nothing (the match keeps running while it is open).
+- On the end screen either player moves the cursor (D-pad or stick) and
+  either player confirms (A, or Enter on the keyboard). **Rematch** starts the
+  next match on both PCs; **Back to title** ends the session.
+- Captains: the host's (`--coop-captains=<p1>,<p2>`). A captain that needs a
+  local Pikmin 2 install is refused when the other PC cannot load it
+  (`handshake refused: captain`).
+- Not online yet (left out on purpose, so both games stay in step): the mouse
+  wheel and touch icon colour pickers (the D-pad still picks the colour), the
+  Bomb, Lock-On and Charge buttons, turning the cursor with a mouse or touch
+  camera drag, and the F5-F8 debug keys.
+
+Command line:
+
+```powershell
+# ICE (codes), host and joiner:
+.\nectar.exe --netplay-host-ice --netplay-mode vs
+.\nectar.exe --netplay-join-ice "@clipboard" --netplay-mode vs
+# A map file instead of the VS menu's map (the host only; the offer carries it):
+.\nectar.exe --netplay-host-ice --vs-map C:\maps\my_arena\map.json
+# UDP on a LAN: both sides name the mode (or the same --vs-map file).
+.\nectar.exe --netplay-host 48810 --netplay-mode vs
+.\nectar.exe --netplay-join 192.168.1.20:48810 --netplay-mode vs
+```
+
+`--vs-map <file>` with a netplay switch is VS; the joiner of an ICE session
+follows the host's mode (`--netplay-mode` there only checks it). Over UDP
+each side uses its own settings, so the VS rules and the VS menu map must
+already match (`handshake refused: config` otherwise).
+
 ## Host and join from the command line
 
 From the game folder (PowerShell):
@@ -117,6 +163,10 @@ until one connects. This works for most home routers.
 - `handshake refused: config` with the UDP switches: the gameplay settings
   differ. Use `--netplay-host-ice` / `--netplay-join-ice`, which adopt the
   host's, or make them match.
+- `handshake refused: mode`: one side hosts or joins co-op, the other VS (or
+  the captains differ).
+- `handshake refused: vsmap`: the two PCs compiled different VS maps (another
+  map file, or game files of another version).
 - `bad ICE code: ...`: the code was cut off or belongs to the other direction
   (offers start `NPIX2-`, answers `NPIX1-`). Copy the whole single line.
 - `ICE connect timed out` or `ICE failed: no working candidate pair`: no
@@ -156,6 +206,11 @@ py -3.12 tools\netplay\run_pair.py --ice ... --expect desync --desync-nudge 1500
 # Replay a recorded log offline (8 = a recorded hash did not reproduce).
 py -3.12 tools\netplay\replay_session.py --exe <build>\bin\nectar.exe --assets <assets> `
     --log <run folder>\session-inputs.pknl --out <scratch>\replay --expect match
+# Online VS on impact_arena: a 60 s match (TEST ONLY knob), scoring, the end
+# screen, a rematch driven by the scripted A press, and the second match.
+py -3.12 tools\netplay\run_pair.py --mode vs --ice --exe <build>\bin\nectar.exe --assets <assets> `
+    --ticks 2700 --vs-matches 2 --out <scratch>\vs `
+    --env PIKMIN_NETPLAY_TEST_KNOBS=1 PIKMIN_NETPLAY_TEST_VS_MATCH_SECONDS=60
 # The launcher's Host Co-op / Join Co-op flow, scripted.
 py -3.12 tools\netplay\launcher_smoke.py --launcher <build>\bin\nectar-launcher.exe `
     --exe <build>\bin\nectar.exe --assets <assets> --out <scratch>\launcher
