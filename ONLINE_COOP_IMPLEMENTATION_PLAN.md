@@ -1,11 +1,83 @@
 # Plan de implementación del cooperativo online de Open Nectar
 
-Estado: diseño técnico previo a implementación
+Estado: implementación en curso; PR #89–#92 integrados en `main` y nueva capa
+`nectar_net` en el árbol de trabajo, todavía sin commit ni conexión al launcher
 Alcance: Pikmin 1 y Pikmin 2; Windows, Linux y Android
 Modelo elegido: host autoritativo, cliente predictivo, UDP cifrado directo, conexión mediante código autocontenido
 Objetivo de calidad: conexión sencilla, ausencia de desincronizaciones silenciosas, recuperación ante pérdidas y compatibilidad cruzada entre plataformas
 
 ## 1. Resumen ejecutivo
+
+### 1.1 Base comunitaria integrada el 14 de octubre de 2026
+
+Los PR #89–#92 de `5laric` ya forman parte de `main` y se consideran una
+aportación fundacional, no un producto online terminado. Aportan:
+
+- separación de simulación determinista y presentación/cámara/audio local;
+- sesión cooperativa y VS determinista mediante GekkoNet sobre UDP;
+- delay de input adaptativo, barreras de carga y detección/forensics de desync;
+- transporte ICE mediante libjuice, códigos oferta/respuesta y UI Host/Join;
+- adopción temporal de reglas del host y transferencia del `map.json` de VS.
+
+Se conservarán estas piezas donde reduzcan riesgo y trabajo. El lockstep queda
+como primera vertical funcional y modo diagnóstico. No sustituye la meta de
+producción host-autoritativa descrita en este documento, necesaria para reparar
+estado y hacer cross-play ARM64/x86-64 sin depender de determinismo perfecto.
+
+Adaptaciones obligatorias sobre la contribución:
+
+- [x] fusionar la serie completa sin perder `nectar_net` ni el plan existente;
+- [x] compilar juego y launcher Linux y ejecutar las pruebas UDP/ICE/determinismo;
+- [x] sustituir la identidad SHA-256 del ejecutable por un manifiesto de build
+  independiente del sistema operativo;
+- [x] definir un código autocontenido `NECTAR1` acotado, versionado, con
+  endpoints IPv4/IPv6, caducidad, nonce, secreto y fingerprint;
+- [x] implementar y probar en Linux un adaptador `GnsTransport` cifrado con
+  mensajes fiables/no fiables y un único invitado;
+- [ ] sustituir en el launcher el intercambio obligatorio NPIX2/NPIX1 por un
+  único código del host y respuesta automática dentro del protocolo;
+- [ ] validar el `join_secret` de `NECTAR1` en cuarentena antes de aceptar
+  gameplay (ADR-0002; MITM activo en ruta aceptado como riesgo residual);
+- [ ] activar el nuevo transporte en Android ARM64; el lockstep determinista
+  Android sólo se conservará si resulta útil como modo diagnóstico;
+- [ ] evolucionar de lockstep estricto a autoridad/snapshots para producción.
+
+### 1.2 Estado técnico verificable al 14 de octubre de 2026
+
+Hay tres capas distintas y no deben confundirse:
+
+1. **Online comunitario ya fusionado:** Pikmin 1 de escritorio funciona en
+   lockstep con GekkoNet, UDP o ICE, dos códigos `NPIX2/NPIX1`, adopción de
+   reglas del host, VS y herramientas de desync. Es una base experimental
+   aprovechable, no el cross-play final.
+2. **Infraestructura nueva en desarrollo:** `nectar_net` contiene byte I/O y
+   protocolo acotados, código `NECTAR1`, CSPRNG de sistema y `GnsTransport`.
+   Compila y conecta dos peers Linux en loopback, pero todavía no lo consume el
+   juego ni el launcher y sus dependencias aún proceden del spike en `/tmp`.
+3. **Arquitectura objetivo:** host autoritativo, snapshots, predicción limitada,
+   reconciliación, save exclusivo del host y adaptadores para Pikmin 1 y 2.
+
+Validaciones ya ejecutadas:
+
+- juego y launcher de Pikmin 1 compilados en Linux con netplay;
+- pruebas de transferencia, determinismo, launcher y `nectar_net` correctas;
+- `GnsTransport` conectado por UDP cifrado en `127.0.0.1`, con tráfico fiable
+  invitado→host, no fiable host→invitado y cierre limpio;
+- protección de identidad de build: el handshake usa manifiesto de fuente y
+  ABI, y un árbol fuente sucio exige un ID de desarrollo explícito;
+- el sandbox bloquea sockets UDP, por lo que las pruebas de loopback se
+  ejecutan fuera de él; el mismo bloqueo afecta al transporte UDP heredado.
+
+Limitaciones actuales que la UI no debe ocultar:
+
+- Android y Windows/MinGW todavía no han compilado ni conectado con GNS;
+- GNS, protobuf y el backend criptográfico no están vendorizados;
+- el cifrado GNS sin identidad autenticada impide escucha casual, pero no
+  demuestra por sí solo quién está al otro lado;
+- `NECTAR1` aún no está conectado a un handshake y su campo de identidad de
+  host es provisional hasta elegir el mecanismo criptográfico definitivo;
+- no existen todavía port mapping, respuesta automática, snapshots
+  autoritativos ni integración de Pikmin 2.
 
 Open Nectar ya tiene casi toda la capa de juego necesaria para dos participantes locales:
 
@@ -254,48 +326,56 @@ En modo `Replica`:
 
 Para evitar una modificación masiva sin control, la separación se hará manager por manager. Cada manager tendrá una prueba que asegure que `Replica` no genera eventos de autoridad.
 
-## 5. Estructura propuesta del repositorio
+## 5. Estructura actual y propuesta del repositorio
 
 ```text
 libs/nectar_net/
   CMakeLists.txt
   include/nectar_net/
     byte_io.h
+    connection_code.h       # implementado
+    gns_transport.h         # implementado, build opcional
+    secure_random.h         # implementado
     protocol.h
     transport.h
+    limits.h
+    # Pendiente:
     session.h
     input.h
     entity_id.h
     snapshot.h
     clock_sync.h
     metrics.h
-    limits.h
-    connection_code.h
     port_mapper.h
   src/
     byte_io.cpp
     protocol.cpp
-    transport_direct_udp.cpp
+    connection_code.cpp     # implementado
+    gns_transport.cpp       # implementado
+    secure_random.cpp       # implementado
+    # Pendiente:
     session.cpp
     snapshot.cpp
     clock_sync.cpp
     metrics.cpp
-    connection_code.cpp
     port_mapper.cpp
   tests/
     protocol_test.cpp
+    connection_code_test.cpp
+    gns_transport_test.cpp
+    # Pendiente:
     parser_fuzz.cpp
     fake_transport_test.cpp
     snapshot_test.cpp
 
-games/pikmin1/pc_port/net/
+games/pikmin1/pc_port/netplay/       # lockstep actual; migración incremental
   p1_net_adapter.cpp/.h
   p1_net_entities.cpp/.h
   p1_net_snapshot.cpp/.h
   p1_net_visual.cpp/.h
   p1_net_test.cpp
 
-games/pikmin2/pc_port/net/
+games/pikmin2/pc_port/net/           # adaptador autoritativo pendiente
   p2_net_adapter.cpp/.h
   p2_net_entities.cpp/.h
   p2_net_snapshot.cpp/.h
@@ -309,13 +389,38 @@ docs/netplay/
   TEST_MATRIX.md
 ```
 
-`nectar_net` no incluirá cabeceras de Pikmin. Los adaptadores convierten el motor a tipos estables de red. Esto permite probar parsers, transporte y snapshots sin ROM ni assets.
+`nectar_net` no incluirá cabeceras de Pikmin. Los adaptadores convierten el
+motor a tipos estables de red. Esto permite probar parsers, transporte y
+snapshots sin ROM ni assets. No se moverá ni reescribirá masivamente el
+directorio `pc_port/netplay` existente: sus piezas útiles se envolverán o
+migrarán por unidades con pruebas, manteniendo el lockstep como referencia.
 
 ## 6. Transporte y conexión mediante código
 
 ### 6.1 Biblioteca de transporte
 
-Se propone **GameNetworkingSockets**, fijada a una versión/commit auditado y construida como dependencia vendorizada reproducible. Funciona sobre UDP, ofrece mensajes fiables y no fiables, fragmentación, cifrado AES-GCM y acuerdo de claves Curve25519, y no exige Steam. `nectar_net` ocultará la biblioteca detrás de `ITransport`, de modo que el protocolo de juego no quede acoplado a ella.
+Se ha seleccionado provisionalmente **GameNetworkingSockets** en el commit
+`d534c19aa760df3fb75fd20db13ba1932b8a5463`, con protobuf v21.12
+(`f0dc78d7e6e331b8c6bb2d5283e06aa26883ca7c`) para el spike. Funciona sobre
+UDP, ofrece mensajes fiables y no fiables, fragmentación, control de congestión
+y cifrado, y no exige Steam. `nectar_net` ya lo oculta detrás de `ITransport`
+mediante `GnsTransport`.
+
+El adaptador Linux funciona, pero la selección no será definitiva hasta cerrar
+vendorizado y cross-build. La prueba actual usó OpenSSL 3.5.5 del sistema; los
+paquetes finales no podrán depender de una versión instalada globalmente ni de
+DLL/SO ausentes.
+
+Advertencia de seguridad: el modo IP abierto de GNS cifra contra escucha
+casual, pero la propia API advierte que sin certificados o secreto compartido
+no autentica al peer y es vulnerable a MITM. Por tanto, **Connected de GNS no
+equivale a Authenticated de Nectar**. Decisión
+([ADR-0002](docs/netplay/ADR-0002-SESSION-AUTHENTICATION.md)): la conexión
+queda en cuarentena hasta que el invitado presenta el `join_secret` del código
+y el host lo valida en tiempo constante. Esto impide que un desconocido entre,
+pero no un MITM activo situado en la red de uno de los jugadores; para un juego
+entre amigos ese riesgo residual se acepta y queda documentado. Noise con PSK
+y clave del host (o certificado GNS fijado) queda como mejora futura.
 
 Antes de fijarla definitivamente se exige un spike que demuestre:
 
@@ -328,7 +433,11 @@ Antes de fijarla definitivamente se exige un spike que demuestre:
 - cierre limpio y reconexión sin fugas bajo ASan/TSan cuando corresponda;
 - revisión de licencia BSD-3-Clause, dependencias transitivas y atribuciones.
 
-Si el spike de Android o MinGW falla, se evaluará otra biblioteca de transporte UDP mantenida y auditada. No se implementarán criptografía, fiabilidad ni control de congestión caseros.
+Si el spike de Android o MinGW falla, se evaluará otra biblioteca de transporte
+UDP mantenida y auditada. No se implementarán criptografía, fiabilidad ni
+control de congestión caseros. La dependencia final debe tener commits,
+checksums, licencias, parches locales mínimos y procedimiento de actualización
+registrados en `third_party/NETPLAY_VENDOR.md`.
 
 Referencia: [GameNetworkingSockets](https://github.com/ValveSoftware/GameNetworkingSockets).
 
@@ -356,13 +465,28 @@ endpoint_count
 endpoints[]          # familia, dirección IPv4/IPv6, puerto y prioridad
 session_nonce
 join_secret          # aleatorio, al menos 128 bits
-host_key_fingerprint
+host_identity[32]    # provisional: clave pública o fingerprint verificable
 protocol_major
 flags
 checksum
 ```
 
-El código podrá incluir un endpoint público y, opcionalmente, uno LAN para que el mismo flujo funcione dentro de la red local. Será sensiblemente más largo que `NECTAR-K7M4-Q9DX`, especialmente con IPv6. La interfaz ofrecerá **Copiar**, **Pegar** y **Mostrar/Escanear QR** para que la longitud no afecte al uso normal. También habrá un modo avanzado `IP:puerto + secreto` para diagnóstico.
+El códec provisional `NECTAR1` ya implementa límite de 384 caracteres, Base32
+Crockford agrupado, CRC32, hasta cuatro endpoints IPv4/IPv6, caducidad, nonce,
+secreto de 128 bits e identidad de host de 32 bytes. El CRC sólo protege contra
+errores de transcripción. Antes de congelar el formato se decidirá si esos 32
+bytes son la clave pública completa del host o un fingerprint verificable por
+el transporte; si cambia su semántica se incrementará la versión del formato.
+
+El código podrá incluir un endpoint público y, opcionalmente, uno LAN para que
+el mismo flujo funcione dentro de la red local. Será sensiblemente más largo
+que `NECTAR-K7M4-Q9DX`, especialmente con IPv6. La interfaz ofrecerá **Copiar**,
+**Pegar** y **Mostrar/Escanear QR** para que la longitud no afecte al uso normal.
+También habrá un modo avanzado `IP:puerto + secreto` para diagnóstico. El modo
+normal siempre usa **un único código generado por el host**; la contestación
+del invitado viaja automáticamente por la conexión directa. Un segundo código
+sólo podrá existir como fallback avanzado explícito y nunca será el flujo
+principal.
 
 Propiedades obligatorias:
 
@@ -370,7 +494,7 @@ Propiedades obligatorias:
 - el host deja de aceptar nuevos handshakes tras entrar el invitado;
 - cerrar/recrear la sala invalida el código localmente y elimina el mapping;
 - la reanudación usa un secreto distinto, acordado tras autenticar la conexión inicial;
-- el handshake vincula el secreto al transcript y a la clave/fingerprint del host para impedir suplantación y MITM;
+- el host valida el secreto antes de procesar cualquier mensaje de juego; el MITM activo en ruta es un riesgo aceptado (ADR-0002);
 - el checksum sólo detecta errores de escritura; no sustituye autenticación criptográfica.
 
 ### 6.4 Ciclo de vida del mapping
@@ -436,7 +560,12 @@ payload_length    u16
 payload           bytes[payload_length]
 ```
 
-El transporte cifrado y el handshake vinculado al código aportan confidencialidad, autenticidad e integridad criptográfica. Un hash XXH3 opcional del payload se utilizará sólo para detectar errores de implementación en capturas/replays, no como mecanismo de seguridad.
+Una vez completado el handshake autenticado y vinculado a `NECTAR1`, el canal
+aportará confidencialidad, autenticidad e integridad criptográfica. Hasta
+entonces el prototipo GNS sólo ofrece cifrado anónimo y no puede transportar
+gameplay público. Un hash XXH3 opcional del payload se utilizará únicamente
+para detectar errores de implementación en capturas/replays, nunca como
+mecanismo de seguridad.
 
 ### 7.3 Handshake de compatibilidad
 
@@ -928,6 +1057,14 @@ Se considera al invitado, al host y a todo datagrama entrante potencialmente mal
 - Mapear únicamente el puerto UDP del proceso y eliminarlo al cerrar; nunca abrir DMZ ni tocar reglas ajenas.
 - Fuzzear tanto el decodificador del código como el handshake y todos los mensajes posteriores.
 - Fuzzear los manifiestos y parsers permitidos para personajes personalizados; comprobar cuotas antes de reservar, descomprimir o decodificar.
+- No considerar autenticada una conexión por alcanzar el estado `Connected` de
+  GNS; mantenerla en cuarentena hasta validar el `join_secret` y la versión.
+- Probar secreto erróneo, mensaje previo al secreto, timeout, reintentos y
+  segundo invitado: ninguno debe llegar a gameplay ni generar respuestas
+  amplificadas. El MITM activo en ruta se acepta (ADR-0002).
+- Borrar con una primitiva resistente a optimización el secreto de unión,
+  claves de sesión y secreto de reanudación al cerrar, fallar o reemplazar la
+  sala; nunca depender de `memset` ordinario para material secreto.
 
 ### 13.4 Privacidad
 
@@ -1002,6 +1139,12 @@ Esto permitirá reproducir desyncs sin guardar assets propietarios ni paquetes c
 - aplicación/destrucción de la capa temporal `SessionRules` sin modificar preferencias persistentes;
 - códec y validación de manifiestos, cuotas, rutas y hashes de personajes personalizados;
 - transiciones `Playing ↔ Spectating` e idempotencia de solicitudes repetidas.
+- `NECTAR1`: golden vectors, mayúsculas/minúsculas, caracteres ambiguos,
+  truncado, padding, checksum, límites, expiración, protocolo, endpoints y RNG.
+- `GnsTransport`: segundo invitado, mensajes máximos, error/cierre, orden
+  fiable, canal no fiable y ausencia de callbacks tras destruir el objeto.
+- handshake: secreto erróneo, sesión antigua, código caducado/revocado,
+  downgrade, mensaje previo al secreto, timeout y reintento tras rechazo.
 
 ### 16.2 Fuzzing y sanitizers
 
@@ -1098,10 +1241,24 @@ Progreso verificable: [`docs/netplay/TRANSPORT_SPIKE.md`](docs/netplay/TRANSPORT
 - [x] `nectar_net` mínimo, byte I/O acotado, protocolo hello/ping e interfaz `ITransport`.
 - [x] Opción `NECTAR_ONLINE=OFF` por defecto integrada en los dos juegos.
 - [x] Build estático de GameNetworkingSockets sin ICE y conexión UDP entre dos procesos en Linux.
-- [ ] Adaptador `GnsTransport` enlazado de forma reproducible.
-- [ ] Build y conexión en Windows/MinGW.
-- [ ] Build y conexión en Android NDK 28 arm64.
-- [ ] Canales fiable/no fiable, métricas, cierre y revisión de fugas en las tres plataformas.
+- [x] adaptador `GnsTransport` funcional en Linux con conexión cifrada local,
+  mensajes fiables/no fiables, límite de un invitado y cierre limpio;
+- [x] documentación explícita de que el cifrado GNS anónimo no autentica al
+  peer y no puede habilitar gameplay público todavía;
+- [x] dependencias reproducibles: `scripts/netplay-deps.sh` descarga versiones
+  fijadas con SHA-256 comprobado y compila estático GNS, protobuf y OpenSSL
+  3.5.5 (BCrypt en Windows); sin `/tmp` ni paquetes globales. libsodium
+  descartado: GNS exige AES por hardware con él;
+- [x] build MinGW de `nectar_net` y pruebas: el `.exe` sólo importa DLL del
+  sistema (`iphlpapi.dll` falta en la lista blanca de
+  `scripts/release-windows.sh`: añadirla al activar online en releases);
+- [ ] ejecución en Windows real (no hay Wine ni Windows en este entorno);
+- [x] build Android NDK 28 arm64; las 6 pruebas y el cruce de dos procesos
+  Linux↔Android pasan bajo `qemu-aarch64` (emulación, no dispositivo);
+- [ ] conexión en un dispositivo Android real y entre máquinas distintas.
+- [ ] RTT/pérdida/estado expuestos por `ITransport` sin tipos de GNS;
+- [ ] pruebas de saturación, segundo invitado, reconexión, destrucción repetida
+  y revisión ASan/TSan de fugas/carreras en las tres plataformas.
 
 Entregables:
 
@@ -1113,13 +1270,54 @@ Entregables:
 
 Puerta: conexión directa Linux↔Windows, Linux↔Android y Windows↔Android en una red controlada, sin fugas ni bloqueo del hilo de juego.
 
-### Fase 2 — Publicación del host, códigos y seguridad base
+### Fase 2 — Publicación del host, códigos y seguridad base — **EN CURSO**
+
+Progreso verificable: `libs/nectar_net/include/nectar_net/connection_code.h` y
+`libs/nectar_net/tests/connection_code_test.cpp`.
+
+- [x] códec binario provisional y Base32 legible `NECTAR1`;
+- [x] límites estrictos, IPv4/IPv6, checksum, caducidad, nonce, secreto de
+  unión e identidad provisional del host de 32 bytes;
+- [x] generación criptográfica portátil del nonce y secreto efímero mediante
+  el CSPRNG del sistema operativo, con fallo cerrado;
+- [x] [`ADR-0002`](docs/netplay/ADR-0002-SESSION-AUTHENTICATION.md)
+  aceptada: cifrado GNS + comprobación del `join_secret` en cuarentena; el
+  MITM activo en ruta se acepta como riesgo residual; Noise queda como mejora
+  futura;
+- [x] cuarentena `HostJoinGate`/`GuestJoinGate` en `nectar_net`
+  (`join_gate.h`): secreto y nonce de sala comparados en tiempo constante,
+  sólo por canal fiable, un intento por conexión, timeout de 5 s, respuesta
+  nunca mayor que la petición y borrado de secretos (`secure_memory.h`).
+  Verificado en Linux 2026-10-14: `nectar_net_join_gate_test` correcto,
+  también con ASan+UBSan+LeakSanitizer; sin sockets, independiente de GNS;
+- [x] `GatedTransport` envuelve cualquier `ITransport`: sólo informa
+  `Connected` tras validar el secreto, rechaza `send()` antes, descarta en
+  silencio al peer que falla o calla (el host sigue escuchando) y cuenta los
+  rechazos para diagnóstico. `ITransport::disconnectPeer()` añadido;
+  `GnsTransport` vuelve a `Listening` cuando se va el invitado. Verificado en
+  Linux 2026-10-14: `nectar_net_gated_transport_test` (transporte falso) y
+  `nectar_net_gated_gns_test` (UDP real en loopback: secreto erróneo
+  rechazado, invitado correcto, segundo invitado rechazado, gameplay y
+  reconexión) correctos, también con ASan+UBSan+LeakSanitizer
+  (`-fno-sanitize=vptr`: GNS se compila sin RTTI y da falso positivo);
+- [ ] riesgo abierto: un peer sin secreto ocupa la única plaza hasta 5 s
+  (timeout) y puede reintentarlo en bucle para bloquear la sala. Requiere
+  conocer IP y puerto del código; mitigar en endurecimiento (timeout menor,
+  límite por dirección o sustituir una conexión aún en cuarentena);
+- [ ] congelar el significado del campo de identidad de 32 bytes y versionar
+  de nuevo el código si pasa de fingerprint a clave pública;
+- [ ] custodia del secreto efímero y borrado seguro al terminar la sesión;
+- [ ] PCP, NAT-PMP, UPnP e IPv6 global;
+- [ ] integración del código único en launcher y Android;
+- [ ] handshake autenticado, canal ligado al transcript, anti-replay, cookie
+  antiamplificación y respuesta automática del invitado;
+- [ ] fallback manual y segundo código sólo en modo avanzado.
 
 Entregables:
 
 - integración PCP, NAT-PMP y UPnP IGD con concesiones cortas;
 - fallback de reenvío manual e IPv6 global;
-- código autocontenido con Base32, checksum, secreto efímero y fingerprint;
+- código autocontenido con Base32, checksum, secreto efímero e identidad criptográfica del host;
 - handshake autenticado, cookie antiamplificación y rate limits locales;
 - limpieza/renovación del mapping y diagnósticos sin secretos;
 - pantalla Crear/Unirse y errores.
@@ -1233,39 +1431,90 @@ El online no se considerará terminado por «dos ventanas se mueven». Debe cump
 - Los parsers sobreviven fuzzing y sanitizers.
 - Pérdida, reordenación, duplicación y reconexión están automatizadas en pruebas.
 - Una desconexión no corrompe ni cierra la partida del host.
-- El código autentica la conexión y un tercero sin el secreto no puede entrar ni amplificar tráfico mediante el host.
+- Un tercero sin el secreto no puede entrar ni amplificar tráfico mediante el host (MITM activo en ruta: riesgo aceptado, ADR-0002).
 - No se requieren servidores, cuentas, API keys ni credenciales desplegadas.
 - Logs e informes no contienen códigos, secretos, direcciones completas ni datos privados.
 - Pikmin 1 completa campaña cooperativa.
 - Pikmin 2 completa superficie y cuevas cooperativas.
 - Se han ejecutado sesiones largas reales en cada combinación de plataforma.
 
-## 19. Decisiones que deben permanecer explícitas
+## 19. Decisiones cerradas y pendientes
 
-Antes de convertir el prototipo en feature pública habrá que cerrar estas decisiones:
+### 19.1 Decisiones ya cerradas
 
-1. Política de progreso/logros del invitado.
-2. Si el host puede asignar P1/P2 o queda fijo host=P1.
-3. Quién puede saltar cinemáticas y abrir menús globales.
-4. Si se permite join-in-progress arbitrario o sólo en puntos seguros.
-5. Longitud/formato final del código y si QR entra en la primera versión.
-6. Puerto automático aleatorio frente a un puerto configurable/persistente para facilitar el reenvío manual.
-7. Compatibilidad entre regiones USA/PAL después de pruebas de lógica.
-8. Soporte online para mods/randomizer, formatos exactos permitidos para personajes personalizados y definición del manifest hash.
-9. Comportamiento del capitán remoto al desconectarse.
-10. Si una versión futura implementará migración de host.
+1. El flujo normal comparte **un único código del host**; el invitado no tiene
+   que devolver otro código manualmente.
+2. No habrá servidores del proyecto, señalización, matchmaking, STUN ni TURN.
+   El coste operativo de infraestructura será 0 € y se acepta que algunas
+   conexiones bajo CGNAT/NAT simétrico no podrán alojar.
+3. El transporte de producción será directo, cifrado y autenticado; ninguna
+   primitiva criptográfica se diseñará desde cero.
+4. El host es autoridad del mundo, configuración, nivel y save. El invitado no
+   escribe progreso canónico y restaura sus preferencias al salir.
+5. Los ejércitos separados y el límite global compartido se preservan; no se
+   rediseñarán como parte del transporte.
+6. P2 puede pasar a espectador y reincorporarse, ocupando siempre la única
+   plaza de invitado.
+7. El lockstep comunitario se conserva como vertical experimental, pruebas y
+   diagnóstico, pero no define la arquitectura cross-play final.
 
-Estas decisiones no bloquean el spike técnico, pero sí el protocolo estable y la interfaz final.
+### 19.2 Decisiones que faltan antes de congelar protocolo/UI
 
-## 20. Primer trabajo recomendado
+1. ~~Mecanismo de autenticación~~: cerrado en ADR-0002 (cifrado GNS +
+   `join_secret`); falta decidir si se elimina o reserva el campo de 32 bytes
+   de `NECTAR1`.
+2. Política de progreso/logros del invitado.
+3. Si el host puede asignar P1/P2 o queda fijo host=P1.
+4. Quién puede saltar cinemáticas y abrir menús globales.
+5. Si se permite join-in-progress arbitrario o sólo en puntos seguros.
+6. Si QR entra en la primera versión; Base32 y prefijo versionado ya están
+   decididos, pero el formato no se congela hasta cerrar la identidad del host.
+7. Puerto automático aleatorio frente a puerto configurable/persistente para
+   facilitar el reenvío manual.
+8. Compatibilidad entre regiones USA/PAL después de pruebas de lógica.
+9. Soporte online para mods/randomizer, formatos exactos permitidos para
+   personajes personalizados y definición del manifest hash.
+10. Comportamiento del capitán remoto al desconectarse.
+11. Si una versión futura implementará migración de host.
 
-El primer PR de implementación debe ser pequeño y no modificar gameplay:
+Las decisiones de autenticación e identidad bloquean el formato estable y el
+launcher de un código. Las demás no bloquean el transporte multiplataforma.
 
-1. crear `libs/nectar_net` con byte I/O, límites, mensajes hello/ping e interfaces de transporte;
-2. añadir tests y fuzz target;
-3. integrar una versión fijada de GameNetworkingSockets detrás de `NECTAR_ONLINE=OFF` por defecto;
-4. compilar Linux, Windows y Android;
-5. ejecutar un programa de prueba que crea una sala local, conecta dos peers y mide RTT/pérdida;
-6. documentar tamaño de binario, dependencias, licencias y fallos encontrados.
+## 20. Siguiente secuencia de trabajo
 
-El segundo PR añadirá el códec del código, autenticación y una interfaz de `PortMapper` con gateways simulados; después se integrarán PCP/NAT-PMP/UPnP y la UI. Sólo entonces se tocarán `PADStatus`, `GameCoreSection` o `BaseGameSection`. Esta separación evita mezclar problemas de compilación/transporte/NAT con errores del mundo del juego y permite revisar seguridad desde el primer parser.
+Los antiguos “primer” y “segundo PR” ya han sido superados parcialmente. El
+orden actualizado, evitando conectar gameplay sobre una base insegura, es:
+
+1. **Checkpoint revisable:** terminar pruebas y documentación de los cambios
+   locales actuales; commit/push sólo cuando lo solicite el mantenedor.
+2. **ADR de autenticación — HECHO, implementación EN CURSO** ([ADR-0002](docs/netplay/ADR-0002-SESSION-AUTHENTICATION.md),
+   propuesto; checkpoint 2026-10-14: `nectar_net` 3/3 pruebas incluida GNS
+   loopback, `pc_netplay_transfer_test` correcto)**:** construir dos spikes mínimos —certificado GNS
+   fijado y Noise PSK mediante biblioteca auditada— y elegir por seguridad,
+   tamaño, licencia y soporte Windows/Linux/Android.
+3. **Dependencias reproducibles:** vendorizar commits fijados de GNS,
+   protobuf y backend criptográfico; registrar checksums/licencias y eliminar
+   dependencia de `/tmp` o paquetes globales.
+4. **Cross-build temprano:** compilar y ejecutar handshake/transporte en Linux,
+   MinGW x86-64 y Android NDK 28 arm64 antes de ampliar el protocolo.
+5. **Endurecer transporte:** métricas RTT/pérdida, límites, segundo invitado,
+   cierre/reconexión, saturación y ASan/TSan.
+6. **Handshake Nectar:** vincular `join_secret`, nonces, identidad del host,
+   transcript, versión y capabilities; añadir cookie antiamplificación,
+   anti-replay, rotación y borrado seguro.
+7. **Congelar `NECTAR1`:** actualizar el campo de identidad si hace falta,
+   publicar golden vectors y conservar compatibilidad sólo cuando sea segura.
+8. **Publicación directa:** interfaz `PortMapper`, gateways simulados, después
+   PCP, NAT-PMP, UPnP, IPv6 global y fallback manual; nunca STUN/TURN.
+9. **Launcher de un código:** crear sala, mostrar/copiar/QR, pegar/escanear,
+   respuesta automática, mensajes CGNAT/firewall y cancelación que limpie
+   secretos/mappings. El flujo NPIX queda sólo como herramienta heredada.
+10. **Protocolo/fake transport:** completar mensajes v1, clocks, replay,
+    fuzzing y simulación de pérdida antes de adaptar gameplay.
+11. **Migración de Pikmin 1:** reutilizar reglas, UI, carga, VS y forensics de
+    los PR; incorporar Authority/Replica por familias de entidad.
+12. **Pikmin 2:** reutilizar `nectar_net`, implementar adaptador de superficie
+    y después cuevas, sin duplicar transporte, handshake ni UI de conexión.
+
+No se marcará una fase como completada por compilar en una sola plataforma. La
+puerta de cada fase exige sus pruebas de seguridad, cross-play y ciclo de vida.

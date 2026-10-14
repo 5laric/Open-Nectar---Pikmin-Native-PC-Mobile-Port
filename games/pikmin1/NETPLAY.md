@@ -12,8 +12,9 @@ settings file.
 
 ## What both players need
 
-- The same netplay build (`nectar.exe` and `nectar-launcher.exe`). A different
-  build is refused when the games meet (`handshake refused: exe`).
+- Builds from the same netplay source/simulation identity and game region.
+  Windows and Linux executable bytes may differ; an incompatible source tree
+  or simulation ABI is refused (`handshake refused: build`).
 - Their own installed game data (the launcher's install from your own disc).
 - A way to send each other one line of text: a chat message is enough.
 
@@ -158,8 +159,8 @@ until one connects. This works for most home routers.
 
 ## Troubleshooting
 
-- `handshake refused: exe` or `protocol`: different builds. Use the same
-  `nectar.exe` on both PCs.
+- `handshake refused: build` or `protocol`: incompatible source trees,
+  simulation ABIs or protocol versions. Use packages from the same release.
 - `handshake refused: config` with the UDP switches: the gameplay settings
   differ. Use `--netplay-host-ice` / `--netplay-join-ice`, which adopt the
   host's, or make them match.
@@ -187,8 +188,11 @@ cmake --build build-netplay --target pikmin_pc pikmin_launcher
 ```
 
 `PIKMIN_NETPLAY_BUILD` cannot be combined with `PIKMIN_NATIVE_OPTIMIZE` (two
-PCs must run the same code). The netplay libraries (GekkoNet, libjuice) and
-their licences are listed in `third_party/NETPLAY_VENDOR.md`.
+PCs must run the same code). A build from a dirty Git tree must set
+`PIKMIN_NETPLAY_SOURCE_ID` explicitly; release builds use the clean Git tree
+identity so two different local edits can never be mistaken for compatible.
+The netplay libraries (GekkoNet, libjuice) and their licences are listed in
+`third_party/NETPLAY_VENDOR.md`.
 
 ## Engineering tests
 

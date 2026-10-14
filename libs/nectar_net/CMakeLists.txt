@@ -10,13 +10,22 @@ endif()
 
 add_library(nectar_net STATIC
     src/byte_io.cpp
+    src/connection_code.cpp
+    src/gated_transport.cpp
+    src/join_gate.cpp
     src/protocol.cpp
+    src/secure_random.cpp
+    src/secure_memory.cpp
 )
 
 target_compile_features(nectar_net PUBLIC cxx_std_17)
 target_include_directories(nectar_net PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
+
+if(WIN32)
+    target_link_libraries(nectar_net PUBLIC bcrypt)
+endif()
 
 if(MSVC)
     target_compile_options(nectar_net PRIVATE /W4 /WX)
@@ -25,14 +34,71 @@ else()
 endif()
 
 option(NECTAR_NET_BUILD_TESTS "Build nectar_net unit tests" ${_NECTAR_NET_TESTS_DEFAULT})
+option(NECTAR_NET_ENABLE_GNS "Build the GameNetworkingSockets direct encrypted transport" OFF)
+
+if(NECTAR_NET_ENABLE_GNS)
+    # Built by scripts/netplay-deps.sh; pass its prefix in CMAKE_PREFIX_PATH.
+    # GNS links OpenSSL::Crypto (BCrypt on Windows) but its config does not
+    # look it up, so do it here and keep the link fully static.
+    if(NOT WIN32)
+        set(OPENSSL_USE_STATIC_LIBS ON)
+        find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+    endif()
+    find_package(Threads REQUIRED)
+    find_package(GameNetworkingSockets CONFIG REQUIRED)
+    target_sources(nectar_net PRIVATE src/gns_transport.cpp)
+    target_link_libraries(nectar_net PUBLIC GameNetworkingSockets::static)
+    if(ANDROID)
+        # GNS logs through __android_log_write but its export omits liblog.
+        target_link_libraries(nectar_net PUBLIC log)
+    endif()
+    target_compile_definitions(nectar_net PUBLIC NECTAR_NET_HAS_GNS=1)
+endif()
+
 if(NECTAR_NET_BUILD_TESTS AND NOT ANDROID)
     enable_testing()
     add_executable(nectar_net_protocol_test tests/protocol_test.cpp)
     target_link_libraries(nectar_net_protocol_test PRIVATE nectar_net)
+    add_executable(nectar_net_connection_code_test tests/connection_code_test.cpp)
+    target_link_libraries(nectar_net_connection_code_test PRIVATE nectar_net)
+    add_executable(nectar_net_join_gate_test tests/join_gate_test.cpp)
+    target_link_libraries(nectar_net_join_gate_test PRIVATE nectar_net)
+    add_executable(nectar_net_gated_transport_test tests/gated_transport_test.cpp)
+    target_link_libraries(nectar_net_gated_transport_test PRIVATE nectar_net)
+    if(NECTAR_NET_ENABLE_GNS)
+        add_executable(nectar_net_gns_transport_test tests/gns_transport_test.cpp)
+        target_link_libraries(nectar_net_gns_transport_test PRIVATE nectar_net)
+        add_executable(nectar_net_gated_gns_test tests/gated_gns_test.cpp)
+        target_link_libraries(nectar_net_gated_gns_test PRIVATE nectar_net)
+        # Two-process cross-platform check; run by hand, not by ctest.
+        add_executable(nectar_net_interop_peer tests/interop_peer.cpp)
+        target_link_libraries(nectar_net_interop_peer PRIVATE nectar_net)
+    endif()
     if(MSVC)
         target_compile_options(nectar_net_protocol_test PRIVATE /W4 /WX)
+        target_compile_options(nectar_net_connection_code_test PRIVATE /W4 /WX)
+        target_compile_options(nectar_net_join_gate_test PRIVATE /W4 /WX)
+        target_compile_options(nectar_net_gated_transport_test PRIVATE /W4 /WX)
+        if(NECTAR_NET_ENABLE_GNS)
+            target_compile_options(nectar_net_gns_transport_test PRIVATE /W4 /WX)
+            target_compile_options(nectar_net_gated_gns_test PRIVATE /W4 /WX)
+        endif()
     else()
         target_compile_options(nectar_net_protocol_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        target_compile_options(nectar_net_connection_code_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        target_compile_options(nectar_net_join_gate_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        target_compile_options(nectar_net_gated_transport_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        if(NECTAR_NET_ENABLE_GNS)
+            target_compile_options(nectar_net_gns_transport_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+            target_compile_options(nectar_net_gated_gns_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        endif()
     endif()
     add_test(NAME nectar_net_protocol_test COMMAND nectar_net_protocol_test)
+    add_test(NAME nectar_net_connection_code_test COMMAND nectar_net_connection_code_test)
+    add_test(NAME nectar_net_join_gate_test COMMAND nectar_net_join_gate_test)
+    add_test(NAME nectar_net_gated_transport_test COMMAND nectar_net_gated_transport_test)
+    if(NECTAR_NET_ENABLE_GNS)
+        add_test(NAME nectar_net_gns_transport_test COMMAND nectar_net_gns_transport_test)
+        add_test(NAME nectar_net_gated_gns_test COMMAND nectar_net_gated_gns_test)
+    endif()
 endif()

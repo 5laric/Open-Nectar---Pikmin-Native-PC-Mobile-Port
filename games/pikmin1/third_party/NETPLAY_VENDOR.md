@@ -44,3 +44,45 @@ libjuice:
 - Its own static C11 target from `libjuice/src/*.c`, with `JUICE_STATIC` and `USE_NETTLE=0` (the built-in
   SHA/HMAC, no Nettle). It links `ws2_32`, `bcrypt` and the platform threads.
 - The game's ICE transport (`pc_port/netplay/pc_netplay_ice.cpp`) includes only `juice/juice.h`.
+
+## Online transport dependencies (`nectar_net`, `NECTAR_NET_ENABLE_GNS=ON`)
+
+These are not copied into the repository. `scripts/netplay-deps.sh <target>`
+downloads the pinned archives into `~/.cache/open-nectar/netplay-deps`,
+refuses any archive whose SHA-256 differs from the one below, and builds them
+as static libraries. Everything is linked into the game binary: players never
+install anything.
+
+| Library | Version / commit | Archive SHA-256 | License | Used on |
+|---|---|---|---|---|
+| GameNetworkingSockets | `d534c19aa760df3fb75fd20db13ba1932b8a5463` | `099d4b0ff1837f0f27c83d4ce05869ec1d32136866f69a3336cc137e951189ab` | BSD-3-Clause | all |
+| protobuf (runtime + host `protoc`) | 3.21.12 (`v21.12`, `f0dc78d7e6e331b8c6bb2d5283e06aa26883ca7c`) | `4eab9b524aa5913c6fffb20b2a8abf5ef7f95a80bc0701f3a6dbb4c607f73460` | BSD-3-Clause | all |
+| OpenSSL `libcrypto` | 3.5.5 (LTS branch) | `b28c91532a8b65a1f983b4c28b7488174e4a01008e29ce8e69bd789f28bc2a89` | Apache-2.0 | Linux, Android |
+| Windows BCrypt | system | — | Windows component | Windows |
+
+Verification done on 2026-10-14: the OpenSSL hash matches the
+`.sha256` published with the release; the GNS archive is byte-identical to the
+spike checkout of the pinned commit; the protobuf release archive matches the
+`v21.12` commit except for two packaging files (`Makefile.in`,
+`method_dump.sh`) not used by the build.
+
+Build choices:
+- GNS: static, `ENABLE_ICE=OFF`, no WebRTC, examples, tests or tools.
+  `USE_CRYPTO=OpenSSL` on Linux/Android; `USE_CRYPTO=BCrypt` on Windows, which
+  makes GNS use its bundled curve25519/ed25519-donna (public domain).
+  libsodium was rejected: GNS then requires hardware AES and would fail on
+  ARM CPUs without the crypto extensions.
+- OpenSSL: only `libcrypto`, `no-shared no-module no-dso no-engine no-legacy`.
+- protobuf: runtime only for the target, without zlib; `protoc` is built once
+  for the build machine and must stay at the same version.
+- MinGW cross-build from Linux needs two case fixes, applied by the script
+  without touching GNS sources: a forwarding `Windows.h` header, and
+  `Iphlpapi` → `iphlpapi` in the installed CMake export.
+- Android: GNS logs through `__android_log_write`; `nectar_net` links `log`
+  because the GNS export omits it.
+
+Attribution: Apache-2.0 (OpenSSL) and BSD-3-Clause (GNS, protobuf) require
+shipping their license texts with release packages that enable online play.
+
+Updating: change the pin and hash together in `scripts/netplay-deps.sh` and in
+this table, rebuild every target and rerun the `nectar_net` tests.

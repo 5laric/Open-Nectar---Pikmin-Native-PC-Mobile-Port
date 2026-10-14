@@ -609,6 +609,44 @@ if(PIKMIN_NETPLAY_BUILD AND PIKMIN_NATIVE_OPTIMIZE)
     message(FATAL_ERROR "PIKMIN_NETPLAY_BUILD cannot be combined with PIKMIN_NATIVE_OPTIMIZE")
 endif()
 if(PIKMIN_NETPLAY_BUILD)
+    set(PIKMIN_NETPLAY_SOURCE_ID "" CACHE STRING
+        "Cross-platform source identity used by the netplay compatibility handshake")
+    if(NOT PIKMIN_NETPLAY_SOURCE_ID)
+        execute_process(
+            COMMAND git rev-parse "HEAD^{tree}"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            RESULT_VARIABLE PIKMIN_NETPLAY_GIT_RESULT
+            OUTPUT_VARIABLE PIKMIN_NETPLAY_GIT_TREE
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if(NOT PIKMIN_NETPLAY_GIT_RESULT EQUAL 0 OR NOT PIKMIN_NETPLAY_GIT_TREE MATCHES "^[0-9a-f]+$")
+            message(FATAL_ERROR
+                "A deterministic netplay build needs PIKMIN_NETPLAY_SOURCE_ID when built outside a Git checkout")
+        endif()
+        execute_process(
+            COMMAND git status --porcelain --untracked-files=all -- games/pikmin1 libs/nectar_net
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../.."
+            RESULT_VARIABLE PIKMIN_NETPLAY_STATUS_RESULT
+            OUTPUT_VARIABLE PIKMIN_NETPLAY_DIRTY_FILES
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if(NOT PIKMIN_NETPLAY_STATUS_RESULT EQUAL 0)
+            message(FATAL_ERROR "Could not verify that the netplay source tree is clean")
+        endif()
+        string(REGEX MATCH
+            "(^|\n)[^\n]*(CMakeLists\\.txt|\\.(c|cc|cpp|h|hpp|inl|cmake))($|\n)"
+            PIKMIN_NETPLAY_DIRTY_SOURCE "${PIKMIN_NETPLAY_DIRTY_FILES}")
+        if(PIKMIN_NETPLAY_DIRTY_SOURCE)
+            message(FATAL_ERROR
+                "Refusing an ambiguous netplay source identity for a dirty tree. Commit the source changes, "
+                "or set PIKMIN_NETPLAY_SOURCE_ID explicitly for a private development build.")
+        endif()
+        set(PIKMIN_NETPLAY_SOURCE_ID "${PIKMIN_NETPLAY_GIT_TREE}")
+    endif()
+    message(STATUS "Netplay cross-platform source identity: ${PIKMIN_NETPLAY_SOURCE_ID}")
+    target_compile_definitions(${NECTAR_GAME} PRIVATE
+        PIKMIN_NETPLAY_SOURCE_ID="${PIKMIN_NETPLAY_SOURCE_ID}"
+        PIKMIN_NETPLAY_GAME_VERSION="${PIKMIN_GAME_VERSION}")
     foreach(target IN LISTS PIKMIN_OPTIMIZED_TARGETS)
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             target_compile_options(${target} PRIVATE -ffp-contract=off -ftrivial-auto-var-init=zero)

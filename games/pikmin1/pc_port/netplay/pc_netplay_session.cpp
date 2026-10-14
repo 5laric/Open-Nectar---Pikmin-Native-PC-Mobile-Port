@@ -28,8 +28,8 @@
 // reports (pc_netplay_adaptive.h). It is per peer and not hashed. Long
 // blocking loads are covered by the load guard (pc_netplay_loadguard.h).
 //
-// Handshake: a Hello on the handshake channel with the exe and config
-// digests, the netplay seed and the mode descriptor (pc_netplay_transfer.h).
+// Handshake: a Hello on the handshake channel with platform-neutral build
+// manifest and config digests, the seed and mode (pc_netplay_transfer.h).
 // The first mismatching field refuses on both peers (exit 4).
 //
 // Transports: UDP (--netplay-host/--netplay-join) or ICE (--netplay-host-ice/
@@ -49,6 +49,7 @@
 #include "netplay/pc_coop_switch.h"
 #include "netplay/pc_input_log.h"
 #include "netplay/pc_netplay_adaptive.h"
+#include "netplay/pc_netplay_build_id.h"
 #include "netplay/pc_netplay_camlead.h"
 #include "netplay/pc_netplay_det.h"
 #include "netplay/pc_netplay_exit_codes.h"
@@ -158,7 +159,7 @@ Phase sPhase       = kIdle;
 bool sInitialised  = false;
 bool sForcedModes  = false;
 
-constexpr uint16_t kProtocolVersion = xfer::kProtocolV1;
+constexpr uint16_t kProtocolVersion = xfer::kProtocolV2;
 constexpr size_t kHsHeaderLen       = xfer::kHsHeaderLen;
 constexpr size_t kHsLen             = xfer::kHsLen;
 using Hello = xfer::Hello;
@@ -168,7 +169,8 @@ std::string sVsMapHexStr;
 // A captain this PC cannot load (a Pikmin 2 one without the local install):
 // the handshake refuses as soon as the peer is heard. -1 when both load.
 int sCaptainMissing = -1;
-std::string sExeHexStr;
+std::string sBuildHexStr;
+std::string sBuildManifest;
 std::string sCfgHexStr;
 std::string sCfgText;
 
@@ -523,44 +525,6 @@ bool env_is_one(const char* name)
 
 // ---- digests ----
 
-std::string exe_path()
-{
-#ifdef _WIN32
-	char path[4096];
-	DWORD n = GetModuleFileNameA(nullptr, path, sizeof(path));
-	if (n == 0 || n >= sizeof(path)) return std::string();
-	return std::string(path, n);
-#elif defined(__linux__)
-	char path[4096];
-	const ssize_t n = readlink("/proc/self/exe", path, sizeof(path));
-	if (n <= 0 || static_cast<size_t>(n) >= sizeof(path)) return std::string();
-	return std::string(path, static_cast<size_t>(n));
-#else
-	return std::string();
-#endif
-}
-
-bool sha_file(const char* path, uint8_t out[32])
-{
-	FILE* f = fopen(path, "rb");
-	if (f == nullptr) return false;
-	pc_netplay_sha::Sha256 s;
-	static uint8_t chunk[65536];
-	bool readErr = false;
-	while (true) {
-		const size_t n = fread(chunk, 1, sizeof(chunk), f);
-		if (n > 0) s.update(chunk, n);
-		if (n < sizeof(chunk)) {
-			readErr = ferror(f) != 0;
-			break;
-		}
-	}
-	fclose(f);
-	if (readErr) return false;
-	s.final(out);
-	return true;
-}
-
 // The session config the handshake hashes: every sim-relevant setting
 // (pc_settings_netplay_config_text, the list is in pc_settings.cpp), the
 // co-op mode and captains, the netplay seed and the protocol version.
@@ -584,13 +548,9 @@ std::string build_config_string()
 
 void compute_local_hello()
 {
-	const std::string path = exe_path();
-	if (path.empty() || !sha_file(path.c_str(), sLocal.exe)) {
-		printf("[netplay] refusing session: could not hash running executable %s\n", path.c_str());
-		fflush(stdout);
-		std::exit(npx::kUsage);
-	}
-	sExeHexStr = pc_netplay_sha::hex(sLocal.exe, 32);
+	sBuildManifest = pc_netplay_build::manifest();
+	pc_netplay_build::digest(sLocal.build);
+	sBuildHexStr = pc_netplay_sha::hex(sLocal.build, 32);
 	sCfgText   = build_config_string();
 	pc_netplay_sha::sha256(sCfgText.data(), sCfgText.size(), sLocal.cfg);
 	sCfgHexStr            = pc_netplay_sha::hex(sLocal.cfg, 32);
@@ -1665,8 +1625,9 @@ void send_hello_msg(uint8_t type, uint8_t refuseField, uint64_t nonce)
 void log_refusal_detail(uint8_t field, const Hello* peer)
 {
 	if (peer == nullptr) return;
-	if (field == xfer::kFieldExe)
-		printf("[netplay] refusal: exe local=%s peer=%s\n", sExeHexStr.c_str(), pc_netplay_sha::hex(peer->exe, 32).c_str());
+	if (field == xfer::kFieldBuild)
+		printf("[netplay] refusal: build local=%s peer=%s; local manifest: %s\n", sBuildHexStr.c_str(),
+		       pc_netplay_sha::hex(peer->build, 32).c_str(), sBuildManifest.c_str());
 	else if (field == xfer::kFieldConfig)
 		printf("[netplay] refusal: config local=%s peer=%s; local config text: %s\n", sCfgHexStr.c_str(),
 		       pc_netplay_sha::hex(peer->cfg, 32).c_str(), sCfgText.c_str());
@@ -1940,7 +1901,8 @@ void inlog_open()
 	kv("format", "pknl-1");
 	kv("role", sCfg.isHost ? "host" : "join");
 	kv("transport", sCfg.ice ? "ice" : "udp");
-	kv("exe_sha256", sExeHexStr);
+	kv("build_manifest_sha256", sBuildHexStr);
+	kv("build_manifest", sBuildManifest);
 	kv("config_sha256", sCfgHexStr);
 	kv("config", sCfgText);
 	kv("settings", pc_settings_netplay_config_text());
@@ -2039,14 +2001,14 @@ void replay_start()
 	forensics_enable();
 	sSessionStartMs                = now_ms();
 	const pc_netplay_inlog::Log& L = sReplay.log;
-	const std::string recExe       = L.meta_get("exe_sha256");
+	const std::string recBuild     = L.meta_get("build_manifest_sha256");
 	const std::string recCfg       = L.meta_get("config_sha256");
 	printf("[netplay] replay: %s: %llu frames (frame %u..%u), recorded by role=%s%s; replaying with no network\n",
 	       sReplay.path.c_str(), (unsigned long long)L.frames.size(), L.frames.empty() ? 0u : L.frames.front().frame,
 	       L.frames.empty() ? 0u : L.frames.back().frame, L.meta_get("role", "?").c_str(),
 	       L.truncatedBytes != 0 ? " (the log ends in a cut record)" : "");
-	printf("[netplay] replay: recorded exe=%s %s\n", recExe.c_str(),
-	       recExe == sExeHexStr ? "(this exe)" : "(differs from this exe)");
+	printf("[netplay] replay: recorded build=%s %s\n", recBuild.c_str(),
+	       recBuild == sBuildHexStr ? "(this build manifest)" : "(differs from this build manifest)");
 	printf("[netplay] replay: recorded config=%s %s\n", recCfg.c_str(),
 	       recCfg == sCfgHexStr ? "(same session config)" : "(the session config differs; the replay may diverge)");
 	if (recCfg != sCfgHexStr)
@@ -2728,7 +2690,7 @@ void start_gekko_session()
 	       sCfg.isHost ? "host/P1" : "joiner/P2", sLocalHandle, sCfg.localDelay, sCfg.seed,
 	       xfer::mode_name(sLocal.mode.mode), sLocal.mode.captainP1, sLocal.mode.captainP2);
 	adaptive_configure();
-	printf("[netplay] exe=%s\n", sExeHexStr.c_str());
+	printf("[netplay] build=%s manifest=%s\n", sBuildHexStr.c_str(), sBuildManifest.c_str());
 	printf("[netplay] config=%s\n", sCfgHexStr.c_str());
 	fflush(stdout);
 	if (const char* e = getenv_nonempty("PIKMIN_NETPLAY_TEST_DESYNC_AT_FRAME")) {

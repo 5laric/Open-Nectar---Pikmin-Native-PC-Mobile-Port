@@ -21,7 +21,7 @@ pc_netplay_xfer::Hello sample()
 {
 	pc_netplay_xfer::Hello h;
 	for (int i = 0; i < 32; ++i) {
-		h.exe[i]      = (uint8_t)(i + 1);
+		h.build[i]    = (uint8_t)(i + 1);
 		h.cfg[i]      = (uint8_t)(0x80 + i);
 		h.vsMapSha[i] = (uint8_t)(0x40 + i);
 	}
@@ -40,17 +40,17 @@ int main()
 	using namespace pc_netplay_xfer;
 	const Hello h = sample();
 	uint8_t wire[kHsLen];
-	encode_hello(kHsAck, kProtocolV1, h, kFieldMode, wire);
+	encode_hello(kHsAck, kProtocolV2, h, kFieldMode, wire);
 	check(std::memcmp(wire, "NPHU", 4) == 0, "magic");
-	check(wire[4] == kHsAck && get_u16(wire + 5) == kProtocolV1, "header type and protocol");
+	check(wire[4] == kHsAck && get_u16(wire + 5) == kProtocolV2, "header type and protocol");
 	check(wire[kHsRefuseOffset] == kFieldMode, "refuse field offset");
 
 	uint8_t type = 0, refuse = 0;
 	uint16_t proto = 0;
 	Hello d;
 	check(decode_hello(wire, sizeof(wire), &type, &proto, &d, &refuse), "decode");
-	check(type == kHsAck && proto == kProtocolV1 && refuse == kFieldMode, "decoded header");
-	check(std::memcmp(d.exe, h.exe, 32) == 0 && std::memcmp(d.cfg, h.cfg, 32) == 0, "decoded digests");
+	check(type == kHsAck && proto == kProtocolV2 && refuse == kFieldMode, "decoded header");
+	check(std::memcmp(d.build, h.build, 32) == 0 && std::memcmp(d.cfg, h.cfg, 32) == 0, "decoded digests");
 	check(d.seed == h.seed && d.nonce == h.nonce, "decoded seed and nonce");
 	check(d.mode == h.mode, "decoded mode descriptor");
 	check(std::memcmp(d.vsMapSha, h.vsMapSha, 32) == 0, "decoded VS map digest");
@@ -65,8 +65,8 @@ int main()
 
 	// Every field, in wire order.
 	Hello m = h;
-	m.exe[31] ^= 1;
-	check(first_mismatch(h, m) == kFieldExe, "exe mismatch");
+	m.build[31] ^= 1;
+	check(first_mismatch(h, m) == kFieldBuild, "build mismatch");
 	m = h;
 	m.cfg[0] ^= 1;
 	check(first_mismatch(h, m) == kFieldConfig, "config mismatch");
@@ -86,9 +86,9 @@ int main()
 	m.nonce = 99;
 	check(first_mismatch(h, m) == 0, "nonce is not compared");
 	m = h;
-	m.exe[0] ^= 1;
+	m.build[0] ^= 1;
 	m.seed ^= 1;
-	check(first_mismatch(h, m) == kFieldExe, "first field wins");
+	check(first_mismatch(h, m) == kFieldBuild, "first field wins");
 
 	check(std::strcmp(field_name(kFieldConfig), "config") == 0 && std::strcmp(field_name(77), "unknown") == 0,
 	      "field names");

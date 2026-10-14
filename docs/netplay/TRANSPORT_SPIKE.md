@@ -1,6 +1,6 @@
 # Spike de transporte directo
 
-Estado: Fase 1 en curso.
+Estado: Fase 1 en curso; adaptador Linux funcional, empaquetado multiplataforma pendiente.
 
 ## Resultado Linux
 
@@ -28,9 +28,20 @@ No se aceptará que el ejecutable dependa de una DLL/.so no incluida en el paque
 
 | Plataforma | Configuración | Build | Conexión directa | Estado |
 |---|---:|---:|---:|---|
-| Linux x86-64 | sí | sí | localhost sí | validación inicial completa |
-| Windows x86-64/MinGW | pendiente | pendiente | pendiente | bloque de trabajo siguiente |
-| Android arm64/NDK 28 | pendiente | pendiente | pendiente | riesgo principal del spike |
+| Linux x86-64 | sí | sí | localhost sí | 6/6 pruebas, binario sin `.so` de OpenSSL/protobuf |
+| Windows x86-64/MinGW | sí | sí | no ejecutado | sin Wine ni Windows aquí; el `.exe` sólo importa DLL del sistema |
+| Android arm64/NDK 28 | sí | sí | bajo `qemu-aarch64` sí | 6/6 pruebas y cruce con Linux; falta dispositivo real |
+
+Dependencias reproducibles (2026-10-14): `scripts/netplay-deps.sh` descarga
+las versiones fijadas, comprueba SHA-256 y compila estático para las tres
+plataformas (registro en `games/pikmin1/third_party/NETPLAY_VENDOR.md`).
+Cifrado de GNS: OpenSSL 3.5.5 en Linux/Android y BCrypt en Windows.
+
+Cruce de arquitecturas con `nectar_net_interop_peer` (dos procesos, UDP real
+en loopback, el binario Android ARM64 bajo `qemu-aarch64`): host Linux ←
+invitado Android y host Android ← invitado Linux autentican e intercambian
+mensajes fiables/no fiables; con contraseña errónea, ambos hosts rechazan y el
+invitado recibe `refused`. Es emulación de CPU, no un dispositivo Android.
 
 El README upstream afirma que la biblioteca se usa en plataformas móviles, pero también advierte que parte del código multiplataforma de Valve no se distribuye en el repositorio abierto. Por ello no se asumirá soporte Android hasta compilar, enlazar y conectar en un dispositivo real.
 
@@ -42,6 +53,11 @@ El README upstream afirma que la biblioteca se usa en plataformas móviles, pero
 - Cabecera y tipos v0, decoder transaccional y errores explícitos.
 - Golden vector y pruebas de truncado, versión, tipo, flags, tamaño y longitud.
 - `NECTAR_ONLINE=OFF` por defecto en ambos juegos; al activarlo se enlaza `nectar_net`.
+- `GnsTransport` detrás de `ITransport`, activable con
+  `NECTAR_NET_ENABLE_GNS=ON`, sin exponer cabeceras de GNS al juego.
+- Recepción por eventos, un único invitado, límites de 4 MiB, entrega fiable
+  ordenada y no fiable sin espera, cierre explícito y rechazo de un segundo
+  invitado sin expulsar al primero.
 
 Validación ejecutada:
 
@@ -49,11 +65,18 @@ Validación ejecutada:
 - `nectar_net_protocol_test`: 1/1 correcto;
 - ASan+UBSan: 1/1 correcto con detección de fugas desactivada porque LeakSanitizer no funciona bajo el `ptrace` del sandbox;
 - configuración `NECTAR_ONLINE=ON` y build del target `nectar_net` desde Pikmin 1 y Pikmin 2: correcto.
+- build del adaptador contra el GNS/protobuf fijado por el spike: correcto;
+- conexión cifrada en `127.0.0.1`, envío fiable invitado→host, envío no fiable
+  host→invitado y cierre de ambos extremos: correcto.
+
+El test de sockets necesita ejecutarse fuera del sandbox de desarrollo, que
+bloquea incluso los binds UDP de loopback. En ese entorno autorizado pasa
+completo; el fallo dentro del sandbox fue reproducido también con el transporte
+UDP existente y no pertenece a GNS.
 
 ## Trabajo pendiente para cerrar la Fase 1
 
 1. fijar la estrategia reproducible de dependencias sin instalar paquetes globales;
-2. implementar `GnsTransport` detrás de `ITransport`;
-3. probar mensajes fiables/no fiables y métricas;
-4. compilar y conectar Linux↔Windows, Linux↔Android y Windows↔Android;
-5. revisar tamaño final, licencias, cierre, fugas y ciclo de vida Android.
+2. añadir métricas RTT/pérdida y pruebas de saturación/reconexión;
+3. compilar y conectar Linux↔Windows, Linux↔Android y Windows↔Android;
+4. revisar tamaño final, licencias, cierre, fugas y ciclo de vida Android.

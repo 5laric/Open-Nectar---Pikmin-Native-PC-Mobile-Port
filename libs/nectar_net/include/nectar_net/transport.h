@@ -47,6 +47,9 @@ public:
     virtual bool connect(const Endpoint& endpoint) = 0;
     virtual bool send(Delivery delivery, const std::uint8_t* data, std::size_t size) = 0;
     virtual bool poll(TransportEvent& event) = 0;
+    // Drops only the current peer. A host keeps listening for a new guest.
+    // flushReliable asks the transport to deliver queued reliable data first.
+    virtual void disconnectPeer(bool flushReliable) = 0;
     virtual void close() = 0;
     virtual TransportState state() const = 0;
 };

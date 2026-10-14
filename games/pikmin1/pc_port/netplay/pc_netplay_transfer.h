@@ -9,7 +9,7 @@
 //   0   magic "NPHU"            4
 //   4   type (1 Hello, 2 Ack, 3 Refuse)
 //   5   protocol u16
-//   7   exe SHA-256             32
+//   7   build manifest SHA-256  32  (platform-neutral source/simulation identity)
 //   39  config SHA-256          32  (the session config text, see the session)
 //   71  netplay seed u32
 //   75  refuse field u8
@@ -28,7 +28,7 @@
 namespace pc_netplay_xfer {
 
 constexpr char kHsMagic[4]       = { 'N', 'P', 'H', 'U' };
-constexpr uint16_t kProtocolV1   = 1;
+constexpr uint16_t kProtocolV2   = 2;
 constexpr size_t kHsHeaderLen    = 7;
 constexpr size_t kHsLen          = 124;
 constexpr size_t kHsRefuseOffset = 75;
@@ -37,7 +37,7 @@ constexpr uint8_t kHsAck         = 2;
 constexpr uint8_t kHsRefuse      = 3;
 
 constexpr uint8_t kFieldProto  = 1;
-constexpr uint8_t kFieldExe    = 2;
+constexpr uint8_t kFieldBuild  = 2;
 constexpr uint8_t kFieldConfig = 3;
 constexpr uint8_t kFieldSeed   = 4;
 constexpr uint8_t kFieldMode   = 5;
@@ -52,7 +52,7 @@ inline const char* field_name(uint8_t f)
 {
 	switch (f) {
 	case kFieldProto: return "protocol";
-	case kFieldExe: return "exe";
+	case kFieldBuild: return "build";
 	case kFieldConfig: return "config";
 	case kFieldSeed: return "seed";
 	case kFieldMode: return "mode";
@@ -86,7 +86,7 @@ struct ModeDesc {
 };
 
 struct Hello {
-	uint8_t exe[32]     = {};
+	uint8_t build[32]   = {};
 	uint8_t cfg[32]     = {};
 	uint32_t seed       = 0;
 	uint64_t nonce      = 0;
@@ -124,7 +124,7 @@ inline void encode_hello(uint8_t type, uint16_t proto, const Hello& h, uint8_t r
 	std::memcpy(out, kHsMagic, 4);
 	out[4] = type;
 	put_u16(out + 5, proto);
-	std::memcpy(out + 7, h.exe, 32);
+	std::memcpy(out + 7, h.build, 32);
 	std::memcpy(out + 39, h.cfg, 32);
 	put_u32(out + 71, h.seed);
 	out[kHsRefuseOffset] = refuse;
@@ -149,7 +149,7 @@ inline bool decode_hello_header(const uint8_t* p, size_t len, uint8_t* type, uin
 inline bool decode_hello(const uint8_t* p, size_t len, uint8_t* type, uint16_t* proto, Hello* h, uint8_t* refuse)
 {
 	if (len != kHsLen || !decode_hello_header(p, len, type, proto)) return false;
-	std::memcpy(h->exe, p + 7, 32);
+	std::memcpy(h->build, p + 7, 32);
 	std::memcpy(h->cfg, p + 39, 32);
 	h->seed           = get_u32(p + 71);
 	*refuse           = p[kHsRefuseOffset];
@@ -166,7 +166,7 @@ inline bool decode_hello(const uint8_t* p, size_t len, uint8_t* type, uint16_t* 
 // (0 when they agree). The nonce differs per send by design and is skipped.
 inline uint8_t first_mismatch(const Hello& mine, const Hello& peer)
 {
-	if (std::memcmp(mine.exe, peer.exe, 32) != 0) return kFieldExe;
+	if (std::memcmp(mine.build, peer.build, 32) != 0) return kFieldBuild;
 	if (std::memcmp(mine.cfg, peer.cfg, 32) != 0) return kFieldConfig;
 	if (mine.seed != peer.seed) return kFieldSeed;
 	if (mine.mode != peer.mode) return kFieldMode;
