@@ -1090,6 +1090,10 @@ namespace {
 
 bool sNetplaySessionLocked = false;
 PcConfig sNetplaySessionConfig;
+// The joiner of a launcher session adopted the host's values: the file keeps
+// this player's own (sNetplayDiskConfig), never the adopted ones.
+bool sNetplayAdopted = false;
+PcConfig sNetplayDiskConfig;
 
 void netplayRelockSessionFields() {
     if (!sNetplaySessionLocked) return;
@@ -1099,11 +1103,59 @@ void netplayRelockSessionFields() {
     sConfig.vsMap  = sNetplaySessionConfig.vsMap;
     sPending.vsMap = sNetplaySessionConfig.vsMap;
 }
+
+// While saveConfig writes, the session fields hold this player's own values.
+struct NetplayDiskValuesScope {
+    bool active = false;
+    PcConfig live;
+    NetplayDiskValuesScope() {
+        if (!sNetplaySessionLocked || !sNetplayAdopted) return;
+        active = true;
+        live = sConfig;
+#define PC_NETPLAY_DISK(f) sConfig.f = sNetplayDiskConfig.f;
+        PC_NETPLAY_SESSION_FIELDS(PC_NETPLAY_DISK)
+#undef PC_NETPLAY_DISK
+        sConfig.vsMap = sNetplayDiskConfig.vsMap;
+    }
+    ~NetplayDiskValuesScope() {
+        if (active) sConfig = live;
+    }
+};
+
+// Inverse of pc_settings_netplay_config_text: sets every session field the
+// text names. Unknown or malformed pairs are ignored.
+int netplayApplyConfigText(const char* text) {
+    int applied = 0;
+    std::string s(text != nullptr ? text : "");
+    size_t pos = 0;
+    while (pos < s.size()) {
+        size_t semi = s.find(';', pos);
+        const std::string pair = s.substr(pos, semi == std::string::npos ? std::string::npos : semi - pos);
+        pos = semi == std::string::npos ? s.size() : semi + 1;
+        const size_t eq = pair.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = pair.substr(0, eq);
+        const std::string val = pair.substr(eq + 1);
+        if (key == "vsMap") {
+            sConfig.vsMap = val;
+            ++applied;
+            continue;
+        }
+        char* end = nullptr;
+        const long v = std::strtol(val.c_str(), &end, 10);
+        if (val.empty() || end == nullptr || *end != '\0') continue;
+#define PC_NETPLAY_ADOPT(f) if (key == #f) { sConfig.f = (int)v; ++applied; continue; }
+        PC_NETPLAY_SESSION_FIELDS(PC_NETPLAY_ADOPT)
+#undef PC_NETPLAY_ADOPT
+    }
+    return applied;
+}
 #endif
 
 void saveConfig() {
 #if PIKI_NETPLAY_BUILD
     netplayRelockSessionFields();
+    NetplayDiskValuesScope netplayDiskValues;
 #endif
     std::string path = std::string(kConfigFilename);
     std::ofstream out(path, std::ios::out | std::ios::trunc);
@@ -7079,7 +7131,23 @@ const char* pc_settings_netplay_config_text(void) {
     return text.c_str();
 }
 
-void pc_settings_netplay_session_begin(void) {
+void pc_settings_netplay_session_begin(const char* adoptConfigText) {
+    if (sNetplaySessionLocked) return;
+    if (adoptConfigText != nullptr) {
+        sNetplayDiskConfig = sConfig;
+        const std::string own = pc_settings_netplay_config_text();
+        const int applied = netplayApplyConfigText(adoptConfigText);
+        const std::string adopted = pc_settings_netplay_config_text();
+        sNetplayAdopted = true;
+        sPending = sConfig;
+        printf("[PC Settings] netplay session: adopted the host's sim settings for this session only "
+               "(%d keys, %s); the settings file keeps this player's own values\n",
+               applied, own == adopted ? "same as this player's" : "some differ from this player's");
+        if (own != adopted) {
+            printf("[PC Settings] netplay session: own   %s\n", own.c_str());
+            printf("[PC Settings] netplay session: host  %s\n", adopted.c_str());
+        }
+    }
     sNetplaySessionConfig = sConfig;
     sNetplaySessionLocked = true;
     printf("[PC Settings] netplay session: sim-relevant settings locked for the session\n");

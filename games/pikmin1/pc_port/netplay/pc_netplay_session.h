@@ -2,7 +2,9 @@
 // Netplay lockstep co-op session over GekkoNet and UDP.
 //
 // Active only when --netplay-host <port> or --netplay-join <ip>:<port> (or
-// PIKMIN_NETPLAY_HOST / PIKMIN_NETPLAY_JOIN) is set. A session forces
+// PIKMIN_NETPLAY_HOST / PIKMIN_NETPLAY_JOIN), --netplay-host-ice /
+// --netplay-join-ice (pc_netplay_launch.h) or --netplay-replay-log <file> is
+// set. A session forces
 // deterministic mode on and boots both peers straight into two-captain story
 // co-op with a fresh save (the co-op direct boot, pc_coop_switch.h). Without
 // a netplay switch every function here is inert and the game behaves exactly
@@ -55,3 +57,7 @@ bool pc_netplay_live_stats(PcNetplayLiveStats* out);
 
 // True on the host of a session.
 bool pc_netplay_is_host(void);
+
+// --netplay-replay-log: the recorded sim settings, which the replay adopts at
+// settings init (pc_netplay_launch_post_settings). Null otherwise.
+const char* pc_netplay_session_replay_settings(void);

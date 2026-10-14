@@ -66,6 +66,8 @@ __declspec(dllexport) int           AmdPowerXpressRequestHighPerformance = 1;
 // Netplay session switches: strong-defined by pc_netplay_session.cpp in
 // netplay builds only, null otherwise.
 __attribute__((weak)) void pc_netplay_session_notify_argv(int argc, char** argv);
+__attribute__((weak)) void pc_netplay_launch_preinit(int argc, char** argv);
+__attribute__((weak)) void pc_netplay_launch_post_settings(void);
 
 int main(int argc, char* argv[])
 {
@@ -95,6 +97,10 @@ int main(int argc, char* argv[])
         const int settingsResult = pc_settings_cli(argc, argv);
         if (settingsResult >= 0) return settingsResult;
     }
+
+    // --netplay-host-ice / --netplay-join-ice: the run folder, the private
+    // save folder and the joiner's session bundle, before anything reads them.
+    if (pc_netplay_launch_preinit != nullptr) pc_netplay_launch_preinit(argc, argv);
 
     // Netplay determinism switches (--netplay-deterministic and the
     // PIKMIN_NETPLAY_* variables), before the game starts. Inert unless set.
@@ -163,6 +169,8 @@ int main(int argc, char* argv[])
     printf("[PC Port] Loading persisted settings...\n");
     fflush(stdout);
     pc_settings_init();
+    // A netplay launch locks the sim settings here; the joiner adopts the host's.
+    if (pc_netplay_launch_post_settings != nullptr) pc_netplay_launch_post_settings();
     // Con Pikmin 2 instalado, su Louie sirve de capitán sin bajar ningún pack.
     pc_hd_models_import_pikmin2();
 

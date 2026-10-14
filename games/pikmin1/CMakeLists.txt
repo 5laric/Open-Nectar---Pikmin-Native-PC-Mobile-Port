@@ -675,7 +675,9 @@ if(PIKMIN_NETPLAY_BUILD AND NOT ANDROID)
     target_link_libraries(juice PRIVATE Threads::Threads)
     target_sources(${NECTAR_GAME} PRIVATE
         pc_port/netplay/pc_netplay_ice.cpp
+        pc_port/netplay/pc_netplay_launch.cpp
         # Session HUD, desync forensics and the failure-path diagnostics.
+        pc_port/netplay/pc_netplay_hud.cpp
         pc_port/netplay/pc_netplay_forensics.cpp
         pc_port/netplay/pc_netplay_inlog.cpp
         pc_port/netplay/pc_state_dump.cpp

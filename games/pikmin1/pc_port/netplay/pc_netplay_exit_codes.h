@@ -8,4 +8,5 @@ constexpr int kUsage     = 2; // a bad netplay switch or a setting netplay canno
 constexpr int kInputFile = 3; // the scripted input file is missing or malformed
 constexpr int kRefused   = 4; // the handshake was refused or timed out
 constexpr int kDesync    = 5; // the peers' state hashes differ
+constexpr int kReplayMismatch = 8; // --netplay-replay-log: a recorded hash did not reproduce
 } // namespace pc_netplay_exit
