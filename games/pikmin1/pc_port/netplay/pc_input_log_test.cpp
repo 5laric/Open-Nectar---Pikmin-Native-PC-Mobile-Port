@@ -69,6 +69,7 @@ void fillPads(PcInputPad pads[4])
 		pads[p].err          = (p == 0) ? (int8_t)0 : (int8_t)-1;
 		pads[p].controlYaw   = yaws[p];
 		pads[p].flags        = (uint8_t)(p & 1);
+		pads[p].cursorRotate = (int16_t)(p * 1000 - 1500);
 	}
 }
 
@@ -143,6 +144,42 @@ int main()
 		check(!pc_input_log_decode_tick_v1(recV1, len, tmp), "v1 decode rejects short");
 	}
 
+	// v3: the v2 14 bytes per pad plus the cursor rotate s16 LE.
+	uint8_t recV3[64];
+	check(pc_input_log_encode_tick_v3(pads, recV3) == 64, "v3 encode returns 64 bytes");
+	check(std::memcmp(recV3, rec, 14) == 0, "v3 pad 0 starts with the v2 pad bytes");
+	check(recV3[14] == (uint8_t)(-1500 & 0xFF) && recV3[15] == (uint8_t)((-1500 >> 8) & 0xFF), "v3 rotate LE");
+	PcInputPad backV3[4];
+	std::memset(backV3, 0xAA, sizeof(backV3));
+	check(pc_input_log_decode_tick_v3(recV3, sizeof(recV3), backV3), "v3 decode succeeds");
+	check(padsEqual(pads, backV3, true), "v3 round-trip preserves the v2 fields");
+	for (int p = 0; p < 4; ++p) check(backV3[p].cursorRotate == pads[p].cursorRotate, "v3 round-trip keeps the rotate");
+	check(!pc_input_log_decode_tick_v3(recV3, 63, backV3), "v3 decode rejects short");
+	PcInputPad backV2[4];
+	pc_input_log_decode_tick(rec, sizeof(rec), backV2);
+	check(backV2[3].cursorRotate == 0, "v2 decode zeroes the rotate");
+	std::vector<uint8_t> headerV3;
+	pc_input_log_write_header_v3(headerV3);
+	uint16_t v3v = 0, v3p = 0, v3r = 0;
+	check(pc_input_log_read_header(headerV3.data(), headerV3.size(), v3v, v3p, v3r) == PC_INPUT_HEADER_OK && v3v == 3
+	          && v3p == 4 && v3r == 64,
+	      "v3 header reads back v3/4/64");
+
+	// Ext slots and the local rotate accumulator.
+	pc_input_log_ext_set(1, pc_input_log::kExtBomb | pc_input_log::kExtSwarm, -42);
+	check(pc_netplay_ext_bits(1) == 0x09 && pc_netplay_ext_cursor_rotate(1) == -42 && pc_netplay_ext_bits(0) == 0,
+	      "ext slots per pad");
+	pc_input_log_ext_set(1, 0, 0);
+	const float quarterLsb = pc_input_log::kYawTurnsToRad * 0.25f;
+	pc_input_log_local_rotate_add(quarterLsb);
+	check(pc_input_log_local_rotate_take() == 0, "a quarter LSB rounds to 0");
+	pc_input_log_local_rotate_add(quarterLsb);
+	pc_input_log_local_rotate_add(quarterLsb);
+	check(pc_input_log_local_rotate_take() == 1, "the remainder carries to the next take");
+	pc_input_log_local_rotate_add(-1.0f);
+	const int16_t q = pc_input_log_local_rotate_take();
+	check(q <= -10429 && q >= -10431, "one radian is about 10430 LSB");
+
 	// Header round-trip (v2 default).
 	std::vector<uint8_t> header;
 	pc_input_log_write_header(header);
@@ -176,7 +213,7 @@ int main()
 
 	// Unsupported version / pad count / record size.
 	std::vector<uint8_t> wrong = header;
-	wrong[4]                   = 3; // version 3
+	wrong[4]                   = 4; // version 4
 	check(pc_input_log_read_header(wrong.data(), wrong.size(), version, padCount, recordSize)
 	          == PC_INPUT_HEADER_UNSUPPORTED,
 	      "future version rejected");

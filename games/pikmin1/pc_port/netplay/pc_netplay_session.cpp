@@ -158,7 +158,7 @@ Phase sPhase       = kIdle;
 bool sInitialised  = false;
 bool sForcedModes  = false;
 
-constexpr uint16_t kProtocolVersion = xfer::kProtocolV1;
+constexpr uint16_t kProtocolVersion = xfer::kProtocolV2;
 constexpr size_t kHsHeaderLen       = xfer::kHsHeaderLen;
 constexpr size_t kHsLen             = xfer::kHsLen;
 using Hello = xfer::Hello;
@@ -331,6 +331,7 @@ std::vector<std::string> sBannerLines;
 std::vector<uint8_t> sScriptBytes;
 size_t sScriptTicks  = 0;
 size_t sScriptIdx    = 0;
+size_t sScriptRec    = 56;
 bool sScriptActive   = false;
 
 double now_ms()
@@ -728,13 +729,14 @@ void load_scripted_file()
 	const uint16_t version = (uint16_t)(sScriptBytes[4] | ((uint16_t)sScriptBytes[5] << 8));
 	const uint16_t pads    = (uint16_t)(sScriptBytes[6] | ((uint16_t)sScriptBytes[7] << 8));
 	const uint16_t rec     = (uint16_t)(sScriptBytes[8] | ((uint16_t)sScriptBytes[9] << 8));
-	if (version != 2 || pads != 4 || rec != 56) {
-		printf("[netplay] local input file: need pkni v2 4x14, got v%u %ux%u (%s)\n", (unsigned)version,
-		       (unsigned)pads, (unsigned)rec, path);
+	if (!((version == 2 && rec == 56) || (version == 3 && rec == 64)) || pads != 4) {
+		printf("[netplay] local input file: need pkni v2 4x14 or v3 4x16, got v%u %ux%u (%s)\n",
+		       (unsigned)version, (unsigned)pads, (unsigned)rec, path);
 		fflush(stdout);
 		std::exit(npx::kInputFile);
 	}
-	sScriptTicks  = (sScriptBytes.size() - 10) / 56;
+	sScriptRec    = rec;
+	sScriptTicks  = (sScriptBytes.size() - 10) / rec;
 	sScriptActive = true;
 	printf("[netplay] local input file: %s (%llu ticks)\n", path, (unsigned long long)sScriptTicks);
 	fflush(stdout);
@@ -744,8 +746,9 @@ PcNetplayInput scripted_record(size_t idx)
 {
 	PcNetplayInput in;
 	if (!sScriptActive || idx >= sScriptTicks) return in; // neutral past the end
-	const uint8_t* rec = sScriptBytes.data() + 10 + idx * 56;
-	// Pad 0 of the 4-pad record (14 bytes: 11 PADStatus + yaw u16 + flags).
+	const uint8_t* rec = sScriptBytes.data() + 10 + idx * sScriptRec;
+	// Pad 0 of the 4-pad record (14 bytes: 11 PADStatus + yaw u16 + flags;
+	// v3 16: the flags are the ext bits, then the cursor rotate s16).
 	in.buttons    = (uint16_t)(rec[0] | ((uint16_t)rec[1] << 8));
 	in.stickX     = (int8_t)rec[2];
 	in.stickY     = (int8_t)rec[3];
@@ -754,6 +757,10 @@ PcNetplayInput scripted_record(size_t idx)
 	in.triggerL   = rec[6];
 	in.triggerR   = rec[7];
 	in.controlYaw = (uint16_t)(rec[11] | ((uint16_t)rec[12] << 8));
+	if (sScriptRec == 64) {
+		in.ext          = rec[13] & pc_input_log::kExtKnown;
+		in.cursorRotate = (int16_t)(uint16_t)(rec[14] | ((uint16_t)rec[15] << 8));
+	}
 	return in;
 }
 
@@ -773,13 +780,31 @@ PcNetplayInput build_local_input()
 	return sPadAccum.take();
 }
 
+// This peer's Bomb, Lock-On and Charge presses, held Swarm button and cursor
+// rotation since the last turn. Every local device plays this peer's own
+// captain, so both window slots are read, as the camera drag does.
+void take_local_ext(uint8_t* ext, int16_t* rotate)
+{
+	uint8_t e = 0;
+	if (pc_window_take_bomb_press(0) | pc_window_take_bomb_press(1)) e |= pc_input_log::kExtBomb;
+	if (pc_window_take_lockon_press()) e |= pc_input_log::kExtLockOn;
+	if (pc_window_take_swarm_press()) e |= pc_input_log::kExtCharge;
+	if (pc_window_swarm_held() || pc_window_swarm_held_p2()) e |= pc_input_log::kExtSwarm;
+	*ext    = e;
+	*rotate = pc_input_log_local_rotate_take();
+}
+
 // Every session turn folds the current physical sample into the
 // accumulator, so a press shorter than the submit interval still reaches
 // the next submit. The fresh yaw capture keeps the submitted yaw following
 // the live camera; inject_input rewrites the slots before every tick.
 void accum_add_current()
 {
+	uint8_t ext    = 0;
+	int16_t rotate = 0;
+	take_local_ext(&ext, &rotate);
 	if (sScriptActive) return;
+	if (!local_ui_open()) sPadAccum.add_ext(ext, rotate);
 	pc_input_log_capture_yaw_fresh();
 	PADStatus* pads  = pc_netplay_pad_status();
 	const int padIdx = pc_netplay_input_sel::local_pad_index(sLocalRole, (pc_netplay_input_sel::Kind)sCfg.inputKind);
@@ -802,6 +827,7 @@ void inject_input(int pad, const PcNetplayInput& in)
 	pads[pad].analogB      = 0;
 	pads[pad].err          = PAD_ERR_NONE;
 	pc_input_log_yaw_set(pad, in.controlYaw, pc_input_log::kFlagsNone);
+	pc_input_log_ext_set(pad, in.ext & pc_input_log::kExtKnown, in.cursorRotate);
 }
 
 void inject_neutral_pad(int pad)
@@ -810,6 +836,7 @@ void inject_neutral_pad(int pad)
 	memset(&pads[pad], 0, sizeof(PADStatus));
 	pads[pad].err = (pad < 2) ? PAD_ERR_NONE : PAD_ERR_NO_CONTROLLER;
 	pc_input_log_yaw_set(pad, 0, pc_input_log::kFlagsNone);
+	pc_input_log_ext_set(pad, 0, 0);
 }
 
 uint32_t fold_hash64(uint64_t v) { return (uint32_t)(v ^ (v >> 32)); }
@@ -1019,7 +1046,12 @@ void submit_local_inputs(unsigned n)
 	for (unsigned j = 0; j < n; ++j) {
 		if (j > 0) gekko_set_local_delay_nofill(sGekko, sLocalHandle, (unsigned char)(from + j));
 		PcNetplayInput local = (j == 0 || sScriptActive) ? build_local_input() : first;
-		if (j == 0) first = local;
+		if (j == 0) {
+			first = local;
+			// The repeats keep the held state, not the presses or the rotation.
+			first.ext &= pc_input_log::kExtSwarm;
+			first.cursorRotate = 0;
+		}
 		uint8_t wire[16];
 		pc_netplay_input_encode(local, wire);
 		gekko_add_local_input(sGekko, sLocalHandle, wire);

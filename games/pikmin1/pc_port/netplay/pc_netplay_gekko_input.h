@@ -10,7 +10,11 @@
 //   6       1     triggerL u8
 //   7       1     triggerR u8
 //   8       2     control yaw u16 (pc_input_log_yaw_quantise)
-//   10      6     flags, fragSeq, fragData[4]: spare, zero for now
+//   10      1     ext u8: Bomb, Lock-On and Charge presses and the held
+//                 Swarm button (pc_input_log::kExt*)
+//   11      2     cursor rotate s16 LE, 1/65536 turns (mouse/touch/stick
+//                 free-camera drag since the last input)
+//   13      3     spare, zero
 //
 // Engine-free: only <cstddef>/<cstdint>.
 
@@ -30,9 +34,9 @@ struct PcNetplayInput {
 	uint8_t triggerL = 0;
 	uint8_t triggerR = 0;
 	uint16_t controlYaw = 0;
-	uint8_t flags = 0;
-	uint8_t fragSeq = 0;
-	uint8_t fragData[4] = {};
+	uint8_t ext = 0;
+	int16_t cursorRotate = 0;
+	uint8_t spare[3] = {};
 };
 
 // Encodes exactly 16 bytes. Returns bytes written (16).
@@ -48,12 +52,12 @@ inline size_t pc_netplay_input_encode(const PcNetplayInput& in, uint8_t out[16])
 	out[7]  = in.triggerR;
 	out[8]  = (uint8_t)(in.controlYaw & 0xFF);
 	out[9]  = (uint8_t)((in.controlYaw >> 8) & 0xFF);
-	out[10] = in.flags;
-	out[11] = in.fragSeq;
-	out[12] = in.fragData[0];
-	out[13] = in.fragData[1];
-	out[14] = in.fragData[2];
-	out[15] = in.fragData[3];
+	out[10] = in.ext;
+	out[11] = (uint8_t)((uint16_t)in.cursorRotate & 0xFF);
+	out[12] = (uint8_t)(((uint16_t)in.cursorRotate >> 8) & 0xFF);
+	out[13] = in.spare[0];
+	out[14] = in.spare[1];
+	out[15] = in.spare[2];
 	return pc_netplay_gekko::kInputBytes;
 }
 
@@ -69,12 +73,11 @@ inline bool pc_netplay_input_decode(const uint8_t* data, size_t avail, PcNetplay
 	out.triggerL    = data[6];
 	out.triggerR    = data[7];
 	out.controlYaw  = (uint16_t)(data[8] | ((uint16_t)data[9] << 8));
-	out.flags       = data[10];
-	out.fragSeq     = data[11];
-	out.fragData[0] = data[12];
-	out.fragData[1] = data[13];
-	out.fragData[2] = data[14];
-	out.fragData[3] = data[15];
+	out.ext          = data[10];
+	out.cursorRotate = (int16_t)(uint16_t)(data[11] | ((uint16_t)data[12] << 8));
+	out.spare[0]     = data[13];
+	out.spare[1]     = data[14];
+	out.spare[2]     = data[15];
 	return true;
 }
 
@@ -88,8 +91,9 @@ inline PcNetplayInput pc_netplay_input_neutral()
 // turn but submits at most one input per Advance, so a tap that starts and
 // ends between two submit turns would be lost. Between submits every sample
 // is folded in: button bits OR-accumulate, while the sticks, triggers and
-// control yaw keep the latest sample. take() returns the merged input and
-// clears the button latch.
+// control yaw keep the latest sample, the ext bits OR-accumulate and the
+// cursor rotate sums (saturating). take() returns the merged input and
+// clears the button, ext and rotate latches.
 struct PcNetplayAccum {
 	uint16_t buttons = 0;
 	int8_t stickX = 0;
@@ -99,6 +103,8 @@ struct PcNetplayAccum {
 	uint8_t triggerL = 0;
 	uint8_t triggerR = 0;
 	uint16_t controlYaw = 0;
+	uint8_t ext = 0;
+	int32_t cursorRotate = 0;
 
 	void reset()
 	{
@@ -107,6 +113,16 @@ struct PcNetplayAccum {
 		substickX = substickY = 0;
 		triggerL = triggerR = 0;
 		controlYaw = 0;
+		ext = 0;
+		cursorRotate = 0;
+	}
+
+	void add_ext(uint8_t e, int16_t rotate)
+	{
+		ext |= e;
+		cursorRotate += rotate;
+		if (cursorRotate > 32767) cursorRotate = 32767;
+		if (cursorRotate < -32767) cursorRotate = -32767;
 	}
 
 	void add(uint16_t b, int8_t sx, int8_t sy, int8_t cx, int8_t cy, uint8_t tl, uint8_t tr, uint16_t yaw)
@@ -124,6 +140,7 @@ struct PcNetplayAccum {
 	void add_input(const PcNetplayInput& in)
 	{
 		add(in.buttons, in.stickX, in.stickY, in.substickX, in.substickY, in.triggerL, in.triggerR, in.controlYaw);
+		add_ext(in.ext, in.cursorRotate);
 	}
 
 	PcNetplayInput take()
@@ -137,7 +154,11 @@ struct PcNetplayAccum {
 		out.triggerL   = triggerL;
 		out.triggerR   = triggerR;
 		out.controlYaw = controlYaw;
-		buttons        = 0;
+		out.ext          = ext;
+		out.cursorRotate = (int16_t)cursorRotate;
+		buttons          = 0;
+		ext              = 0;
+		cursorRotate     = 0;
 		return out;
 	}
 };

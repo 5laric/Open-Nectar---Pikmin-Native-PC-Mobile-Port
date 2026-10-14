@@ -29,6 +29,8 @@ namespace pc_netplay_xfer {
 
 constexpr char kHsMagic[4]       = { 'N', 'P', 'H', 'U' };
 constexpr uint16_t kProtocolV1   = 1;
+// v2: the 16-byte input carries the ext bits and the cursor rotate.
+constexpr uint16_t kProtocolV2   = 2;
 constexpr size_t kHsHeaderLen    = 7;
 constexpr size_t kHsLen          = 124;
 constexpr size_t kHsRefuseOffset = 75;
