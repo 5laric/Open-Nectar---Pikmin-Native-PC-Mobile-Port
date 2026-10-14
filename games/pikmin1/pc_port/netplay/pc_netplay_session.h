@@ -61,3 +61,10 @@ bool pc_netplay_is_host(void);
 // --netplay-replay-log: the recorded sim settings, which the replay adopts at
 // settings init (pc_netplay_launch_post_settings). Null otherwise.
 const char* pc_netplay_session_replay_settings(void);
+// Online guest (--online-join): joins the room and returns the host's sim
+// settings to adopt at settings init. Null otherwise.
+const char* pc_netplay_session_online_rules(void);
+// Online guest: leave co-op (P2 keeps its slot, its input is idle and the
+// view follows the host's captain); Start asks to rejoin at a safe tick.
+void pc_netplay_online_request_leave(void);
+bool pc_netplay_online_spectating(void);

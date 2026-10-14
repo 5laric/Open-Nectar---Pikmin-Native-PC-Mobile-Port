@@ -1,7 +1,9 @@
 #include "netplay/pc_online_navi.h"
 
+#include "GameCoreSection.h"
 #include "Navi.h"
 #include "NaviMgr.h"
+#include "gameflow.h"
 
 namespace {
 
@@ -56,4 +58,9 @@ bool pc_online_nudge_captain(int player, float dx, float dy, float dz, bool rese
 	n->mSRT.t.z += dz;
 	if (resetVelocity) n->mVelocity = Vector3f(0.0f, 0.0f, 0.0f);
 	return true;
+}
+
+int pc_online_pause_state(void)
+{
+	return (int)GameCoreSection::pauseFlag | (gameflow.mIsUIOverlayActive ? 0x10000 : 0);
 }

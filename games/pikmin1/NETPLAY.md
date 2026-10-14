@@ -217,6 +217,11 @@ nectar --online-host 0 --online-code-out code.txt
 nectar --online-join @code.txt
 ```
 
+The guest plays by the host's sim settings (sent when it joins), sees its own
+captain, and the host's Start pauses both games. A guest can leave co-op and
+watch the host's captain while keeping its slot; Start asks to rejoin, which
+the host grants outside menus and cutscenes.
+
 The code is a secret: share it only with the friend who joins. The log never
 prints it. A wrong code, another game version or region, a full room and an
 unreachable host are reported as such.

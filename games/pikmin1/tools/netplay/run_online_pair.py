@@ -61,6 +61,12 @@ def main(argv=None):
     p.add_argument("--lag", type=float, default=0.0, help="one-way lag added by GNS, ms")
     p.add_argument("--jitter", type=float, default=0.0, help="extra random lag up to this many ms")
     p.add_argument("--loss", type=float, default=0.0, help="packet loss per direction, percent")
+    p.add_argument("--frames", action="store_true",
+                   help="dump every 15th presented frame of each peer to <run>/frames (PIKMIN_FRAME_DUMP)")
+    p.add_argument("--host-start-at", default="",
+                   help="TEST ONLY: comma-separated host ticks where the host presses Start (pause/unpause)")
+    p.add_argument("--guest-leave-at", type=int, default=0, help="TEST ONLY: guest tick to leave co-op")
+    p.add_argument("--guest-rejoin-at", type=int, default=0, help="TEST ONLY: guest tick to ask to rejoin")
     p.add_argument("--max-error", type=float, default=25.0,
                    help="fail when the guest captain's mean error exceeds this (world units)")
     a = p.parse_args(argv)
@@ -82,7 +88,13 @@ def main(argv=None):
         impair = {"NECTAR_NET_TEST_IMPAIR": "1", "NECTAR_NET_TEST_LAG_MS": str(a.lag),
                   "NECTAR_NET_TEST_JITTER_MS": str(a.jitter), "NECTAR_NET_TEST_LOSS_PCT": str(a.loss)}
     code_file = host_run / "code.txt"
+    if a.frames:
+        for run in (host_run, join_run):
+            (run / "frames").mkdir(exist_ok=True)
+        impair = dict(impair, PIKMIN_FRAME_DUMP="frames")  # relative to each peer's run folder
     host_env = dict(impair, PIKMIN_ONLINE_TEST_LOOPBACK="1")
+    if a.host_start_at:
+        host_env.update(PIKMIN_NETPLAY_TEST_KNOBS="1", PIKMIN_ONLINE_TEST_START_AT=a.host_start_at)
     hproc, hout = run_pair.launch(a.exe, host_run, ["--online-host", str(a.port), "--online-code-out", str(code_file),
                                                     "--netplay-input", str(host_pkni)], host_env, False, a.ticks)
     deadline = time.time() + 60
@@ -92,8 +104,12 @@ def main(argv=None):
         print("run_online_pair: the host wrote no code")
         hproc.kill()
         return 1
+    join_env = dict(impair)
+    if a.guest_leave_at:
+        join_env.update(PIKMIN_NETPLAY_TEST_KNOBS="1", PIKMIN_ONLINE_TEST_LEAVE_AT=str(a.guest_leave_at),
+                        PIKMIN_ONLINE_TEST_REJOIN_AT=str(a.guest_rejoin_at))
     jproc, jout = run_pair.launch(a.exe, join_run, ["--online-join", "@" + str(code_file), "--netplay-input",
-                                                    str(join_pkni)], impair, False, a.ticks)
+                                                    str(join_pkni)], join_env, False, a.ticks)
     rcs = run_pair.wait_all([("host", hproc), ("join", jproc)], a.ticks / 30.0 + 180)
     hout.close()
     jout.close()
@@ -103,7 +119,9 @@ def main(argv=None):
     for name, log in (("host", host_log), ("join", join_log)):
         print(f"run_online_pair: {name}: exit={rcs.get(name)}")
         for line in log.splitlines():
-            if line.startswith("[online]") and ("room" in line or "joined" in line or "ended" in line or "left" in line):
+            if line.startswith("[online]") and any(w in line for w in ("room", "joined", "ended", "left", "rules",
+                                                                         "pause", "test:", "spectat", "rejoin",
+                                                                         "back in")):
                 print(f"run_online_pair: {name}:   {line}")
         stats = STATS_RE.findall(log)
         if stats:

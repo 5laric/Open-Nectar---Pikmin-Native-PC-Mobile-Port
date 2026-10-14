@@ -1449,8 +1449,26 @@ Primera vertical funcionando (14-10-2026, Linux, dos procesos reales con
   una cinemática disparada en distinto momento en el invitado (demo04)
   provocó 34 snaps en 20 s y se recuperó sola al terminar (Fase 5:
   escenas/cinemáticas autoritativas);
-- [ ] cámaras/HUD por peer, pausa, reglas del host, espectador y
-  reincorporación;
+- [x] cámara/HUD por peer: cada proceso presenta su capitán (presentación
+  en dos pasadas del lockstep), comprobado con volcado de fotogramas;
+- [x] reglas del host: el invitado conecta al iniciar los ajustes y adopta
+  los ajustes de simulación del host (`SessionRules`) antes de leerlos;
+- [x] el host reenvía su input y el invitado lo aplica a su copia de P1 con
+  retardo: pausa, menús, silbato y lanzamientos se reproducen; con esto y
+  las reglas, el error medio del capitán del invitado bajo RTT ~180 ms y 5 %
+  de pérdida bajó de 7,6 a 0,06 unidades;
+- [x] pausa: el Start del host abre el menú también en el invitado (10 ticks
+  después, el retardo de reenvío); el Start del invitado llega al host como
+  input de P2. El cierre del menú puede diferir unos ticks porque lo dicta
+  el input del invitado: menús autoritativos en la Fase 5;
+- [x] espectador y reincorporación (`LeaveCoopRequest`/`RejoinRequest`/
+  `PlayerControlChanged`): P2 conserva su plaza con input inactivo y ve la
+  cámara del host; Start pide volver y el host lo concede sólo sin pausa,
+  menú ni cinemática. Comprobado: capitán de P2 inmóvil en el host durante
+  el modo espectador y cámaras correctas en los fotogramas;
+- [x] si el invitado se desconecta, el host sigue y P2 queda neutral;
+- [ ] entrada de interfaz para "Dejar cooperativo" (hoy API
+  `pc_netplay_online_request_leave` y ajustes de prueba);
 - [ ] Windows/Android reales y prueba de juego del mantenedor.
 
 Entregables:

@@ -3113,6 +3113,25 @@ struct OnlineState {
 	uint32_t lead = 1;
 	bool peerGone = false;
 	bool guestConnected = false;
+	// Host rules (SessionRules): the host's sim settings, adopted by the guest.
+	std::string rules;
+	bool rulesSeen = false;
+	// The host's own input, forwarded so the guest's copy of P1 also opens the
+	// pause menu, whistles or throws; its position still comes from the host.
+	nnet::InputReceiver hostInput;
+	std::vector<nnet::NetInputFrame> hostSent;
+	uint64_t hostInputNext = 0;
+	int lastPause = -1;
+	std::vector<uint64_t> testStartTicks; // TEST ONLY: host Start presses
+	// Spectator: P2 leaves co-op, keeps its slot and watches the host's
+	// captain; Start asks to rejoin, which the host grants at a safe tick.
+	bool spectator       = false; // both sides: P2 currently spectating
+	bool rejoinPending   = false; // host: a rejoin waits for a safe tick
+	bool leaveSent       = false; // guest
+	bool rejoinSent      = false; // guest
+	bool startWasDown    = false; // guest: Start edge while spectating
+	bool leaveRequested  = false; // guest: asked by the UI (pc_netplay_online_request_leave)
+	uint64_t testLeaveAt = 0, testRejoinAt = 0; // TEST ONLY, guest ticks
 };
 OnlineState* sOnline = nullptr;
 
@@ -3200,7 +3219,27 @@ void online_teardown()
 
 void online_setup()
 {
+	if (sOnline != nullptr) return; // the guest joined early, at settings init
 	sOnline = new OnlineState();
+	if (sCfg.isHost && env_is_one("PIKMIN_NETPLAY_TEST_KNOBS")) {
+		if (const char* list = getenv_nonempty("PIKMIN_ONLINE_TEST_START_AT")) {
+			for (const char* at = list; *at != '\0';) {
+				char* end = nullptr;
+				const unsigned long long v = strtoull(at, &end, 10);
+				if (end == at) break;
+				sOnline->testStartTicks.push_back(v);
+				at = *end == ',' ? end + 1 : end;
+			}
+			printf("[online] test: host presses Start at %zu tick(s)\n", sOnline->testStartTicks.size());
+		}
+	}
+	if (!sCfg.isHost && env_is_one("PIKMIN_NETPLAY_TEST_KNOBS")) {
+		sOnline->testLeaveAt  = read_u32_env("PIKMIN_ONLINE_TEST_LEAVE_AT", 0);
+		sOnline->testRejoinAt = read_u32_env("PIKMIN_ONLINE_TEST_REJOIN_AT", 0);
+		if (sOnline->testLeaveAt != 0)
+			printf("[online] test: guest leaves at %llu, asks to rejoin at %llu\n",
+			       (unsigned long long)sOnline->testLeaveAt, (unsigned long long)sOnline->testRejoinAt);
+	}
 	nnet::InputPolicy policy;
 	policy.continuousFlags = pc_input_log::kExtSwarm;
 	sOnline->receiver      = nnet::InputReceiver(policy);
@@ -3283,6 +3322,8 @@ bool online_decode(const nnet::TransportEvent& event, nnet::Message& message)
 	           == nnet::DecodeError::None;
 }
 
+void online_host_set_spectator(bool on, uint64_t tick);
+
 void online_host_events()
 {
 	nnet::TransportEvent event;
@@ -3299,6 +3340,10 @@ void online_host_events()
 			std::vector<nnet::NetInputFrame> frames;
 			if (nnet::decodeInputBundle(message.payload.data(), message.payload.size(), online_input_limits(), frames))
 				sOnline->receiver.receive(frames, sOnline->nextTick);
+		} else if (message.header.type == nnet::MessageType::LeaveCoopRequest && message.payload.empty()) {
+			if (!sOnline->spectator) online_host_set_spectator(true, sOnline->nextTick);
+		} else if (message.header.type == nnet::MessageType::RejoinRequest && message.payload.empty()) {
+			if (sOnline->spectator) sOnline->rejoinPending = true;
 		} else if (message.header.type == nnet::MessageType::Ping) {
 			nnet::PingPayload ping;
 			if (!nnet::decodePing(message.payload.data(), message.payload.size(), ping)) continue;
@@ -3337,6 +3382,29 @@ void online_guest_events()
 				sOnline->clock.addSample(pong, (std::uint64_t)now_ms());
 		} else if (message.header.type == nnet::MessageType::SceneStart) {
 			sOnline->hostStartSeen = true;
+		} else if (message.header.type == nnet::MessageType::PlayerControlChanged) {
+			if (message.payload.size() != 10 || message.payload[0] != 1 || message.payload[1] > 1) continue;
+			const bool on      = message.payload[1] == 1;
+			sOnline->spectator = on;
+			sOnline->leaveSent = sOnline->rejoinSent = false;
+			// The view follows the host's captain while spectating.
+			pc_netplay_present_set_local_player_default(on ? 0 : sLocalRole);
+			printf("[online] %s at host tick=%llu\n", on ? "spectating" : "back in co-op",
+			       (unsigned long long)message.header.simulationTick);
+			fflush(stdout);
+		} else if (message.header.type == nnet::MessageType::SessionRules) {
+			// Printable "key=value;" text, bounded; anything else is refused.
+			const std::vector<uint8_t>& text = message.payload;
+			bool printable = !text.empty() && text.size() <= 8192;
+			for (uint8_t ch : text) printable = printable && ch >= 0x20 && ch < 0x7f;
+			if (printable && !sOnline->rulesSeen) {
+				sOnline->rules.assign(text.begin(), text.end());
+				sOnline->rulesSeen = true;
+			}
+		} else if (message.header.type == nnet::MessageType::InputBundle) {
+			std::vector<nnet::NetInputFrame> frames;
+			if (nnet::decodeInputBundle(message.payload.data(), message.payload.size(), online_input_limits(), frames))
+				sOnline->hostInput.receive(frames, sOnline->hostInputNext);
 		} else if (message.header.type == nnet::MessageType::WorldDelta) {
 			uint8_t flags = 0;
 			std::vector<nnet::EntityRecord> records;
@@ -3373,6 +3441,10 @@ bool online_connect_pump()
 		if (sOnline->link->state() != nnet::TransportState::Connected) return false;
 		sOnline->startMs  = now;
 		sOnline->nextTick = 0;
+		// The session plays by the host's rules (sim settings).
+		const char* rules = pc_settings_netplay_config_text();
+		online_send(nnet::MessageType::SessionRules, 0,
+		            std::vector<uint8_t>(rules, rules + std::strlen(rules)), nnet::Delivery::ReliableOrdered);
 		online_send(nnet::MessageType::SceneStart, 0, nnet::encodeSceneStart({ kOnlineSceneEpoch, 0 }),
 		            nnet::Delivery::ReliableOrdered);
 		printf("[online] guest joined; host ticking\n");
@@ -3396,6 +3468,32 @@ bool online_connect_pump()
 	printf("[online] joined; rtt=%u ms jitter=%u ms\n", sOnline->clock.rttMs(), sOnline->clock.jitterMs());
 	fflush(stdout);
 	return true;
+}
+
+std::vector<uint8_t> online_control_payload(bool spectator, uint64_t tick)
+{
+	std::vector<uint8_t> out = { 1, (uint8_t)(spectator ? 1 : 0) };
+	for (int i = 7; i >= 0; --i) out.push_back((uint8_t)(tick >> (8 * i)));
+	return out;
+}
+
+void online_host_set_spectator(bool on, uint64_t tick)
+{
+	sOnline->spectator     = on;
+	sOnline->rejoinPending = false;
+	online_send(nnet::MessageType::PlayerControlChanged, tick, online_control_payload(on, tick),
+	            nnet::Delivery::ReliableOrdered);
+	printf("[online] P2 %s at tick=%llu\n", on ? "is spectating" : "rejoined", (unsigned long long)tick);
+	fflush(stdout);
+}
+
+void online_trace_pause(uint64_t tick)
+{
+	const int state = pc_online_pause_state();
+	if (state == sOnline->lastPause) return;
+	sOnline->lastPause = state;
+	printf("[online] pause tick=%llu state=0x%x\n", (unsigned long long)tick, (unsigned)state);
+	fflush(stdout);
 }
 
 void online_start()
@@ -3443,14 +3541,25 @@ bool online_turn(System* sys, BaseApp* app)
 		const uint64_t due = (uint64_t)((now - sOnline->startMs) / kOnlineSlotMs);
 		while (sOnline->nextTick <= due && advances < 2) {
 			const uint64_t tick = sOnline->nextTick;
-			const PcNetplayInput p0 = build_local_input();
+			PcNetplayInput p0   = build_local_input();
+			for (uint64_t at : sOnline->testStartTicks)
+				if (tick == at || tick == at + 1) p0.buttons |= PAD_BUTTON_START;
+			// A rejoin waits for gameplay: no pause menu, cutscene or overlay.
+			if (sOnline->rejoinPending && pc_online_pause_state() == 0) online_host_set_spectator(false, tick);
 			nnet::InputHealth health;
-			const nnet::NetInputFrame remote = sOnline->receiver.consume(tick, health);
+			nnet::NetInputFrame remote = sOnline->receiver.consume(tick, health);
+			if (sOnline->spectator) remote = nnet::NetInputFrame{}; // P2 keeps its slot, idle
 			if (health == nnet::InputHealth::Live) ++sOnline->live;
 			else if (health == nnet::InputHealth::Repeated) ++sOnline->repeated;
 			else ++sOnline->neutral;
 			if (!online_advance(sys, app, tick, p0, from_net_input(remote))) return true;
 			online_send_captains(tick);
+			if (!sOnline->hostSent.empty() && sOnline->hostSent.front().tick + 1 != tick) sOnline->hostSent.clear();
+			sOnline->hostSent.insert(sOnline->hostSent.begin(), to_net_input(p0, tick));
+			if (sOnline->hostSent.size() > nnet::kMaxInputFrames) sOnline->hostSent.pop_back();
+			online_send(nnet::MessageType::InputBundle, tick, nnet::encodeInputBundle(sOnline->hostSent),
+			            nnet::Delivery::Unreliable);
+			online_trace_pause(tick);
 			sOnline->nextTick = tick + 1;
 			++advances;
 			if (tick % 150 == 149) online_log(tick + 1);
@@ -3478,15 +3587,45 @@ bool online_turn(System* sys, BaseApp* app)
 		const uint64_t target = host + sOnline->lead;
 		const int cap = sOnline->nextTick + 30 < target ? 8 : 2; // catch up fast after joining
 		while (sOnline->nextTick <= target && advances < cap) {
-			const uint64_t tick     = sOnline->nextTick;
-			const PcNetplayInput p1 = build_local_input();
+			const uint64_t tick = sOnline->nextTick;
+			PcNetplayInput p1   = build_local_input();
+			if ((sOnline->leaveRequested || (sOnline->testLeaveAt != 0 && tick == sOnline->testLeaveAt))
+			    && !sOnline->spectator && !sOnline->leaveSent) {
+				online_send(nnet::MessageType::LeaveCoopRequest, tick, {}, nnet::Delivery::ReliableOrdered);
+				sOnline->leaveSent      = true;
+				sOnline->leaveRequested = false;
+			}
+			if (sOnline->spectator) {
+				const bool startDown = (p1.buttons & PAD_BUTTON_START) != 0;
+				const bool testRejoin = sOnline->testRejoinAt != 0 && tick == sOnline->testRejoinAt;
+				if (((startDown && !sOnline->startWasDown) || testRejoin) && !sOnline->rejoinSent) {
+					online_send(nnet::MessageType::RejoinRequest, tick, {}, nnet::Delivery::ReliableOrdered);
+					sOnline->rejoinSent = true;
+				}
+				sOnline->startWasDown = startDown;
+				p1                    = pc_netplay_input_neutral(); // a spectator does not play
+			}
 			// Redundant input: this tick and up to five before it, consecutive.
 			if (!sOnline->sent.empty() && sOnline->sent.front().tick + 1 != tick) sOnline->sent.clear();
 			sOnline->sent.insert(sOnline->sent.begin(), to_net_input(p1, tick));
 			if (sOnline->sent.size() > nnet::kMaxInputFrames) sOnline->sent.pop_back();
 			online_send(nnet::MessageType::InputBundle, tick, nnet::encodeInputBundle(sOnline->sent),
 			            nnet::Delivery::Unreliable);
-			if (!online_advance(sys, app, tick, pc_netplay_input_neutral(), p1)) return true;
+			// P1 plays the host's forwarded input, late by about one way plus
+			// the lead; consumed in order even when the delay changes.
+			PcNetplayInput p0      = pc_netplay_input_neutral();
+			const uint64_t delayTicks = sOnline->lead + (sOnline->clock.rttMs() / 2 + 32) / 33 + 1;
+			if (tick >= delayTicks) {
+				const uint64_t want = std::max(tick - delayTicks, sOnline->hostInputNext);
+				if (want <= tick) {
+					nnet::InputHealth hostHealth;
+					const nnet::NetInputFrame hostFrame = sOnline->hostInput.consume(want, hostHealth);
+					sOnline->hostInputNext             = want + 1;
+					if (hostHealth != nnet::InputHealth::Neutral) p0 = from_net_input(hostFrame);
+				}
+			}
+			if (!online_advance(sys, app, tick, p0, p1)) return true;
+			online_trace_pause(tick);
 			// Own captain: apply any pending correction, then remember the prediction.
 			bool snapped           = false;
 			const nnet::Vec3 offset = sOnline->corrector.step(snapped);
@@ -3821,4 +3960,48 @@ bool pc_netplay_session_drive(System* sys, BaseApp* app)
 	adaptive_note_turn_end(advances > 0, haveDue, nextDueMs);
 	adaptive_poll(now_ms());
 	return true;
+}
+
+// Online guest: joins before the settings are read and returns the host's
+// sim settings to adopt (pc_netplay_launch_post_settings). Null otherwise.
+const char* pc_netplay_session_online_rules(void)
+{
+#if PC_ONLINE
+	if (!sInitialised || !sCfg.online || sCfg.isHost) return nullptr;
+	online_setup();
+	const double deadline = now_ms() + 30000.0;
+	while (!sOnline->rulesSeen) {
+		online_guest_events();
+		if (sOnline->peerGone) std::exit(npx::kRefused);
+		if (now_ms() > deadline) {
+			printf("[online] the host sent no rules within 30 s\n");
+			fflush(stdout);
+			std::exit(npx::kRefused);
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	printf("[online] adopting the host's rules (%zu B)\n", sOnline->rules.size());
+	fflush(stdout);
+	return sOnline->rules.c_str();
+#else
+	return nullptr;
+#endif
+}
+
+// UI entry points for the online guest: leave co-op (keep the slot and
+// watch the host) and query the state. Start asks to rejoin.
+void pc_netplay_online_request_leave(void)
+{
+#if PC_ONLINE
+	if (sOnline != nullptr && !sCfg.isHost) sOnline->leaveRequested = true;
+#endif
+}
+
+bool pc_netplay_online_spectating(void)
+{
+#if PC_ONLINE
+	return sOnline != nullptr && sOnline->spectator;
+#else
+	return false;
+#endif
 }

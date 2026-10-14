@@ -408,6 +408,11 @@ void pc_netplay_launch_post_settings(void)
 		pc_settings_netplay_session_begin(replay);
 		return;
 	}
+	// The online guest plays by the host's rules, received over the link.
+	if (const char* rules = pc_netplay_session_online_rules()) {
+		pc_settings_netplay_session_begin(rules);
+		return;
+	}
 	if (!sSetup.active) return;
 	// The joiner adopts the host's sim settings before anything reads one.
 	pc_settings_netplay_session_begin(sSetup.isHost ? nullptr : sSetup.configText.c_str());

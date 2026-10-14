@@ -16,3 +16,6 @@ bool pc_online_write_captain(int player, const PcOnlineCaptain& in);
 // Moves the captain by an offset (prediction correction); with
 // resetVelocity also stops it, for snaps.
 bool pc_online_nudge_captain(int player, float dx, float dy, float dz, bool resetVelocity);
+// Diagnostics: GameCoreSection's pause flags in the low 16 bits, bit 16 set
+// while a screen is drawn over gameplay (pause menu, ship text...).
+int pc_online_pause_state(void);
