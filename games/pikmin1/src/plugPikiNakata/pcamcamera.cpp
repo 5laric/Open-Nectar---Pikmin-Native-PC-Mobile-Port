@@ -7,6 +7,7 @@
 #include "Navi.h"
 #include "netplay/pc_netplay_camlead.h"
 #include "netplay/pc_netplay_det.h"
+#include "netplay/pc_input_log.h"
 #endif
 #include "Creature.h"
 #include "DebugLog.h"
@@ -303,10 +304,10 @@ void PcamCamera::control(Controller& controller)
 #if defined(PIKI_PC_PORT)
 	// Netplay: the camera is local view state, but the cursor is sim. The
 	// drag rotation of the cursor would move the sim from a local mouse or
-	// touch drag, so deterministic mode leaves the cursor alone there (the
-	// camera still turns). The L1 recentre is a synced pad click on the
-	// captain's own Kontroller and moves the cursor from sim state only, so
-	// it stays.
+	// touch drag, so deterministic mode sends it through the synced input
+	// instead (the camera still turns at once). The L1 recentre is a synced
+	// pad click on the captain's own Kontroller and moves the cursor from sim
+	// state only, so it stays.
 	const bool detMode = pc_netplay_deterministic();
 	// Cámara libre: L1 la devuelve detrás del capitán, y el cursor (que ha
 	// girado con ella) vuelve también delante de él (issue #74).
@@ -348,6 +349,9 @@ void PcamCamera::control(Controller& controller)
 		// mismo sitio de la pantalla: si no, se quedaba fijo en el mundo y,
 		// con la cámara girada, apuntaba a otro lado (issue #74).
 #if defined(PIKI_PC_PORT)
+		if (detMode && dragRoute == 1) {
+			pc_input_log_local_rotate_add(cameraDrag * 3.2f);
+		}
 		if (!detMode && mTargetCreature && mTargetCreature->mObjType == OBJTYPE_Navi) {
 #else
 		if (mTargetCreature && mTargetCreature->mObjType == OBJTYPE_Navi) {

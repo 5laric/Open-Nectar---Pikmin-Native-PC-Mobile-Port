@@ -1167,12 +1167,11 @@ void Navi::postUpdate(int unused, f32 deltaTime)
 void Navi::pcUpdateBombCommand()
 {
 	// Se consume siempre, como Lock-On, para que no salte sola al activarlo.
-	const bool pressed = pc_window_take_bomb_press(mNaviID == 1 ? 1 : 0);
-	// Netplay: the Bomb button lives outside PADStatus, so deterministic mode
-	// drains and ignores it.
-	if (pc_netplay_deterministic()) {
-		return;
-	}
+	// Netplay: deterministic mode takes the press from this captain's synced
+	// input instead (the session drains the local queue into it).
+	const bool detMode = pc_netplay_deterministic();
+	const bool pressed = detMode ? (pc_netplay_ext_bits(mNaviID) & pc_input_log::kExtBomb) != 0
+	                             : pc_window_take_bomb_press(mNaviID == 1 ? 1 : 0);
 	if (!pressed || !pc_settings_get_bomb_control() || !pikiMgr) {
 		return;
 	}
@@ -1231,6 +1230,10 @@ void Navi::pcUpdateBombCommand()
 
 	ActPutBomb* act = static_cast<ActPutBomb*>(piki->mActiveAction->mChildActions[PikiAction::PutBomb].mAction);
 	act->pcCommand(throwIt, target);
+	if (detMode && pc_netplay_ext_trace()) {
+		printf("[EXT] tick=%u navi=%d bomb command: %s piki at (%.1f %.1f) to (%.1f %.1f)\n", pc_netplay_tick(), mNaviID,
+		       throwIt ? "throw" : "drop", piki->mSRT.t.x, piki->mSRT.t.z, target.x, target.z);
+	}
 }
 
 /**
@@ -1348,19 +1351,16 @@ void Navi::pcUpdateLockOn()
 {
 	// Se consume siempre, esté activo el mod o no, para que una pulsación no
 	// quede encolada y salte sola al activarlo.
-	const bool lockPressed   = pc_window_take_lockon_press();
-	const bool chargePressed = pc_window_take_swarm_press();
+	// Netplay: deterministic mode takes both presses from this captain's
+	// synced input, and every captain may lock (each PC plays its own). The
+	// target comes from the sim cursor and the managers' order only.
+	const bool detMode       = pc_netplay_deterministic();
+	const uint8_t ext        = detMode ? pc_netplay_ext_bits(mNaviID) : 0;
+	const bool lockPressed   = detMode ? (ext & pc_input_log::kExtLockOn) != 0 : pc_window_take_lockon_press();
+	const bool chargePressed = detMode ? (ext & pc_input_log::kExtCharge) != 0 : pc_window_take_swarm_press();
 	const int mode           = pc_settings_get_lock_on();
-
-	// Netplay: the lock-on and charge presses live outside PADStatus, and the
-	// automatic mode follows the local cursor, so deterministic mode drains
-	// them and never locks.
-	if (pc_netplay_deterministic()) {
-		mPcLockTarget = nullptr;
-		mPcLockIgnore = nullptr;
-		pc_settings_note_lock_on(0);
-		return;
-	}
+	const bool extTrace      = detMode && pc_netplay_ext_trace();
+	Creature* const lockBefore = mPcLockTarget;
 
 	static const bool kDebug = getenv("NECTAR_LOCKON_DEBUG") != nullptr;
 	if (kDebug && lockPressed) {
@@ -1369,7 +1369,7 @@ void Navi::pcUpdateLockOn()
 		fflush(stderr);
 	}
 
-	if (!mode || mNaviID != 0) {
+	if (!mode || (mNaviID != 0 && !detMode)) {
 		mPcLockTarget = nullptr;
 		mPcLockIgnore = nullptr;
 		pc_settings_note_lock_on(0);
@@ -1459,6 +1459,14 @@ void Navi::pcUpdateLockOn()
 		mPcAimOffset    = mCursorPosition;
 		mPcPinnedOffset = mCursorPosition;
 	}
+	if (extTrace && mPcLockTarget != lockBefore) {
+		if (mPcLockTarget) {
+			printf("[EXT] tick=%u navi=%d lock acquired: type %d at (%.1f %.1f)\n", pc_netplay_tick(), mNaviID,
+			       (int)mPcLockTarget->mObjType, mPcLockTarget->mSRT.t.x, mPcLockTarget->mSRT.t.z);
+		} else {
+			printf("[EXT] tick=%u navi=%d lock released\n", pc_netplay_tick(), mNaviID);
+		}
+	}
 
 	pc_settings_note_lock_on(mPcLockTarget != nullptr);
 
@@ -1470,6 +1478,10 @@ void Navi::pcUpdateLockOn()
 	}
 	if (chargePressed) {
 		mPcChargeTime = 2.5f;
+		if (extTrace) {
+			printf("[EXT] tick=%u navi=%d charge started at type %d\n", pc_netplay_tick(), mNaviID,
+			       (int)mPcLockTarget->mObjType);
+		}
 	}
 	if (mPcChargeTime <= 0.0f) {
 		return;
@@ -1483,6 +1495,7 @@ void Navi::pcUpdateLockOn()
 	const bool last      = mPcChargeTime <= 0.0f;
 	const Vector3f goal  = mPcLockTarget->getCentre();
 	const f32 reach      = pc_lock_target_radius(mPcLockTarget) + 40.0f;
+	int charged          = 0;
 	Iterator iterPiki(pikiMgr);
 	CI_LOOP(iterPiki)
 	{
@@ -1498,7 +1511,11 @@ void Navi::pcUpdateLockOn()
 		const f32 dz = piki->mSRT.t.z - goal.z;
 		if (last || dx * dx + dz * dz < reach * reach) {
 			piki->pcChargeAt(mPcLockTarget);
+			++charged;
 		}
+	}
+	if (extTrace && charged > 0) {
+		printf("[EXT] tick=%u navi=%d charge released %d pikmin\n", pc_netplay_tick(), mNaviID, charged);
 	}
 }
 #endif
@@ -2180,12 +2197,33 @@ void Navi::pcPinCursorFirstPerson()
 	mCursorNaviDist       = reach;
 }
 
+#if defined(PIKI_PC_PORT)
+// Netplay: in deterministic mode the free-camera drag's cursor rotation is
+// this captain's synced input (the camera only notes it, PcamCamera::control).
+static void pcApplySyncedCursorRotate(Navi* navi)
+{
+	if (!pc_netplay_deterministic()) {
+		return;
+	}
+	const uint8_t ext  = pc_netplay_ext_bits(navi->mNaviID);
+	const int16_t turn = pc_netplay_ext_cursor_rotate(navi->mNaviID);
+	if (turn != 0) {
+		navi->pcRotateCursor((f32)turn * pc_input_log::kYawTurnsToRad);
+	}
+	if (pc_netplay_ext_trace() && ((ext & ~pc_input_log::kExtSwarm) != 0 || turn != 0)) {
+		printf("[EXT] tick=%u navi=%d input ext=0x%02x rotate=%d cursor=(%.2f %.2f)\n", pc_netplay_tick(), navi->mNaviID,
+		       (unsigned)ext, (int)turn, navi->mCursorPosition.x, navi->mCursorPosition.z);
+	}
+}
+#endif
+
 void Navi::update()
 {
 #if defined(PIKI_PC_PORT)
 	PcAudioSource audioSource(mNaviID); // whose sounds these are (netplay audio ownership)
 #endif
 #if defined(PIKI_PC_PORT)
+	pcApplySyncedCursorRotate(this);
 	pcUpdateLockOn();
 	pcUpdateBombCommand();
 #endif
@@ -3573,9 +3611,10 @@ void Navi::makeCStick(bool isSunset)
 	// Con el Charge activo el botón de swarm pasa a lanzar la carga contra el
 	// objetivo fijado, así que aquí deja de dirigir al pelotón.
 	const bool swarmIsCharge = pc_settings_get_charge() != 0;
-	// Netplay: the held swarm button lives outside PADStatus, so
-	// deterministic mode treats it as released.
-	const bool swarmHeld = !pc_netplay_deterministic() && (mNaviID == 0 ? pc_window_swarm_held() : pc_window_swarm_held_p2());
+	// Netplay: deterministic mode takes the held swarm button from this
+	// captain's synced input.
+	const bool swarmHeld = pc_netplay_deterministic() ? (pc_netplay_ext_bits(mNaviID) & pc_input_log::kExtSwarm) != 0
+	                                                  : (mNaviID == 0 ? pc_window_swarm_held() : pc_window_swarm_held_p2());
 	// Durante el Charge el empuje va al objetivo fijado en vez de al cursor.
 	const bool charging = mPcChargeTime > 0.0f && mPcLockTarget;
 	// Con el Charge activo el botón solo carga si hay a quién: sin objetivo
@@ -3827,7 +3866,7 @@ void Navi::refresh(Graphics& gfx)
 #if defined(PIKI_PC_PORT)
 		// Lock-On: el aro del cursor se sustituye por uno propio alrededor del
 		// objetivo (pcDrawLockRing), de trazo fijo sea cual sea su tamaño.
-		const bool pcLocked = mPcLockTarget && pc_settings_get_lock_on() && mNaviID == 0;
+		const bool pcLocked = mPcLockTarget && pc_settings_get_lock_on() && (mNaviID == 0 || pc_netplay_deterministic());
 #endif
 
 		// Estela: emite mientras el cursor se desplaza; quieto, deja de emitir

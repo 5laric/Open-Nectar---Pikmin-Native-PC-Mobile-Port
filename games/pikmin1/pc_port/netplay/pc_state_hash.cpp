@@ -130,6 +130,14 @@ uint64_t hashNavi(void)
 		mixF32(h, n->mHealth);
 		AState<Navi>* st = n->getCurrState();
 		mixS32(h, st != nullptr ? (int32_t)st->getID() : (int32_t)-1);
+		// Lock-On / Charge: mixed only while in use, so a session that never
+		// locks hashes exactly as before.
+		if (n->mPcLockTarget != nullptr || n->mPcChargeTime > 0.0f) {
+			mixS32(h, n->mPcLockTarget != nullptr ? (int32_t)n->mPcLockTarget->mObjType : (int32_t)-1);
+			if (n->mPcLockTarget != nullptr) mixVec(h, n->mPcLockTarget->mSRT.t);
+			mixF32(h, n->mPcChargeTime);
+			mixVec(h, n->mPcAimOffset);
+		}
 	}
 	return h;
 }

@@ -2,6 +2,9 @@
 #if defined(PIKI_PC_PORT)
 #include "pc_coop.h"
 #include "pc_speedrun.h"
+#include "netplay/pc_input_log.h"
+#include "netplay/pc_netplay_det.h"
+#include <cstdio>
 #endif
 #include "BaseInf.h"
 #include "BombItem.h"
@@ -495,6 +498,11 @@ void BombAI::BombInit::act(AICreature* item)
 	if (item->mObjType != OBJTYPE_Bomb) {
 		ERROR("this is not bomb %s\n", "bombinit");
 	}
+#if defined(PIKI_PC_PORT)
+	if (pc_netplay_deterministic() && pc_netplay_ext_trace()) {
+		printf("[EXT] tick=%u bomb exploded at (%.1f %.1f)\n", pc_netplay_tick(), item->mSRT.t.x, item->mSRT.t.z);
+	}
+#endif
 	CndBombable cnd;
 	f32 maxRange = pikiMgr->mPikiParms->mPikiParms.mBombExplodeRadius();
 	f32 unused   = pikiMgr->mPikiParms->mPikiParms.mBombDamageBomb();
