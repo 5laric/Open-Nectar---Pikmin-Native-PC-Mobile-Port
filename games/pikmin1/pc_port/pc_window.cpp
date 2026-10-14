@@ -1197,7 +1197,7 @@ void pc_window_poll_events(PADStatus* pad) {
                     printf("[PC Port] Mouse relative mode: OFF (Escape)\n");
                 }
                 // Cycle control modes with F2 key
-                if (event.key.keysym.scancode == SDL_SCANCODE_F2 && !sSettingsMenuOpen) {
+                if (event.key.keysym.scancode == SDL_SCANCODE_F2 && !event.key.repeat && !sSettingsMenuOpen) {
                     pc_window_set_control_mode((sControlMode + 1) % 2);
                     const char* modeNames[] = {"Classic", "Mouse Cursor"};
                     printf("[PC Port] Control mode: %s\n", modeNames[sControlMode]);
