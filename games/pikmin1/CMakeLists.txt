@@ -645,7 +645,7 @@ set_target_properties(${NECTAR_GAME} PROPERTIES
     OUTPUT_NAME "${NECTAR_OUTPUT_NAME}"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
-if (NOT ANDROID)
+if (NOT ANDROID AND NOT WIN32)
     add_custom_command(TARGET ${NECTAR_GAME} POST_BUILD
         COMMAND /bin/chmod 775 "$<TARGET_FILE:${NECTAR_GAME}>"
         COMMENT "Ensuring the native Pikmin executable is runnable")

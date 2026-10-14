@@ -66,8 +66,9 @@
 #    define GL_STACK_UNDERFLOW 0x0504
 #  endif
 #else
-#  include <GL/gl.h>
-#  include <GL/glext.h>
+// SDL's headers avoid the legacy gl/gl.h stubs shadowing system GL on
+// case-insensitive Windows filesystems.
+#  include <SDL_opengl.h>
 #endif
 
 // Red de seguridad: si alguna cabecera del sistema acabara arrastrando
