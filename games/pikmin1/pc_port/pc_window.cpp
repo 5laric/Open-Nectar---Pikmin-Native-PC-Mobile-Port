@@ -244,10 +244,12 @@ static bool sPadDpadDownHeld[2] = { false, false };
 static bool sLockOnWasDown = false;
 static bool sFirstPersonWasDown = false;
 static bool sGyroRecenterWasDown = false;
-static bool sSwarmWasDown  = false;
-static bool sLockOnPending = false;
-static bool sBombPending[2] = { false, false }; // mod "Bomb Control", por jugador
-static bool sSwarmPending  = false;
+static bool sSwarmWasDown[2]  = { false, false };
+// Pulsaciones encoladas por jugador (0/1): en cooperativo cada capitán tiene
+// sus mods Lock-On, Charge y Bomb Control.
+static bool sLockOnPending[2] = { false, false };
+static bool sBombPending[2]   = { false, false };
+static bool sSwarmPending[2]  = { false, false };
 
 bool pc_window_swarm_held(void) { return sSwarmHeld; }
 
@@ -1052,6 +1054,10 @@ static bool pc_window_read_gamepad(SDL_GameController* ctl, u16& button, s8& sti
         const bool bombDown = boundButtonPressed(PC_KEY_ACT_BOMB);
         if (bombDown && !sBombPadWasDown[pi]) sBombPending[pi] = true;
         sBombPadWasDown[pi] = bombDown;
+        static bool sLockPadWasDown[2] = { false, false };
+        const bool lockDown = boundButtonPressed(PC_KEY_ACT_LOCKON);
+        if (lockDown && !sLockPadWasDown[pi]) sLockOnPending[pi] = true;
+        sLockPadWasDown[pi] = lockDown;
     }
 
     const int noticeZone = axisDeadZone < 16384 ? 16384 : axisDeadZone;
@@ -1336,10 +1342,8 @@ void pc_window_poll_events(PADStatus* pad) {
 
     {
         const bool lockDown = held(PC_KEY_ACT_LOCKON);
-        if (lockDown && !sLockOnWasDown) sLockOnPending = true;
+        if (lockDown && !sLockOnWasDown) sLockOnPending[sKeyboardOwner == 1 ? 1 : 0] = true;
         sLockOnWasDown = lockDown;
-        if (sSwarmHeld && !sSwarmWasDown) sSwarmPending = true;
-        sSwarmWasDown = sSwarmHeld;
         // Este no se encola: entra y sale de la vista en el acto.
         const bool fpDown = held(PC_KEY_ACT_FIRSTPERSON);
         if (fpDown && !sFirstPersonWasDown) pc_first_person_toggle_for(sKeyboardOwner);
@@ -1366,6 +1370,9 @@ void pc_window_poll_events(PADStatus* pad) {
         usedGamepad = pc_window_read_gamepad(sController, button, stickX, stickY, substickX, substickY,
                                              triggerL, triggerR, sSwarmHeld);
     }
+    // Flanco del swarm de P1 una vez juntos teclado y mando (Charge).
+    if (sSwarmHeld && !sSwarmWasDown[0]) sSwarmPending[0] = true;
+    sSwarmWasDown[0] = sSwarmHeld;
     if (usedGamepad)
         sLastInputIsGamepad = true;
     else if (usedKeyboard)
@@ -1503,6 +1510,8 @@ void pc_window_poll_events(PADStatus* pad) {
         pad[1].triggerLeft  = tl2;
         pad[1].triggerRight = tr2;
     }
+    if (sSwarmHeldP2 && !sSwarmWasDown[1]) sSwarmPending[1] = true;
+    sSwarmWasDown[1] = sSwarmHeldP2;
 #if defined(PIKI_PC_PORT) && defined(PIKI_PC_SETTINGS_MENU)
     // While the settings menu is open, consume the pad so the game underneath
     // does not react to the same input.
@@ -1799,10 +1808,22 @@ void pc_window_discard_button_presses(void) { sLastPressTaken = sLastPressSerial
 
 bool pc_window_swarm_held_p2(void) { return sSwarmHeldP2; }
 
-bool pc_window_take_lockon_press(void) { const bool v = sLockOnPending; sLockOnPending = false; return v; }
-bool pc_window_take_swarm_press(void) { const bool v = sSwarmPending; sSwarmPending = false; return v; }
+bool pc_window_take_lockon_press(int player)
+{
+    const int pi = player == 1 ? 1 : 0;
+    const bool v = sLockOnPending[pi];
+    sLockOnPending[pi] = false;
+    return v;
+}
+bool pc_window_take_swarm_press(int player)
+{
+    const int pi = player == 1 ? 1 : 0;
+    const bool v = sSwarmPending[pi];
+    sSwarmPending[pi] = false;
+    return v;
+}
 
-void pc_window_request_lockon_press(void) { sLockOnPending = true; }
+void pc_window_request_lockon_press(int player) { sLockOnPending[player == 1 ? 1 : 0] = true; }
 bool pc_window_take_bomb_press(int player)
 {
     const int pi = player == 1 ? 1 : 0;
@@ -1811,7 +1832,7 @@ bool pc_window_take_bomb_press(int player)
     return v;
 }
 void pc_window_request_firstperson_press(void) { pc_first_person_toggle(); }
-void pc_window_request_charge_press(void) { sSwarmPending = true; }
+void pc_window_request_charge_press(int player) { sSwarmPending[player == 1 ? 1 : 0] = true; }
 void pc_window_request_bomb_press(int player) { sBombPending[player == 1 ? 1 : 0] = true; }
 
 // Control mode functions

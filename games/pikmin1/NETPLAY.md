@@ -72,8 +72,9 @@ game files of another version, is refused (`handshake refused: vsmap`).
 - The Bomb, Lock-On and Charge buttons, the Swarm button and turning the
   cursor with a mouse, touch or stick camera drag travel with each player's
   input, so they work online in co-op and VS (Bomb Control, Lock-On and Charge
-  come from the host's settings). Online every captain can lock on, not only
-  P1. A press reaches the game a couple of frames later, like every button.
+  come from the host's settings). Every captain can lock on and charge, online
+  and in local co-op. A press reaches the game a couple of frames later, like
+  every button.
 - Not online yet (left out on purpose, so both games stay in step): the mouse
   wheel and touch icon colour pickers (the D-pad still picks the colour) and
   the F5-F8 debug keys.

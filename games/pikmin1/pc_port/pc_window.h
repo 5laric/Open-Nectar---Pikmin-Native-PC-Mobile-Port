@@ -89,16 +89,17 @@ bool pc_window_swarm_held_p2(void);
 bool pc_window_pad_dpad_down_held(int player);
 /// Eje vertical del stick derecho con Free Camera activo (zoom del radar).
 float pc_window_free_camera_sub_y(void);
-/// Flanco de subida: true una sola vez por pulsación, y se consume al leerlo.
-bool pc_window_take_lockon_press(void);
+/// Flanco de subida del Lock-On de ese jugador (0/1): true una vez por
+/// pulsación, y se consume al leerlo.
+bool pc_window_take_lockon_press(int player);
 // Mod "Bomb Control": pulsación del botón Bomb de ese jugador (0/1), consumida.
 bool pc_window_take_bomb_press(int player);
-/// Flanco del botón de swarm: con el Charge activo es el que lanza la carga.
-bool pc_window_take_swarm_press(void);
+/// Flanco del botón de swarm de ese jugador: con el Charge activo lanza la carga.
+bool pc_window_take_swarm_press(int player);
 /// Inyecta la pulsación desde la capa táctil, que no pasa por los bindings.
-void pc_window_request_lockon_press(void);
+void pc_window_request_lockon_press(int player);
 void pc_window_request_firstperson_press(void);
-void pc_window_request_charge_press(void);
+void pc_window_request_charge_press(int player);
 /// Botón táctil de la bomba (mod Bomb Control): como pulsar Bomb.
 void pc_window_request_bomb_press(int player);
 // Name for either kind of binding ("Mouse 4", "Space", ...).

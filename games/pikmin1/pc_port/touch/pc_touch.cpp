@@ -706,8 +706,8 @@ void pc_touch_on_finger(long long fingerId, PcTouchPhase phase, float x, float y
 				if (btn == BTN_LAYOUT && sGameMenuClaimFrames <= 0) sLayoutRequested = true;
 				// Modo foto: el mismo conmutador que F3 en escritorio.
 				if (btn == BTN_PHOTO && sGameMenuClaimFrames <= 0) pc_photo_mode_request_toggle();
-				if (btn == BTN_LOCKON && sGameMenuClaimFrames <= 0) pc_window_request_lockon_press();
-				if (btn == BTN_CHARGE && sGameMenuClaimFrames <= 0) pc_window_request_charge_press();
+				if (btn == BTN_LOCKON && sGameMenuClaimFrames <= 0) pc_window_request_lockon_press(0);
+				if (btn == BTN_CHARGE && sGameMenuClaimFrames <= 0) pc_window_request_charge_press(0);
 #if !PIKI_P2_HOST
 				if (btn == BTN_BOMB && sGameMenuClaimFrames <= 0) pc_window_request_bomb_press(0);
 #endif

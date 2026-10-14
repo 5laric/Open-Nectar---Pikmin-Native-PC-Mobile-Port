@@ -747,8 +747,8 @@ void take_local_ext(uint8_t* ext, int16_t* rotate)
 {
 	uint8_t e = 0;
 	if (pc_window_take_bomb_press(0) | pc_window_take_bomb_press(1)) e |= pc_input_log::kExtBomb;
-	if (pc_window_take_lockon_press()) e |= pc_input_log::kExtLockOn;
-	if (pc_window_take_swarm_press()) e |= pc_input_log::kExtCharge;
+	if (pc_window_take_lockon_press(0) | pc_window_take_lockon_press(1)) e |= pc_input_log::kExtLockOn;
+	if (pc_window_take_swarm_press(0) | pc_window_take_swarm_press(1)) e |= pc_input_log::kExtCharge;
 	if (pc_window_swarm_held() || pc_window_swarm_held_p2()) e |= pc_input_log::kExtSwarm;
 	*ext    = e;
 	*rotate = pc_input_log_local_rotate_take();

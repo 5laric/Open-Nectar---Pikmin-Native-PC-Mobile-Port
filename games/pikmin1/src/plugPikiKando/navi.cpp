@@ -1351,13 +1351,14 @@ void Navi::pcUpdateLockOn()
 {
 	// Se consume siempre, esté activo el mod o no, para que una pulsación no
 	// quede encolada y salte sola al activarlo.
+	// Cada capitán tiene su propio Lock-On y Charge, en local y online.
 	// Netplay: deterministic mode takes both presses from this captain's
-	// synced input, and every captain may lock (each PC plays its own). The
-	// target comes from the sim cursor and the managers' order only.
+	// synced input. The target comes from the sim cursor and the managers'
+	// order only.
 	const bool detMode       = pc_netplay_deterministic();
 	const uint8_t ext        = detMode ? pc_netplay_ext_bits(mNaviID) : 0;
-	const bool lockPressed   = detMode ? (ext & pc_input_log::kExtLockOn) != 0 : pc_window_take_lockon_press();
-	const bool chargePressed = detMode ? (ext & pc_input_log::kExtCharge) != 0 : pc_window_take_swarm_press();
+	const bool lockPressed   = detMode ? (ext & pc_input_log::kExtLockOn) != 0 : pc_window_take_lockon_press(mNaviID);
+	const bool chargePressed = detMode ? (ext & pc_input_log::kExtCharge) != 0 : pc_window_take_swarm_press(mNaviID);
 	const int mode           = pc_settings_get_lock_on();
 	const bool extTrace      = detMode && pc_netplay_ext_trace();
 	Creature* const lockBefore = mPcLockTarget;
@@ -1369,7 +1370,7 @@ void Navi::pcUpdateLockOn()
 		fflush(stderr);
 	}
 
-	if (!mode || (mNaviID != 0 && !detMode)) {
+	if (!mode) {
 		mPcLockTarget = nullptr;
 		mPcLockIgnore = nullptr;
 		pc_settings_note_lock_on(0);
@@ -3877,7 +3878,7 @@ void Navi::refresh(Graphics& gfx)
 #if defined(PIKI_PC_PORT)
 		// Lock-On: el aro del cursor se sustituye por uno propio alrededor del
 		// objetivo (pcDrawLockRing), de trazo fijo sea cual sea su tamaño.
-		const bool pcLocked = mPcLockTarget && pc_settings_get_lock_on() && (mNaviID == 0 || pc_netplay_deterministic());
+		const bool pcLocked = mPcLockTarget && pc_settings_get_lock_on();
 #endif
 
 		// Estela: emite mientras el cursor se desplaza; quieto, deja de emitir
