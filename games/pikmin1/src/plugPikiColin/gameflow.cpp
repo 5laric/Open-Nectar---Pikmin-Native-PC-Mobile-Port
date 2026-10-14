@@ -26,6 +26,9 @@
 #if defined(PIKI_PC_PORT)
 #include "settings/pc_settings.h"
 extern "C" float pc_gfx_get_current_aspect_ratio(void);
+// Netplay stage-load hook (pc_netplay_loadguard.h): strong-defined by
+// pc_netplay_session.cpp in netplay builds only, null otherwise.
+__attribute__((weak)) void pc_netplay_on_stage_load(void);
 #endif
 
 /// Global game state.
@@ -699,6 +702,10 @@ void GameFlow::hardReset(BaseApp* baseApp)
  */
 void GameFlow::softReset()
 {
+#if defined(PIKI_PC_PORT)
+	// The synchronous stage load below blocks the netplay network pump.
+	if (pc_netplay_on_stage_load != nullptr) pc_netplay_on_stage_load();
+#endif
 	// make sure we don't debug-print all this while soft-resetting.
 	BOOL togglePrint   = gsys->mTogglePrint;
 	gsys->mTogglePrint = TERNARY_DEVELOP(TRUE, FALSE);

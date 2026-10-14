@@ -150,6 +150,12 @@ SDL_GameController* pc_window_get_controller_p2(void);
 int  pc_window_num_gamepads(void);
 void pc_window_input_reset_assignment(void);
 void pc_window_input_assign(int player, int kind, int gamepadId);
+#if defined(PIKI_PC_PORT)
+// Netplay builds (--netplay-input): ignore every key and/or every gamepad,
+// and bind a player to the index-th open gamepad (resolved on hotplug).
+void pc_window_set_netplay_input_filter(bool ignoreKeyboard, bool ignoreGamepads);
+void pc_window_set_netplay_gamepad(int player, int index);
+#endif
 int  pc_window_input_get_assignment(int player, int* gamepadId);
 // Jugador (0/1) que tiene el teclado; el ratón va con él.
 int  pc_window_get_keyboard_owner(void);

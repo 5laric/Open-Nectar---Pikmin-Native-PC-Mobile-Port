@@ -297,6 +297,12 @@ void System::waitRetrace()
  * @todo: Documentation
  */
 #if PIKI_PC_PORT
+// Netplay lockstep session: strong-defined by pc_netplay_session.cpp in
+// netplay builds only. Null in the default build, so the loop below runs the
+// normal path there.
+class BaseApp;
+__attribute__((weak)) bool pc_netplay_session_drive(System* sys, BaseApp* app);
+
 // Read once; see the call site below for why this is not the 60 FPS switch.
 static bool pc_replay_test_enabled()
 {
@@ -358,6 +364,13 @@ void System::run(BaseApp* app)
     // switch modes at runtime.
 
 	while (true) {
+#if PIKI_PC_PORT
+		// A netplay session owns the whole loop turn (handshake, ticks,
+		// network wait or shutdown).
+		if (pc_netplay_session_drive != nullptr && pc_netplay_session_drive(this, app)) {
+			continue;
+		}
+#endif
 		Jac_Gsync();
 		CARDProbe(0);
 		CARDProbe(1);

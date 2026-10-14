@@ -31,6 +31,7 @@
 #include "zen/ogTutorial.h"
 #if defined(PIKI_PC_PORT)
 #include "pc_achievements.h"
+#include "audio/pc_audio_source.h"
 #endif
 
 namespace {
@@ -1730,11 +1731,18 @@ PikiHangedState::PikiHangedState()
 /**
  * @brief Plays the "ready to throw" sound on animation loop.
  */
+#if defined(PIKI_PC_PORT)
+void PikiHangedState::procAnimMsg(Piki* piki, MsgAnim* msg)
+#else
 void PikiHangedState::procAnimMsg(Piki*, MsgAnim* msg)
+#endif
 {
 	switch (msg->mKeyEvent->mEventType) {
 	case KEY_LoopEnd:
 	{
+#if defined(PIKI_PC_PORT)
+		PcAudioSource audioSource(piki->mNavi ? piki->mNavi->mNaviID : -1); // the holding captain's sound
+#endif
 		SeSystem::playPlayerSe(SE_PIKI_FLYREADY);
 		break;
 	}
@@ -1787,6 +1795,9 @@ void PikiWaterHangedState::procAnimMsg(Piki* piki, MsgAnim* msg)
 	switch (msg->mKeyEvent->mEventType) {
 	case KEY_LoopEnd:
 	{
+#if defined(PIKI_PC_PORT)
+		PcAudioSource audioSource(piki->mNavi ? piki->mNavi->mNaviID : -1); // the holding captain's sound
+#endif
 		SeSystem::playPlayerSe(SE_PIKI_FLYREADY);
 		break;
 	}

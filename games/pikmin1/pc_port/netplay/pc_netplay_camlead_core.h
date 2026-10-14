@@ -42,6 +42,7 @@
 //     then bit-for-bit the sim camera again ("blends back").
 // Nothing here is sim state: C and the history live only in presentation.
 
+#include "netplay/pc_netplay_adaptive.h"
 #include "netplay/pc_netplay_gekko_input.h"
 
 #include <cmath>
@@ -67,7 +68,7 @@ constexpr uint16_t kPadX     = 0x0400;
 constexpr uint16_t kPadStart = 0x1000;
 
 // The session's local input delay cap (frames).
-constexpr unsigned kMaxLocalDelay = 8;
+constexpr unsigned kMaxLocalDelay = pc_netplay_adaptive::kMaxLocalDelay;
 
 // Longest prediction: the Kontroller's current input plus up to 15 pending
 // frames.

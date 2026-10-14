@@ -61,6 +61,11 @@ __declspec(dllexport) int           AmdPowerXpressRequestHighPerformance = 1;
 #include "netplay/pc_netplay_det.h"
 #include "netplay/pc_input_log.h"
 #include "netplay/pc_state_hash.h"
+#include "netplay/pc_coop_switch.h"
+
+// Netplay session switches: strong-defined by pc_netplay_session.cpp in
+// netplay builds only, null otherwise.
+__attribute__((weak)) void pc_netplay_session_notify_argv(int argc, char** argv);
 
 int main(int argc, char* argv[])
 {
@@ -120,7 +125,18 @@ int main(int argc, char* argv[])
             pc_vs_map_select_file(argv[++i]);
             pc_vs_direct_request();
         }
+        // Straight into a new two-captain story run (--coop-captains=<p1>,<p2>
+        // picks the captains).
+        if (std::strcmp(argv[i], "--coop-direct") == 0) {
+            PcCoopSwitch sw = pc_coop_switch_parse(argc, argv);
+            sw.coop         = true;
+            pc_coop_switch_apply(sw);
+            pc_coop_direct_request();
+        }
     }
+    // --netplay-host / --netplay-join. A session also takes the co-op direct
+    // boot. No-op unless a netplay switch is set.
+    if (pc_netplay_session_notify_argv != nullptr) pc_netplay_session_notify_argv(argc, argv);
     (void)argc;
     (void)argv;
 

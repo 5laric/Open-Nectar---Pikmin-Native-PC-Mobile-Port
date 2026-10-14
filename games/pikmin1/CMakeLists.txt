@@ -321,6 +321,8 @@ set(PC_PORT_SOURCES
     # Two-pass sim/presentation frame and the session lead camera.
     pc_port/netplay/pc_netplay_present.cpp
     pc_port/netplay/pc_netplay_camlead.cpp
+    # Co-op switch and direct boot (--coop-direct, netplay).
+    pc_port/netplay/pc_coop_switch.cpp
     pc_port/audio/pc_audio.cpp
     pc_port/audio/pc_envelope.cpp
     pc_port/audio/pc_jam.cpp
@@ -638,6 +640,34 @@ if(PIKMIN_NETPLAY_BUILD AND NOT ANDROID)
     target_compile_options(pc_netplay_libm_obj PRIVATE
         ${PC_NETPLAY_LIBM_NO_BUILTIN_FLAGS} -fno-lto -ffp-contract=off -ftrivial-auto-var-init=zero)
     target_sources(${NECTAR_GAME} PRIVATE $<TARGET_OBJECTS:pc_netplay_libm_obj>)
+endif()
+
+# Netplay lockstep session (third_party/NETPLAY_VENDOR.md). GekkoNet is its own
+# static library: GekkoLib/src/*.cpp with -std=gnu++20, GEKKONET_NO_ASIO and
+# GEKKONET_STATIC. Quoted includes search its own directories first
+# (-iquote): on case-insensitive file systems the game's include/Event.h would
+# otherwise shadow GekkoNet's private event.h. The game's session and UDP
+# transport compile as C++17 and include only gekkonet.h.
+if(PIKMIN_NETPLAY_BUILD AND NOT ANDROID)
+    set(GEKKONET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/gekkonet/GekkoLib")
+    file(GLOB GEKKONET_SOURCES "${GEKKONET_DIR}/src/*.cpp")
+    add_library(gekkonet STATIC ${GEKKONET_SOURCES})
+    target_include_directories(gekkonet PUBLIC ${GEKKONET_DIR}/include
+        PRIVATE ${GEKKONET_DIR}/include/private ${GEKKONET_DIR}/thirdparty)
+    target_compile_definitions(gekkonet PUBLIC GEKKONET_STATIC PRIVATE GEKKONET_NO_ASIO)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(gekkonet PRIVATE -std=gnu++20
+            "-iquote${GEKKONET_DIR}/include/private"
+            "-iquote${GEKKONET_DIR}/include"
+            "-iquote${GEKKONET_DIR}/thirdparty")
+    endif()
+    target_sources(${NECTAR_GAME} PRIVATE
+        pc_port/netplay/pc_netplay_session.cpp
+        pc_port/netplay/pc_netplay_udp.cpp)
+    target_link_libraries(${NECTAR_GAME} PRIVATE gekkonet)
+    if(WIN32)
+        target_link_libraries(${NECTAR_GAME} PRIVATE ws2_32 winmm)
+    endif()
 endif()
 
 option(PIKMIN_ENABLE_IPO "Enable portable interprocedural/link-time optimization" ON)
@@ -1103,6 +1133,22 @@ if(PIKMIN_BUILD_TESTS)
     target_compile_options(pc_audio_source_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
     add_test(NAME pc_audio_source_test COMMAND pc_audio_source_test)
 
+    # Netplay handshake Hello codec, --netplay-input parse and the co-op switch.
+    add_executable(pc_netplay_transfer_test pc_port/netplay/pc_netplay_transfer_test.cpp)
+    target_include_directories(pc_netplay_transfer_test PRIVATE pc_port)
+    target_compile_options(pc_netplay_transfer_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
+    add_test(NAME pc_netplay_transfer_test COMMAND pc_netplay_transfer_test)
+    add_executable(pc_netplay_input_sel_test pc_port/netplay/pc_netplay_input_sel_test.cpp)
+    target_include_directories(pc_netplay_input_sel_test PRIVATE pc_port)
+    target_compile_options(pc_netplay_input_sel_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
+    add_test(NAME pc_netplay_input_sel_test COMMAND pc_netplay_input_sel_test)
+    add_executable(pc_coop_switch_test
+        pc_port/netplay/pc_coop_switch_test.cpp
+        pc_port/netplay/pc_coop_switch.cpp)
+    target_include_directories(pc_coop_switch_test PRIVATE pc_port)
+    target_compile_options(pc_coop_switch_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
+    add_test(NAME pc_coop_switch_test COMMAND pc_coop_switch_test)
+
     # PKNI input-file format, yaw quantisation and the per-tick yaw slots.
     add_executable(pc_input_log_test
         pc_port/netplay/pc_input_log_test.cpp
@@ -1132,6 +1178,30 @@ if(PIKMIN_NETPLAY_BUILD AND PIKMIN_BUILD_TESTS AND NOT ANDROID)
             COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/tools/netplay/fp_gate.py"
                     --objdump "${CMAKE_OBJDUMP}" "$<TARGET_FILE:${NECTAR_GAME}>")
     endif()
+
+    # GekkoNet-backed host tests: the UDP transport and lossy wrapper over two
+    # in-process sessions, the load guard's GekkoNet assumptions, and the
+    # adaptive delay's transitions.
+    foreach(test pc_netplay_transport_test pc_netplay_loadguard_test pc_netplay_adaptive_test)
+        add_executable(${test} pc_port/netplay/${test}.cpp)
+        target_include_directories(${test} PRIVATE pc_port)
+        target_compile_options(${test} PRIVATE ${NATIVE_COMPILE_OPTIONS})
+        target_link_libraries(${test} PRIVATE gekkonet)
+        if(WIN32)
+            target_link_libraries(${test} PRIVATE ws2_32)
+        endif()
+        add_test(NAME ${test} COMMAND ${test})
+    endforeach()
+    target_sources(pc_netplay_transport_test PRIVATE pc_port/netplay/pc_netplay_udp.cpp)
+endif()
+
+# Loopback UDP impairment proxy for netplay tests (pc_netplay_impair.h). It sits
+# between the two peers, so any executable sees the same impaired link.
+if(PIKMIN_NETPLAY_BUILD AND WIN32 AND NOT ANDROID)
+    add_executable(netplay_impair_proxy tools/netplay/udp_impair_proxy.cpp)
+    target_include_directories(netplay_impair_proxy PRIVATE pc_port)
+    target_compile_options(netplay_impair_proxy PRIVATE ${NATIVE_COMPILE_OPTIONS})
+    target_link_libraries(netplay_impair_proxy PRIVATE ws2_32 winmm)
 endif()
 
 message(STATUS "")

@@ -318,6 +318,17 @@ void pc_texpack_install_progress(int files);
    que el submenú F1 Save Data lo pinte unos segundos. */
 void pc_save_transfer_finished(bool ok, const char* message);
 
+#if defined(PIKI_PC_PORT)
+// Netplay builds: the sim-relevant settings both peers must share, as
+// "key=value;" pairs (the session hashes it in the handshake). Valid until
+// the next call.
+const char* pc_settings_netplay_config_text(void);
+// Netplay builds: locks those settings for the session. A save keeps them
+// at the values the session started with, so an F1 edit of a sim row
+// reverts when the menu closes; presentation settings still save.
+void pc_settings_netplay_session_begin(void);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

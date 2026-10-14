@@ -13,6 +13,7 @@
 #include "types.h"
 #include "zen/DrawProgre.h"
 #if defined(PIKI_PC_PORT)
+#include "netplay/pc_coop_switch.h"
 #include "pc_vs.h"
 #endif
 
@@ -93,7 +94,7 @@ struct NinLogoSetupSection : public Node {
 			static f32 pcLogoTime = 0.0f;
 			const f32 kLogoTime   = 2.5f, kFade = 0.5f;
 			// Con --vs-map (editor de mapas) no se espera al logo.
-			if (pcLogoTime < kLogoTime && !pc_vs_direct_requested()) {
+			if (pcLogoTime < kLogoTime && !pc_vs_direct_requested() && !pc_coop_direct_requested()) {
 				pcLogoTime += gsys->getFrameTime();
 				f32 fade = 1.0f;
 				if (pcLogoTime < kFade) {

@@ -25,6 +25,7 @@
 #include "pc_gfx.h"
 #include "pc_speedrun.h"
 #include "pc_vs.h"
+#include "netplay/pc_coop_switch.h"
 #endif
 
 class TitleSetupSection;
@@ -385,6 +386,19 @@ public:
 					mNextSectionsFlag                = PACK_NEXT_ONEPLAYER(ONEPLAYER_GameSetup);
 					gameflow.mGamePrefs.mHasSaveGame = false;
 					gameflow.mIsChallengeMode        = TRUE;
+					Jac_SceneExit(SCENE_Exit, 0);
+					mState = STATE_ExitPending;
+					gsys->setFade(0.0f);
+					return;
+				}
+				// Co-op direct boot (--coop-direct, netplay): straight into a
+				// new two-captain story run, as if Co-op had been chosen.
+				if (pc_coop_direct_take_title()) {
+					pc_coop_set_pending(true);
+					pc_coop_set_chosen_at_title(true);
+					mNextSectionsFlag                = PACK_NEXT_ONEPLAYER(ONEPLAYER_GameSetup);
+					gameflow.mGamePrefs.mHasSaveGame = false;
+					gameflow.mIsChallengeMode        = FALSE;
 					Jac_SceneExit(SCENE_Exit, 0);
 					mState = STATE_ExitPending;
 					gsys->setFade(0.0f);

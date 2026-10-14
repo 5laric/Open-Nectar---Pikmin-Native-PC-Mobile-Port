@@ -58,6 +58,27 @@ static SDL_JoystickID sAutoPadId[2] = { -1, -1 };
 static bool sPlayerPadLost[2] = { false, false };
 static int  sKeyboardOwner = 0; // jugador que recibe teclado (0 salvo asignación)
 
+// Netplay session: strong-defined by pc_netplay_session.cpp in netplay builds
+// only, null otherwise.
+__attribute__((weak)) bool pc_netplay_session_active(void);
+#if PIKI_NETPLAY_BUILD
+// Netplay input ownership (--netplay-input). A `keyboard` peer samples only
+// keys and mouse; a `gamepad` peer samples only its pad (keys and mouse are
+// ignored). `auto` keeps the normal behaviour (both flags false).
+static bool sNetplayIgnoreKeyboard = false;
+static bool sNetplayIgnoreGamepads = false;
+// --netplay-input gamepad:N: the player it feeds and N, re-resolved on every
+// controller hotplug until the Nth pad is open.
+static int sNetplayPadPlayer = -1;
+static int sNetplayPadIndex  = -1;
+static void netplayResolvePendingPad();
+#define PC_NETPLAY_IGNORE_KEYBOARD sNetplayIgnoreKeyboard
+#define PC_NETPLAY_IGNORE_GAMEPADS sNetplayIgnoreGamepads
+#else
+#define PC_NETPLAY_IGNORE_KEYBOARD false
+#define PC_NETPLAY_IGNORE_GAMEPADS false
+#endif
+
 // Última pulsación vista en el bucle de eventos, para el menú "pulsa un botón".
 static int            sLastPressKind   = PC_INPUT_DEV_NONE;
 static SDL_JoystickID sLastPressId     = -1;
@@ -154,6 +175,9 @@ static bool pc_controller_open_slot(int index)
 	printf("[PC Port] Opened Game Controller #%d (id %d): %s\n", (int)sOpenPads.size(), (int)id, SDL_GameControllerName(ctl));
 	fflush(stdout);
 	resolvePlayerPads();
+#if PIKI_NETPLAY_BUILD
+	netplayResolvePendingPad();
+#endif
 	return true;
 }
 
@@ -177,6 +201,9 @@ static void pc_controller_close_instance(SDL_JoystickID which)
 		break;
 	}
 	resolvePlayerPads();
+#if PIKI_NETPLAY_BUILD
+	netplayResolvePendingPad();
+#endif
 }
 static int sWindowWidth = 1280;
 static int sWindowHeight = 720;
@@ -1295,9 +1322,17 @@ void pc_window_poll_events(PADStatus* pad) {
     substickX = (s8)(cdirX * 127);
     substickY = (s8)(cdirY * 127);
 
-    const bool usedKeyboard = button != 0 || dirX != 0 || dirY != 0 || cdirX != 0 || cdirY != 0;
+    bool usedKeyboard = button != 0 || dirX != 0 || dirY != 0 || cdirX != 0 || cdirY != 0;
     bool usedGamepad = false;
     sSwarmHeld = held(PC_KEY_ACT_SWARM);
+    // Netplay input ownership: a `gamepad` peer ignores every key.
+    if (PC_NETPLAY_IGNORE_KEYBOARD) {
+        button = 0;
+        stickX = stickY = substickX = substickY = 0;
+        triggerL = triggerR = 0;
+        sSwarmHeld   = false;
+        usedKeyboard = false;
+    }
 
     {
         const bool lockDown = held(PC_KEY_ACT_LOCKON);
@@ -1326,7 +1361,8 @@ void pc_window_poll_events(PADStatus* pad) {
     }
 
     // ── Gamepad Mapping (overrides / merges if controller connected) ──
-    if (sController) {
+    // Netplay input ownership: a `keyboard` peer ignores every gamepad.
+    if (sController && !PC_NETPLAY_IGNORE_GAMEPADS) {
         usedGamepad = pc_window_read_gamepad(sController, button, stickX, stickY, substickX, substickY,
                                              triggerL, triggerR, sSwarmHeld);
     }
@@ -1456,7 +1492,7 @@ void pc_window_poll_events(PADStatus* pad) {
     sSwarmHeldP2 = kbSwarm2;
     if (sControllers[1] || sKeyboardOwner == 1) {
         u16 b2 = kbButton2; s8 sx2 = kbStickX2, sy2 = kbStickY2, cx2 = kbSubX2, cy2 = kbSubY2; u8 tl2 = kbTrigL2, tr2 = kbTrigR2;
-        if (sControllers[1])
+        if (sControllers[1] && !PC_NETPLAY_IGNORE_GAMEPADS)
             pc_window_read_gamepad(sControllers[1], b2, sx2, sy2, cx2, cy2, tl2, tr2, sSwarmHeldP2, 1);
         pad[1].err          = PAD_ERR_NONE;
         pad[1].button       = b2;
@@ -1499,8 +1535,10 @@ void pc_window_swap_buffers(void) {
 #endif
         // VSync Off must not retain the software presentation limiter. Game
         // simulation uses the fixed-step scheduler independently. Netplay's
-        // unthrottled replay bypasses it too.
-        if (sVsyncEnabled && !pc_netplay_unthrottled()) {
+        // unthrottled replay bypasses it too, and a netplay session owns the
+        // single 30 Hz schedule (two stacked pacers would lose slots).
+        const bool netplayOwnsPacing = pc_netplay_session_active != nullptr && pc_netplay_session_active();
+        if (sVsyncEnabled && !pc_netplay_unthrottled() && !netplayOwnsPacing) {
             // The interval is the game's setFrameClamp: retraces per logical
             // frame against a 60 Hz base, so 1 is 60 Hz and 2 is 30 Hz. The
             // port adds 0 for 120 Hz, which has no 60 Hz divisor. Mirror
@@ -1705,6 +1743,43 @@ int pc_window_input_get_assignment(int player, int* gamepadId) {
     if (gamepadId) *gamepadId = sPlayerDevice[player].id;
     return sPlayerDevice[player].kind;
 }
+
+#if PIKI_NETPLAY_BUILD
+void pc_window_set_netplay_input_filter(bool ignoreKeyboard, bool ignoreGamepads) {
+    sNetplayIgnoreKeyboard = ignoreKeyboard;
+    sNetplayIgnoreGamepads = ignoreGamepads;
+}
+
+static void netplayResolvePendingPad() {
+    if (sNetplayPadPlayer < 0 || sNetplayPadIndex < 0) return;
+    const PcPlayerDevice& dev = sPlayerDevice[sNetplayPadPlayer];
+    if (dev.kind == PC_INPUT_DEV_GAMEPAD && pc_find_open_pad(dev.id) != nullptr) return; // bound and open
+    if (sNetplayPadIndex >= (int)sOpenPads.size()) return; // keep waiting for pad N
+    const PcOpenPad& pad = sOpenPads[(size_t)sNetplayPadIndex];
+    sPlayerDeviceExplicit = true;
+    sPlayerDevice[sNetplayPadPlayer].kind = PC_INPUT_DEV_GAMEPAD;
+    sPlayerDevice[sNetplayPadPlayer].id   = pad.id;
+    sPlayerPadLost[sNetplayPadPlayer]     = false;
+    resolvePlayerPads();
+    printf("[netplay] input: gamepad #%d (id %d, %s) feeds %s\n", sNetplayPadIndex, (int)pad.id,
+           SDL_GameControllerName(pad.ctl), sNetplayPadPlayer == 0 ? "host/P1" : "joiner/P2");
+    fflush(stdout);
+}
+
+void pc_window_set_netplay_gamepad(int player, int index) {
+    if (player < 0 || player > 1 || index < 0) return;
+    sNetplayPadPlayer = player;
+    sNetplayPadIndex  = index;
+    // Owned by a pad even before it is open: the slot stays neutral (never
+    // the keyboard) until pad N connects, then resolves on the hotplug.
+    sPlayerDeviceExplicit = true;
+    sPlayerDevice[player].kind = PC_INPUT_DEV_GAMEPAD;
+    sPlayerDevice[player].id   = -1;
+    sPlayerPadLost[player]     = false;
+    resolvePlayerPads();
+    netplayResolvePendingPad();
+}
+#endif
 
 const char* pc_window_gamepad_name(int gamepadId) {
     SDL_GameController* ctl = pc_find_open_pad(gamepadId);
