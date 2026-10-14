@@ -88,6 +88,38 @@ caracteres sobrantes y datos tras el CRC. Vectores de referencia en
 `libs/nectar_net/tests/connection_code_test.cpp`; cambiarlos rompe códigos ya
 compartidos y exige un formato nuevo (`NECTAR2`).
 
+## Mensajes de juego v1 (implementados en `nectar_net`)
+
+Todos big endian, con tamaños exactos o acotados y validados antes de reservar
+memoria. Tick canónico: 30 Hz.
+
+| Mensaje | Payload | Canal |
+|---|---|---|
+| `InputBundle` | tick más nuevo u64, nº frames u8 (1–6), frames del más nuevo al más viejo: held, pressed, released u16; stick x/y, cstick x/y i8; triggers u8×2; cursor dx/dy i16; flags u8 (17 bytes) | no fiable |
+| `Ping` | id u32, hora del emisor u64 (12 bytes) | no fiable |
+| `Pong` | id u32, eco u64, tick del host u64, fase del tick u32 < 34 ms (24 bytes) | no fiable |
+| `WorldDelta`/`WorldSnapshot` | flags u8 (bit0 keyframe), nº registros u16, registros: id u64, esquema u8 (≠0), longitud u16, datos | no fiable / bulk |
+| `StateHash` | tick u64, hash u64, nº entidades u32 (20 bytes) | control |
+| `ScenePrepare` | época u32 (≠0), escena u32, semilla u64 | control |
+| `SceneReady` | época u32, escena u32 | control |
+| `SceneStart` | época u32, tick de inicio u64 | control |
+
+Reglas:
+- `InputBundle`: ticks consecutivos; botones y flags fuera de la máscara del
+  juego y sticks a -128 se rechazan. El host descarta ticks ya consumidos o
+  más de 30 por delante, reconstruye pulsar/soltar desde `held`, repite el
+  último estado 6 ticks (sin repetir eventos de un solo uso) y después pasa a
+  input neutro.
+- Reloj: el invitado estima el tick del host con la muestra de menor RTT de
+  las 16 últimas; búfer de interpolación `clamp(60 + 2·jitter, 60, 150)` ms.
+- `NetEntityId` = época de escena (16 bits bajos) | tipo | generación |
+  contador ≠ 0. Un delta con registros de otra época o ids repetidos se
+  rechaza entero; los datagramas no fiables se empaquetan autocontenidos en
+  ≤ 1.100 bytes.
+- Escena: las épocas sólo crecen; mensajes de una escena anterior se ignoran.
+- Grabaciones (`NNRC` v1): sólo tráfico posterior al handshake, tope de
+  tamaño, parser estricto y reproducción determinista con `ReplayTransport`.
+
 ## Tipos v0 reservados
 
 | ID | Nombre | Canal | Dirección |

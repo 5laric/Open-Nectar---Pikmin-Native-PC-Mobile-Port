@@ -3,7 +3,12 @@
 // compatibility state machines. Mutates valid inputs and feeds random ones;
 // run under ASan/UBSan to catch memory errors. A fixed seed keeps failures
 // reproducible; NECTAR_FUZZ_ITERATIONS raises the count for longer runs.
+#include "nectar_net/clock.h"
 #include "nectar_net/compatibility.h"
+#include "nectar_net/input.h"
+#include "nectar_net/recording.h"
+#include "nectar_net/scene.h"
+#include "nectar_net/world.h"
 #include "nectar_net/connection_code.h"
 #include "nectar_net/join_gate.h"
 #include "nectar_net/limits.h"
@@ -131,6 +136,19 @@ int main()
     pcpSeed[7] = 0x58;
     pcpSeed[56] = 81;
 
+    // Gameplay payload seeds.
+    std::vector<NetInputFrame> inputFrames(6);
+    for (std::size_t i = 0; i < inputFrames.size(); ++i) inputFrames[i].tick = 100 - i;
+    const std::vector<std::uint8_t> inputSeed = encodeInputBundle(inputFrames);
+    EntityRecord entity;
+    entity.id = 0x0003020000000001ULL;
+    entity.schema = 1;
+    entity.data.assign(12, 7);
+    const std::vector<std::uint8_t> worldSeed = encodeWorldDelta(0, {entity, entity});
+    SessionRecorder seedRecorder;
+    seedRecorder.record(1, RecordDirection::Inbound, Delivery::Unreliable, inputSeed.data(), inputSeed.size());
+    const std::vector<std::uint8_t> recordingSeed = seedRecorder.bytes();
+
     long authenticatedByNoise = 0;
     long compatibleByNoise = 0;
     for (long i = 0; i < iterations; ++i) {
@@ -173,6 +191,28 @@ int main()
         decodePcpMapResponse(gatewayReply.data(), gatewayReply.size(), mapRequest, mapping);
         decodeNatPmpMapResponse(gatewayReply.data(), gatewayReply.size(), mapRequest, mapping);
         decodeNatPmpAddressResponse(gatewayReply.data(), gatewayReply.size(), external);
+
+        // Gameplay payloads.
+        std::vector<std::uint8_t> input = fromSeed ? mutate(rng, inputSeed) : randomBytes(rng, 160);
+        std::vector<NetInputFrame> frames;
+        if (decodeInputBundle(input.data(), input.size(), InputLimits{}, frames)) {
+            InputReceiver receiver;
+            receiver.receive(frames, 100);
+        }
+        std::vector<std::uint8_t> world = fromSeed ? mutate(rng, worldSeed) : randomBytes(rng, 200);
+        std::uint8_t worldFlags = 0;
+        std::vector<EntityRecord> records;
+        decodeWorldDelta(world.data(), world.size(), 3, WorldDeltaLimits{}, worldFlags, records);
+        std::vector<std::uint8_t> small = randomBytes(rng, 32);
+        PongPayload pong;
+        decodePong(small.data(), small.size(), pong);
+        ScenePrepare prepare;
+        decodeScenePrepare(small.data(), small.size(), prepare);
+        StateHashPayload stateHash;
+        decodeStateHash(small.data(), small.size(), stateHash);
+        std::vector<std::uint8_t> recording = fromSeed ? mutate(rng, recordingSeed) : randomBytes(rng, 128);
+        std::vector<RecordedMessage> recorded;
+        parseRecording(recording.data(), recording.size(), recorded);
 
         // Join quarantine: random bytes must never authenticate.
         HostJoinGate gate(creds());

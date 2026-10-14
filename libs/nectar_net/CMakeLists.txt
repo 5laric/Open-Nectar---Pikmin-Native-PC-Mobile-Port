@@ -10,17 +10,23 @@ endif()
 
 add_library(nectar_net STATIC
     src/byte_io.cpp
+    src/clock.cpp
     src/compatibility.cpp
     src/connection_code.cpp
     src/gated_transport.cpp
+    src/input.cpp
     src/join_gate.cpp
     src/net_platform.cpp
     src/port_mapping.cpp
     src/port_publisher.cpp
     src/protocol.cpp
+    src/recording.cpp
     src/room.cpp
+    src/scene.cpp
     src/secure_random.cpp
+    src/sim_network.cpp
     src/upnp_client.cpp
+    src/world.cpp
     src/secure_memory.cpp
 )
 
@@ -84,7 +90,7 @@ if(NECTAR_NET_BUILD_TESTS AND NOT ANDROID)
     endfunction()
 
     foreach(name protocol_test connection_code_test join_gate_test gated_transport_test compatibility_test
-                 decoder_fuzz_test port_mapping_test port_publisher_test room_test)
+                 decoder_fuzz_test port_mapping_test port_publisher_test room_test input_test clock_test world_scene_test soak_test)
         nectar_net_add_test(${name})
     endforeach()
     if(NECTAR_NET_ENABLE_GNS)

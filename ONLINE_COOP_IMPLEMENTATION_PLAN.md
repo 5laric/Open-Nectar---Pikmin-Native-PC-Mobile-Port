@@ -1364,7 +1364,30 @@ Entregables:
 
 Puerta: pruebas contra gateways simulados y routers reales; códigos corruptos, payloads grandes, replay, flood preautenticado, expiración y revocación no comprometen el proceso.
 
-### Fase 3 — Protocolo, fake transport y replay
+### Fase 3 — Protocolo, fake transport y replay — **EN CURSO**
+
+Progreso verificado en Linux (2026-10-14), formatos en
+[`PROTOCOL.md`](docs/netplay/PROTOCOL.md#mensajes-de-juego-v1-implementados-en-nectar_net):
+
+- [x] input v1 con redundancia de 6 ticks y `InputReceiver` (ventana,
+  reconstrucción pulsar/soltar, mantenimiento 200 ms, neutro);
+- [x] `Ping`/`Pong` y `ClockEstimator` (muestra de menor RTT, jitter, búfer
+  de interpolación del plan);
+- [x] `NetEntityId`, `WorldDelta` acotado con empaquetado autocontenido en
+  ≤ 1.100 bytes y `StateHash`;
+- [x] barrera de escena `ScenePrepare`/`SceneReady`/`SceneStart` con épocas
+  crecientes y plazo de carga;
+- [x] `SimulatedNetwork` (latencia, jitter, pérdida, duplicación,
+  desorden; fiable ordenado y sin pérdida) y grabación/replay `NNRC`;
+- [x] prueba de resistencia de la puerta de la Fase 4 en la parte de
+  transporte: 30 min simulados a RTT 150 ms, jitter 30 ms y 5 % de pérdida a
+  través de la cuarentena real: 99,82 % de ticks en vivo (lo esperable con
+  ~2 copias a tiempo), 3.291/3.291 pulsaciones sin pérdidas ni dobles, reloj
+  con error ≤ 1 tick, sin colas, y replay idéntico de la sesión grabada;
+- [x] fuzzing de todos los decodificadores nuevos; ASan+UBSan sin errores;
+- [ ] `SessionRules`, selección de nivel, espectador/rejoin y
+  manifiesto/transferencia de contenido (dependen de cada juego);
+- [ ] esquemas de entidad por familia (Fase 4/5).
 
 Entregables:
 
@@ -1554,7 +1577,8 @@ orden actualizado, evitando conectar gameplay sobre una base insegura, es:
    espera de los cambios locales del launcher:** crear sala, mostrar/copiar/QR, pegar/escanear,
    respuesta automática, mensajes CGNAT/firewall y cancelación que limpie
    secretos/mappings. El flujo NPIX queda sólo como herramienta heredada.
-10. **Protocolo/fake transport:** completar mensajes v1, clocks, replay,
+10. **Protocolo/fake transport — base hecha (input, reloj, entidades,
+    escena, red simulada, replay); faltan mensajes de reglas/contenido:** completar mensajes v1, clocks, replay,
     fuzzing y simulación de pérdida antes de adaptar gameplay.
 11. **Migración de Pikmin 1:** reutilizar reglas, UI, carga, VS y forensics de
     los PR; incorporar Authority/Replica por familias de entidad.
