@@ -657,6 +657,27 @@ if(PIKMIN_NETPLAY_BUILD AND NOT ANDROID)
     endif()
 endif()
 
+# Netplay ICE transport (connection codes, NAT traversal). libjuice is its own
+# static C11 library with JUICE_STATIC and USE_NETTLE=0; the game's C++
+# options (NATIVE_COMPILE_OPTIONS) are C++-only and not applied to it.
+if(PIKMIN_NETPLAY_BUILD AND NOT ANDROID)
+    file(GLOB LIBJUICE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libjuice/src/*.c")
+    add_library(juice STATIC ${LIBJUICE_SOURCES})
+    set_target_properties(juice PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_include_directories(juice PUBLIC third_party/libjuice/include
+        PRIVATE third_party/libjuice/include/juice third_party/libjuice/src)
+    target_compile_definitions(juice PUBLIC JUICE_STATIC PRIVATE USE_NETTLE=0)
+    if(WIN32)
+        target_compile_definitions(juice PRIVATE WIN32_LEAN_AND_MEAN)
+        target_link_libraries(juice PUBLIC ws2_32 bcrypt)
+    endif()
+    find_package(Threads REQUIRED)
+    target_link_libraries(juice PRIVATE Threads::Threads)
+    target_sources(${NECTAR_GAME} PRIVATE
+        pc_port/netplay/pc_netplay_ice.cpp)
+    target_link_libraries(${NECTAR_GAME} PRIVATE juice)
+endif()
+
 option(PIKMIN_ENABLE_IPO "Enable portable interprocedural/link-time optimization" ON)
 if(PIKMIN_ENABLE_IPO)
     include(CheckIPOSupported)
@@ -1180,6 +1201,15 @@ if(PIKMIN_NETPLAY_BUILD AND PIKMIN_BUILD_TESTS AND NOT ANDROID)
         add_test(NAME ${test} COMMAND ${test})
     endforeach()
     target_sources(pc_netplay_transport_test PRIVATE pc_port/netplay/pc_netplay_udp.cpp)
+
+    # ICE codes and two libjuice agents over loopback (no network needed).
+    add_executable(pc_netplay_ice_test
+        pc_port/netplay/pc_netplay_ice_test.cpp
+        pc_port/netplay/pc_netplay_ice.cpp)
+    target_include_directories(pc_netplay_ice_test PRIVATE pc_port)
+    target_compile_options(pc_netplay_ice_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
+    target_link_libraries(pc_netplay_ice_test PRIVATE juice gekkonet)
+    add_test(NAME pc_netplay_ice_test COMMAND pc_netplay_ice_test)
 endif()
 
 # Loopback UDP impairment proxy for netplay tests (pc_netplay_impair.h). It sits
