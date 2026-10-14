@@ -7,6 +7,7 @@
 #endif
 #if defined(PIKI_PC_PORT)
 #include "settings/pc_settings.h"
+#include "netplay/pc_netplay_det.h"
 #if defined(PIKI_PC_PORT)
 #include "pc_photo_mode.h"
 #include "pc_coop.h"
@@ -1956,6 +1957,13 @@ void GameCoreSection::finalSetup()
 GameCoreSection::GameCoreSection(Controller* controller, MapMgr* mgr, Camera& camera)
     : Node("gamecore")
 {
+#if defined(PIKI_PC_PORT)
+	// Netplay: reseed both RNG streams from (session seed, day, stage) so
+	// every peer and every replay of the day draws the same sequence. No-op
+	// unless deterministic mode is on.
+	pc_netplay_det_reseed_for_new_day(gameflow.mWorldClock.mCurrentDay,
+	    flowCont.mCurrentStage != nullptr ? static_cast<int>(flowCont.mCurrentStage->mStageID) : 0);
+#endif
 	mDrawHideType = 0;
 	textDemoState = 0;
 	finishPause();
