@@ -670,6 +670,35 @@ if(PIKMIN_NETPLAY_BUILD AND NOT ANDROID)
     endif()
 endif()
 
+# Netplay ICE transport (connection codes, NAT traversal). libjuice is its own
+# static C11 library with JUICE_STATIC and USE_NETTLE=0; the game's C++
+# options (NATIVE_COMPILE_OPTIONS) are C++-only and not applied to it.
+if(PIKMIN_NETPLAY_BUILD AND NOT ANDROID)
+    file(GLOB LIBJUICE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libjuice/src/*.c")
+    add_library(juice STATIC ${LIBJUICE_SOURCES})
+    set_target_properties(juice PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_include_directories(juice PUBLIC third_party/libjuice/include
+        PRIVATE third_party/libjuice/include/juice third_party/libjuice/src)
+    target_compile_definitions(juice PUBLIC JUICE_STATIC PRIVATE USE_NETTLE=0)
+    if(WIN32)
+        target_compile_definitions(juice PRIVATE WIN32_LEAN_AND_MEAN)
+        target_link_libraries(juice PUBLIC ws2_32 bcrypt)
+    endif()
+    find_package(Threads REQUIRED)
+    target_link_libraries(juice PRIVATE Threads::Threads)
+    target_sources(${NECTAR_GAME} PRIVATE
+        pc_port/netplay/pc_netplay_ice.cpp
+        pc_port/netplay/pc_netplay_launch.cpp
+        # Session HUD, desync forensics and the failure-path diagnostics.
+        pc_port/netplay/pc_netplay_hud.cpp
+        pc_port/netplay/pc_netplay_forensics.cpp
+        pc_port/netplay/pc_netplay_inlog.cpp
+        pc_port/netplay/pc_state_dump.cpp
+        pc_port/netplay/pc_netplay_diag.cpp
+        pc_port/netplay/pc_netplay_diag_bt.cpp)
+    target_link_libraries(${NECTAR_GAME} PRIVATE juice)
+endif()
+
 option(PIKMIN_ENABLE_IPO "Enable portable interprocedural/link-time optimization" ON)
 if(PIKMIN_ENABLE_IPO)
     include(CheckIPOSupported)
@@ -882,6 +911,11 @@ if(PIKMIN_BUILD_LAUNCHER)
     if (WIN32)
         target_sources(pikmin_launcher PRIVATE packaging/windows/nectar.rc)
     endif()
+    # Host Co-op / Join Co-op, for netplay builds of the game only.
+    if(PIKMIN_NETPLAY_BUILD)
+        target_sources(pikmin_launcher PRIVATE pc_port/launcher/launcher_coop.cpp)
+        target_compile_definitions(pikmin_launcher PRIVATE PIKMIN_LAUNCHER_NETPLAY=1)
+    endif()
     target_include_directories(pikmin_launcher PRIVATE ${SDL2_INCLUDE_DIRS})
     target_link_libraries(pikmin_launcher PRIVATE pikmin_disc_image ${SDL2_LIBRARIES} Threads::Threads)
     if (WIN32)
@@ -936,6 +970,13 @@ if(PIKMIN_BUILD_TESTS AND PIKMIN_BUILD_LAUNCHER)
         target_link_libraries(prepared_image_test PRIVATE comdlg32 ole32 shell32 uuid)
     endif()
     add_test(NAME prepared_image_test COMMAND prepared_image_test)
+
+    if(PIKMIN_NETPLAY_BUILD)
+        # Host Co-op / Join Co-op flow with a fake game.
+        add_executable(launcher_coop_test pc_port/launcher/launcher_coop_test.cpp pc_port/launcher/launcher_coop.cpp)
+        target_compile_options(launcher_coop_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
+        add_test(NAME launcher_coop_test COMMAND launcher_coop_test)
+    endif()
 endif()
 
 if(PIKMIN_BUILD_TESTS)
@@ -1133,6 +1174,19 @@ if(PIKMIN_BUILD_TESTS)
     target_compile_options(pc_audio_source_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
     add_test(NAME pc_audio_source_test COMMAND pc_audio_source_test)
 
+    # Netplay session HUD model and the desync forensics data model / input log.
+    add_executable(pc_netplay_hud_model_test pc_port/netplay/pc_netplay_hud_model_test.cpp)
+    target_include_directories(pc_netplay_hud_model_test PRIVATE pc_port)
+    target_compile_options(pc_netplay_hud_model_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
+    add_test(NAME pc_netplay_hud_model_test COMMAND pc_netplay_hud_model_test)
+    add_executable(pc_netplay_forensics_test
+        pc_port/netplay/pc_netplay_forensics_test.cpp
+        pc_port/netplay/pc_netplay_forensics.cpp
+        pc_port/netplay/pc_netplay_inlog.cpp)
+    target_include_directories(pc_netplay_forensics_test PRIVATE pc_port)
+    target_compile_options(pc_netplay_forensics_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
+    add_test(NAME pc_netplay_forensics_test COMMAND pc_netplay_forensics_test)
+
     # Netplay handshake Hello codec, --netplay-input parse and the co-op switch.
     add_executable(pc_netplay_transfer_test pc_port/netplay/pc_netplay_transfer_test.cpp)
     target_include_directories(pc_netplay_transfer_test PRIVATE pc_port)
@@ -1193,6 +1247,15 @@ if(PIKMIN_NETPLAY_BUILD AND PIKMIN_BUILD_TESTS AND NOT ANDROID)
         add_test(NAME ${test} COMMAND ${test})
     endforeach()
     target_sources(pc_netplay_transport_test PRIVATE pc_port/netplay/pc_netplay_udp.cpp)
+
+    # ICE codes and two libjuice agents over loopback (no network needed).
+    add_executable(pc_netplay_ice_test
+        pc_port/netplay/pc_netplay_ice_test.cpp
+        pc_port/netplay/pc_netplay_ice.cpp)
+    target_include_directories(pc_netplay_ice_test PRIVATE pc_port)
+    target_compile_options(pc_netplay_ice_test PRIVATE ${NATIVE_COMPILE_OPTIONS})
+    target_link_libraries(pc_netplay_ice_test PRIVATE juice gekkonet)
+    add_test(NAME pc_netplay_ice_test COMMAND pc_netplay_ice_test)
 endif()
 
 # Loopback UDP impairment proxy for netplay tests (pc_netplay_impair.h). It sits

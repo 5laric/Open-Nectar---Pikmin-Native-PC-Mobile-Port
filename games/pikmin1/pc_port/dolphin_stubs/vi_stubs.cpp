@@ -20,6 +20,12 @@
 #endif
 #endif
 
+#if defined(PIKI_PC_PORT)
+// Netplay session HUD: strong-defined by pc_netplay_hud.cpp in netplay builds
+// only, null otherwise.
+__attribute__((weak)) void pc_netplay_hud_draw(void);
+#endif
+
 static u32 sRetraceCount = 0;
 
 static VIRetraceCallback sPostRetraceCallback = nullptr;
@@ -42,6 +48,7 @@ void VIWaitForRetrace(void)    {
     pc_settings_draw_idle_counter();
     pc_speedrun_draw();
     pc_settings_draw_vs_hud();
+    if (pc_netplay_hud_draw != nullptr) pc_netplay_hud_draw();
     pc_settings_draw_achievement_toast();
     pc_settings_draw();
     pc_glass_menu_draw();

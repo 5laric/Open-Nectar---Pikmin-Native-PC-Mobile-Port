@@ -389,15 +389,57 @@ void relaunch(const fs::path& program, const std::vector<std::string>& arguments
     execv(program.c_str(), argv.data());
 }
 
-[[noreturn]] void launchGame(const fs::path& dataRoot, const fs::path& gameBinary)
+[[noreturn]] void launchGame(const fs::path& dataRoot, const fs::path& gameBinary,
+                             const std::vector<std::string>& arguments)
 {
     if (chdir(dataRoot.c_str()) != 0) {
         std::cerr << "No se pudo entrar en " << dataRoot << ": " << std::strerror(errno) << '\n';
         std::exit(1);
     }
-    execl(gameBinary.c_str(), gameBinary.c_str(), static_cast<char*>(nullptr));
+    std::vector<std::string> storage;
+    storage.push_back(gameBinary.string());
+    storage.insert(storage.end(), arguments.begin(), arguments.end());
+    std::vector<char*> argv;
+    for (std::string& argument : storage) argv.push_back(argument.data());
+    argv.push_back(nullptr);
+    execv(gameBinary.c_str(), argv.data());
     std::cerr << "No se pudo iniciar " << gameBinary << ": " << std::strerror(errno) << '\n';
     std::exit(1);
+}
+
+bool spawnGame(const fs::path& dataRoot, const fs::path& gameBinary, const std::vector<std::string>& arguments,
+               GameProcess& process, std::string& error)
+{
+    std::vector<std::string> storage;
+    storage.push_back(gameBinary.string());
+    storage.insert(storage.end(), arguments.begin(), arguments.end());
+    std::vector<char*> argv;
+    for (std::string& argument : storage) argv.push_back(argument.data());
+    argv.push_back(nullptr);
+    const pid_t child = fork();
+    if (child < 0) {
+        error = std::string("fork failed: ") + std::strerror(errno);
+        return false;
+    }
+    if (child == 0) {
+        if (chdir(dataRoot.c_str()) != 0) _exit(127);
+        execv(gameBinary.c_str(), argv.data());
+        _exit(127);
+    }
+    process.handle = static_cast<unsigned long long>(child);
+    process.pid    = static_cast<unsigned long>(child);
+    return true;
+}
+
+bool gameRunning(GameProcess& process, int& exitCode)
+{
+    if (process.handle == 0) return false;
+    int status = 0;
+    const pid_t got = waitpid(static_cast<pid_t>(process.handle), &status, WNOHANG);
+    if (got == 0) return true;
+    process.handle = 0;
+    exitCode = got > 0 && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    return false;
 }
 
 } // namespace platform

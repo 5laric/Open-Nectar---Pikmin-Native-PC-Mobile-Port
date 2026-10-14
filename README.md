@@ -632,6 +632,7 @@ The code is offered under [CC0 1.0](LICENSE.MD). This license does not grant rig
 
 - Original decompilation: [projectPiki/pikmin](https://github.com/projectPiki/pikmin)
 - Software DSP and sound bank loader: [NextOs-Ports/pikmin-nextos](https://github.com/NextOs-Ports/pikmin-nextos), adapted here from SDL3 to SDL2. Licence and attribution in [third_party/nextos-audio/](third_party/nextos-audio/)
+- Online co-op (netplay builds only): [GekkoNet](https://github.com/HeatXD/GekkoNet) (BSD-2-Clause) and [libjuice](https://github.com/paullouisageneau/libjuice) (MPL-2.0). Licences and pinned versions in [games/pikmin1/third_party/NETPLAY_VENDOR.md](games/pikmin1/third_party/NETPLAY_VENDOR.md)
 - Native PC port: Open Nectar Community
 
 ## Links

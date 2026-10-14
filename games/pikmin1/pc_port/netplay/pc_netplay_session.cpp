@@ -31,6 +31,18 @@
 // Handshake: a Hello on the handshake channel with the exe and config
 // digests, the netplay seed and the mode descriptor (pc_netplay_transfer.h).
 // The first mismatching field refuses on both peers (exit 4).
+//
+// Transports: UDP (--netplay-host/--netplay-join) or ICE (--netplay-host-ice/
+// --netplay-join-ice, pc_netplay_launch.h): the copy-paste code exchange runs
+// on the first turn, then the session talks to the ICE-selected pair through
+// the same channel bytes.
+//
+// Forensics: every Advance's two inputs and this peer's hash go to the session
+// input log (pc_netplay_inlog.h), and per-tick object records to the state
+// dump ring (pc_state_dump.h). On a desync the peers swap their sub-hash rings
+// and the object hashes of the first differing tick over the handshake
+// channel, and each writes desync-report.txt. --netplay-replay-log <file>
+// replays a logged session offline through the same per-Advance body.
 
 #include "netplay/pc_netplay_session.h"
 
@@ -40,14 +52,20 @@
 #include "netplay/pc_netplay_camlead.h"
 #include "netplay/pc_netplay_det.h"
 #include "netplay/pc_netplay_exit_codes.h"
+#include "netplay/pc_netplay_forensics.h"
 #include "netplay/pc_netplay_gekko_input.h"
+#include "netplay/pc_netplay_hud.h"
+#include "netplay/pc_netplay_ice.h"
+#include "netplay/pc_netplay_inlog.h"
 #include "netplay/pc_netplay_input_sel.h"
+#include "netplay/pc_netplay_launch.h"
 #include "netplay/pc_netplay_loadguard.h"
 #include "netplay/pc_netplay_pad.h"
 #include "netplay/pc_netplay_present.h"
 #include "netplay/pc_netplay_sha256.h"
 #include "netplay/pc_netplay_transfer.h"
 #include "netplay/pc_netplay_udp.h"
+#include "netplay/pc_state_dump.h"
 #include "netplay/pc_state_hash.h"
 #include "pc_coop.h"
 #include "pc_permadeath.h"
@@ -56,6 +74,7 @@
 #include "pc_window.h"
 #include "randomizer/pc_randomizer.h"
 #include "settings/pc_settings.h"
+#include "settings/pc_settings_rows.h"
 
 #include "gekkonet.h"
 
@@ -70,10 +89,13 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -119,6 +141,8 @@ struct Config {
 	std::string inputSpec;      // --netplay-input keyboard|gamepad[:N]|auto
 	int inputKind      = 0;     // pc_netplay_input_sel::Kind
 	int inputGamepad   = 0;
+	bool ice           = false; // --netplay-host-ice / --netplay-join-ice
+	bool replay        = false; // --netplay-replay-log <file>
 };
 
 int sArgc     = 0;
@@ -141,6 +165,9 @@ std::string sCfgText;
 pc_netplay_transport::UdpSocket* sSock = nullptr;
 pc_netplay_transport::GekkoLink* sLink = nullptr;
 pc_netplay_transport::LossyLink* sLossy = nullptr;
+// ICE: exactly one of the UDP pair (sSock/sLink) or this pair is set.
+pc_netplay_ice::IceSocket* sIce   = nullptr;
+pc_netplay_ice::IceLink* sIceLink = nullptr;
 GekkoNetAdapter* sAdapter = nullptr;
 GekkoSession* sGekko      = nullptr;
 uint8_t sRemoteAddrBlob[6] = { 0 };
@@ -226,17 +253,19 @@ struct HashEntry {
 	uint64_t tick   = 0;
 	uint64_t total  = 0;
 	uint64_t subs[7] = { 0, 0, 0, 0, 0, 0, 0 };
+	uint64_t xtra   = 0; // pc_state_dump's extra hash (not in the total)
 };
 constexpr size_t kHashRing = 2048;
 HashEntry sHashRing[kHashRing];
 
-void hash_ring_store(uint64_t tick, uint64_t total, const uint64_t subs[7])
+void hash_ring_store(uint64_t tick, uint64_t total, const uint64_t subs[7], uint64_t xtra)
 {
 	HashEntry& e = sHashRing[tick % kHashRing];
 	e.valid      = true;
 	e.tick       = tick;
 	e.total      = total;
 	for (int i = 0; i < 7; ++i) e.subs[i] = subs[i];
+	e.xtra = xtra;
 }
 
 const HashEntry* hash_ring_find(uint64_t tick)
@@ -244,6 +273,49 @@ const HashEntry* hash_ring_find(uint64_t tick)
 	const HashEntry& e = sHashRing[tick % kHashRing];
 	return (e.valid && e.tick == tick) ? &e : nullptr;
 }
+
+// ---- desync forensics state (observes the session, never feeds the sim) ----
+//   PIKMIN_NETPLAY_INPUT_LOG=<file>  the session input log (launcher sessions:
+//                                    <run folder>/session-inputs.pknl; =0 off)
+//   PIKMIN_NETPLAY_FORENSICS=0       no per-tick object records
+//   PIKMIN_NETPLAY_FORENSICS_DIR     where desync files go (default: the
+//                                    launcher run folder, else the working dir)
+//   PIKMIN_NETPLAY_TEST_DESYNC_NUDGE=<frame>[:piki|navi|teki[:<ord>]]
+//       TEST ONLY, with PIKMIN_NETPLAY_TEST_KNOBS=1: adds 1.0 to the x
+//       position of one object of THIS peer's sim at the start of that
+//       frame's tick, so exactly one object diverges. Not in the config hash.
+namespace fx = pc_netplay_forensics;
+pc_netplay_inlog::Writer sInLog;
+double sInLogFlushMs = 0;
+bool sInLogCapSaid   = false;
+bool sForensicsOn    = false;
+struct NudgeKnob {
+	int64_t frame = -1;
+	int kind      = fx::kPiki;
+	int ord       = 0;
+	bool done     = false;
+};
+NudgeKnob sNudge;
+struct ReplayState {
+	std::string path;
+	pc_netplay_inlog::Log log;
+	size_t next          = 0;
+	uint64_t verified    = 0;
+	uint64_t mismatches  = 0;
+	uint32_t firstBadFrame = 0;
+	bool haveBad         = false;
+	bool finished        = false;
+	std::string settings; // the recorded sim settings, adopted at settings init
+};
+ReplayState sReplay;
+// End banner (after a desync or a lost connection, between ticks).
+bool sBannerOn        = false;
+bool sBannerError     = false;
+int sBannerExit       = -1; // exit code once it closes (-1: a normal quit)
+double sBannerStartMs = 0;
+double sBannerMs      = 0;
+std::string sBannerTitle;
+std::vector<std::string> sBannerLines;
 
 // Scripted local input (pkni v2, pad 0 of each record).
 std::vector<uint8_t> sScriptBytes;
@@ -1234,8 +1306,11 @@ void loadguard_summary()
 
 // ---- lifecycle ----
 
+void inlog_flush();
+
 void stop_session()
 {
+	inlog_flush();
 	adaptive_final_stats();
 	loadguard_summary();
 	pc_netplay_camlead_session_end();
@@ -1255,6 +1330,14 @@ void stop_session()
 		delete sSock;
 		sSock = nullptr;
 	}
+	// The link goes first: its adapter must not outlive the agent's queue.
+	delete sIceLink;
+	sIceLink = nullptr;
+	if (sIce != nullptr) {
+		sIce->close();
+		delete sIce;
+		sIce = nullptr;
+	}
 	netplay_timer_power_opt(false);
 }
 
@@ -1266,15 +1349,33 @@ void request_quit()
 	SDL_PushEvent(&ev);
 }
 
+void replay_load(const char* path);
+
 void parse_config()
 {
 	sCfg = Config();
-	const char* hostCli = argv_value(sArgc, sArgv, "--netplay-host");
-	const char* joinCli = argv_value(sArgc, sArgv, "--netplay-join");
-	const char* hostVal = hostCli != nullptr ? hostCli : getenv_nonempty("PIKMIN_NETPLAY_HOST");
-	const char* joinVal = joinCli != nullptr ? joinCli : getenv_nonempty("PIKMIN_NETPLAY_JOIN");
+	const PcNetplayLaunch& launch = pc_netplay_launch_setup();
+	const char* hostCli   = argv_value(sArgc, sArgv, "--netplay-host");
+	const char* joinCli   = argv_value(sArgc, sArgv, "--netplay-join");
+	const char* hostVal   = hostCli != nullptr ? hostCli : getenv_nonempty("PIKMIN_NETPLAY_HOST");
+	const char* joinVal   = joinCli != nullptr ? joinCli : getenv_nonempty("PIKMIN_NETPLAY_JOIN");
+	const char* replayCli = argv_value(sArgc, sArgv, "--netplay-replay-log");
+	const char* replayVal = replayCli != nullptr ? replayCli : getenv_nonempty("PIKMIN_NETPLAY_REPLAY_LOG");
 	if (hostVal != nullptr && joinVal != nullptr) usage_exit("--netplay-host and --netplay-join are exclusive%s", "");
-	if (hostVal != nullptr) {
+	if (replayVal != nullptr && (hostVal != nullptr || joinVal != nullptr || launch.active))
+		usage_exit("--netplay-replay-log runs alone, without a host or join switch%s", "");
+	if (launch.active) {
+		sCfg.isHost = launch.isHost;
+		sCfg.active = true;
+		sCfg.ice    = true;
+	} else if (replayVal != nullptr) {
+		// The replay plays the host's role with no network; the sim is the
+		// same for both peers.
+		replay_load(replayVal);
+		sCfg.isHost = true;
+		sCfg.active = true;
+		sCfg.replay = true;
+	} else if (hostVal != nullptr) {
 		char* end    = nullptr;
 		const long p = strtol(hostVal, &end, 10);
 		if (end == hostVal || *end != '\0' || p <= 0 || p > 65535) usage_exit("bad --netplay-host port %s", hostVal);
@@ -1338,6 +1439,18 @@ void parse_config()
 	// Both peers boot straight into two-captain co-op with a fresh save.
 	PcCoopSwitch sw = pc_coop_switch_parse(sArgc, sArgv);
 	sw.coop         = true;
+	if (launch.active && !launch.isHost && launch.haveCaptains) {
+		// The joiner plays the host's captains (the offer's descriptor).
+		sw.captainP1 = launch.captainP1;
+		sw.captainP2 = launch.captainP2;
+	}
+	if (sCfg.replay) {
+		int p1 = sw.captainP1, p2 = sw.captainP2;
+		if (pc_netplay_launch_parse_descriptor(sReplay.log.meta_get("descriptor"), &p1, &p2)) {
+			sw.captainP1 = p1;
+			sw.captainP2 = p2;
+		}
+	}
 	pc_coop_switch_apply(sw);
 	pc_coop_direct_request();
 	sPhase = kHandshake;
@@ -1360,6 +1473,10 @@ const char* unsupported_run_mode()
 
 void hs_send(const uint8_t* msg, size_t len)
 {
+	if (sIce != nullptr) {
+		sIce->send_payload(pc_netplay_ice::kChannelHandshake, msg, len);
+		return;
+	}
 	if (sSock == nullptr) return;
 	if (sCfg.isHost) {
 		if (sHaveRemote) sSock->send_to(pc_netplay_transport::kChannelHandshake, msg, len, sRemoteIp, sRemotePort);
@@ -1370,6 +1487,18 @@ void hs_send(const uint8_t* msg, size_t len)
 
 std::vector<pc_netplay_transport::UdpSocket::Datagram> hs_drain()
 {
+	if (sIceLink != nullptr) {
+		std::vector<pc_netplay_transport::UdpSocket::Datagram> out;
+		for (pc_netplay_ice::IceSocket::Datagram& g : sIceLink->drain_handshake()) {
+			pc_netplay_transport::UdpSocket::Datagram d;
+			d.channel         = g.channel;
+			d.payload         = std::move(g.payload);
+			d.fromIpHostOrder = g.fromIpHostOrder;
+			d.fromPort        = g.fromPort;
+			out.push_back(std::move(d));
+		}
+		return out;
+	}
 	if (sLink != nullptr) return sLink->drain_handshake();
 	return std::vector<pc_netplay_transport::UdpSocket::Datagram>();
 }
@@ -1473,7 +1602,7 @@ bool handshake_pump()
 			sRemoteIp   = g.fromIpHostOrder;
 			sRemotePort = g.fromPort;
 			sHaveRemote = true;
-			sSock->set_peer(sRemoteIp, sRemotePort);
+			if (sSock != nullptr) sSock->set_peer(sRemoteIp, sRemotePort);
 			printf("[netplay] handshake: peer %u.%u.%u.%u:%u\n", (sRemoteIp >> 24) & 0xFF, (sRemoteIp >> 16) & 0xFF,
 			       (sRemoteIp >> 8) & 0xFF, sRemoteIp & 0xFF, (unsigned)sRemotePort);
 			fflush(stdout);
@@ -1523,7 +1652,7 @@ bool handshake_pump()
 // peer's stall advice.
 void answer_handshake_in_session()
 {
-	if (sLink == nullptr || sSock == nullptr) return;
+	if (sIceLink == nullptr && (sLink == nullptr || sSock == nullptr)) return;
 	for (auto& g : hs_drain()) {
 		uint8_t hdrType   = 0;
 		uint16_t hdrProto = 0;
@@ -1544,6 +1673,806 @@ void answer_handshake_in_session()
 		printf("[netplay] answered in-session Hello with Ack (echo=%llu)\n", (unsigned long long)h.nonce);
 		fflush(stdout);
 	}
+}
+
+// ---- end banner ----
+
+// Keeps presenting frames with the banner after the session ended, until it
+// times out or a key or button closes it. PIKMIN_NETPLAY_BANNER_MS (default
+// 10000, at most 60000, 0 = no banner).
+void begin_banner(int exitCode, const char* title, bool error, const std::vector<std::string>& lines)
+{
+	sBannerMs = (double)read_unsigned_env("PIKMIN_NETPLAY_BANNER_MS", 10000u);
+	if (sBannerMs > 60000.0) sBannerMs = 60000.0;
+	sBannerExit    = exitCode;
+	sBannerStartMs = now_ms();
+	sBannerTitle   = title;
+	sBannerError   = error;
+	sBannerLines   = lines;
+	sBannerOn      = sBannerMs > 0;
+	if (sBannerOn) {
+		pc_window_discard_button_presses();
+		printf("[netplay] end banner: shown for up to %.0f ms (any key or button closes it)\n", sBannerMs);
+		fflush(stdout);
+	}
+}
+
+// ---- forensics files ----
+
+std::string forensics_dir()
+{
+	if (const char* e = getenv_nonempty("PIKMIN_NETPLAY_FORENSICS_DIR")) return e;
+	const PcNetplayLaunch& l = pc_netplay_launch_setup();
+	if (l.active && !l.runDir.empty()) return l.runDir;
+	return ".";
+}
+
+std::string forensics_path(const char* name)
+{
+	std::string d = forensics_dir();
+	if (!d.empty() && d.back() != '/' && d.back() != '\\') d += "/";
+	return d + name;
+}
+
+void forensics_enable()
+{
+	sForensicsOn = read_unsigned_env("PIKMIN_NETPLAY_FORENSICS", 1) != 0;
+	pc_state_dump_set_enabled(sForensicsOn);
+	sNudge            = NudgeKnob();
+	const char* nudge = getenv_nonempty("PIKMIN_NETPLAY_TEST_DESYNC_NUDGE");
+	if (nudge == nullptr || !env_is_one("PIKMIN_NETPLAY_TEST_KNOBS")) return;
+	char* end         = nullptr;
+	const long long f = strtoll(nudge, &end, 10);
+	if (end == nudge || f < 0) return;
+	sNudge.frame = f;
+	if (*end == ':') {
+		++end;
+		if (std::strncmp(end, "navi", 4) == 0) sNudge.kind = fx::kNavi;
+		else if (std::strncmp(end, "teki", 4) == 0) sNudge.kind = fx::kTeki;
+		else sNudge.kind = fx::kPiki;
+		const char* colon = std::strchr(end, ':');
+		if (colon != nullptr) sNudge.ord = (int)strtol(colon + 1, nullptr, 10);
+	}
+	printf("[netplay] test: this peer nudges %s#%d at frame=%lld (desync injection)\n",
+	       fx::kind_name((uint8_t)sNudge.kind), sNudge.ord, (long long)sNudge.frame);
+	fflush(stdout);
+}
+
+// Start of a frame's tick, before the sim runs: the test nudge.
+void forensics_tick_begin(int frame)
+{
+	if (sNudge.frame < 0 || sNudge.done || (int64_t)frame != sNudge.frame) return;
+	sNudge.done = true;
+	const bool ok = pc_state_dump_test_nudge(sNudge.kind, sNudge.ord);
+	printf("[netplay] test: nudge %s#%d at frame=%d %s\n", fx::kind_name((uint8_t)sNudge.kind), sNudge.ord, frame,
+	       ok ? "applied (x += 1.0)" : "found no such object");
+	fflush(stdout);
+}
+
+// TEST ONLY, with PIKMIN_NETPLAY_TEST_KNOBS=1:
+// PIKMIN_NETPLAY_TEST_SETTINGS_SAVE_AT=<tick> runs the settings menu's save
+// path once after that tick, as closing F1 does (the adoption test checks
+// that the file keeps this player's own values).
+void test_settings_save(uint64_t tick)
+{
+	static int64_t at = -2;
+	if (at == -2) {
+		at = -1;
+		const char* v = getenv_nonempty("PIKMIN_NETPLAY_TEST_SETTINGS_SAVE_AT");
+		if (v != nullptr && env_is_one("PIKMIN_NETPLAY_TEST_KNOBS")) at = strtoll(v, nullptr, 10);
+	}
+	if (at < 0 || (int64_t)tick != at) return;
+	pc_settings_rows_begin();
+	pc_settings_rows_end(true);
+	printf("[netplay] test: settings saved after tick=%llu (the F1 close path)\n", (unsigned long long)tick);
+	fflush(stdout);
+}
+
+// ---- session input log ----
+
+void inlog_open()
+{
+	const PcNetplayLaunch& l = pc_netplay_launch_setup();
+	std::string path;
+	if (const char* e = getenv_nonempty("PIKMIN_NETPLAY_INPUT_LOG")) {
+		if (std::strcmp(e, "0") == 0) return;
+		path = e;
+	} else {
+		if (!l.active || l.runDir.empty()) return;
+		path = forensics_path("session-inputs.pknl");
+	}
+	std::string m;
+	auto kv = [&](const char* k, const std::string& v) {
+		m += k;
+		m += ' ';
+		m += v;
+		m += '\n';
+	};
+	kv("format", "pknl-1");
+	kv("role", sCfg.isHost ? "host" : "join");
+	kv("transport", sCfg.ice ? "ice" : "udp");
+	kv("exe_sha256", sExeHexStr);
+	kv("config_sha256", sCfgHexStr);
+	kv("config", sCfgText);
+	kv("settings", pc_settings_netplay_config_text());
+	kv("descriptor", pc_netplay_launch_descriptor(pc_coop_captain(0), pc_coop_captain(1)));
+	kv("netplay_seed", std::to_string(sCfg.seed));
+	kv("delay_start", std::to_string(sCfg.localDelay));
+	kv("first_frame", "0");
+	kv("hash_tick_of_frame", "frame+1");
+	kv("started_unix", std::to_string((long long)time(nullptr)));
+	if (l.active) kv("run_dir", l.runDir);
+	std::string err;
+	if (!sInLog.open(path, m, &err)) {
+		printf("[netplay] input log: %s\n", err.c_str());
+		fflush(stdout);
+		return;
+	}
+	sInLogFlushMs = now_ms();
+	printf("[netplay] input log: %s (both inputs and this game's hash per frame; replay with "
+	       "tools/netplay/replay_session.py)\n",
+	       path.c_str());
+	fflush(stdout);
+}
+
+void inlog_flush()
+{
+	if (sInLog.is_open()) sInLog.flush();
+}
+
+void inlog_end(const std::string& why)
+{
+	if (!sInLog.is_open()) return;
+	pc_netplay_inlog::Event e;
+	e.frame = sLastAdvanceFrame;
+	e.kind  = pc_netplay_inlog::kEvEnd;
+	e.data.assign(why.begin(), why.end());
+	sInLog.append_event(e);
+	sInLog.flush();
+}
+
+// After the frame's tick and hash: the record, and the periodic flush.
+void inlog_frame(int frame, const uint8_t* inputs, uint64_t total, const uint64_t subs[7], bool haveHash)
+{
+	if (!sInLog.is_open()) return;
+	pc_netplay_inlog::Frame f;
+	f.frame = (uint32_t)frame;
+	std::memcpy(f.in[0], inputs, pc_netplay_inlog::kInputBytes);
+	std::memcpy(f.in[1], inputs + 16, pc_netplay_inlog::kInputBytes);
+	f.haveTotal = haveHash;
+	f.total     = total;
+	f.haveSubs  = haveHash && (f.frame % pc_netplay_inlog::kSubsEvery) == 0;
+	if (f.haveSubs)
+		for (int i = 0; i < 7; ++i) f.subs[i] = subs[i];
+	if (!sInLog.append_frame(f) && sInLog.capped() && !sInLogCapSaid) {
+		sInLogCapSaid = true;
+		printf("[netplay] input log: size cap reached at frame=%d; later frames are not recorded\n", frame);
+		fflush(stdout);
+	}
+	const double now = now_ms();
+	if (now - sInLogFlushMs >= 2000.0) {
+		sInLog.flush();
+		sInLogFlushMs = now;
+	}
+}
+
+// ---- offline replay ----
+
+bool run_advance(System* sys, BaseApp* app, int frame, const uint8_t* inputs, bool speculative);
+
+// Runs from notify_argv, before the settings load: the recorded seed goes to
+// the environment the deterministic reseed reads, and the recorded sim
+// settings are adopted at settings init (pc_netplay_session_replay_settings).
+void replay_load(const char* path)
+{
+	std::string err;
+	if (!pc_netplay_inlog::load_file(path, &sReplay.log, &err)) {
+		printf("[netplay] replay: cannot load %s: %s\n", path, err.c_str());
+		fflush(stdout);
+		std::exit(npx::kInputFile);
+	}
+	sReplay.path     = path;
+	sReplay.settings = sReplay.log.meta_get("settings");
+	if (getenv_nonempty("PIKMIN_NETPLAY_SEED") == nullptr) {
+		const std::string seed = sReplay.log.meta_get("netplay_seed", "0");
+#ifdef _WIN32
+		_putenv_s("PIKMIN_NETPLAY_SEED", seed.c_str());
+#else
+		setenv("PIKMIN_NETPLAY_SEED", seed.c_str(), 1);
+#endif
+	}
+}
+
+void replay_start()
+{
+	pc_state_hash_set_netplay_capture(true);
+	forensics_enable();
+	sSessionStartMs                = now_ms();
+	const pc_netplay_inlog::Log& L = sReplay.log;
+	const std::string recExe       = L.meta_get("exe_sha256");
+	const std::string recCfg       = L.meta_get("config_sha256");
+	printf("[netplay] replay: %s: %llu frames (frame %u..%u), recorded by role=%s%s; replaying with no network\n",
+	       sReplay.path.c_str(), (unsigned long long)L.frames.size(), L.frames.empty() ? 0u : L.frames.front().frame,
+	       L.frames.empty() ? 0u : L.frames.back().frame, L.meta_get("role", "?").c_str(),
+	       L.truncatedBytes != 0 ? " (the log ends in a cut record)" : "");
+	printf("[netplay] replay: recorded exe=%s %s\n", recExe.c_str(),
+	       recExe == sExeHexStr ? "(this exe)" : "(differs from this exe)");
+	printf("[netplay] replay: recorded config=%s %s\n", recCfg.c_str(),
+	       recCfg == sCfgHexStr ? "(same session config)" : "(the session config differs; the replay may diverge)");
+	if (recCfg != sCfgHexStr)
+		printf("[netplay] replay: recorded config text: %s\n[netplay] replay: this run's config text: %s\n",
+		       L.meta_get("config").c_str(), sCfgText.c_str());
+	fflush(stdout);
+	sPhase = kSession;
+}
+
+void replay_finish()
+{
+	if (sReplay.finished) return;
+	sReplay.finished = true;
+	printf("[netplay] replay: done: %llu frames replayed, %llu hash-verified, %llu mismatch%s%s\n",
+	       (unsigned long long)sReplay.next, (unsigned long long)sReplay.verified,
+	       (unsigned long long)sReplay.mismatches, sReplay.mismatches == 1 ? "" : "es",
+	       sReplay.mismatches == 0 ? " (every recorded hash reproduced)" : "");
+	if (sReplay.haveBad)
+		printf("[netplay] replay: first hash mismatch at frame=%u (tick %u)\n", sReplay.firstBadFrame,
+		       sReplay.firstBadFrame + 1);
+	fflush(stdout);
+	pc_state_hash_flush();
+	stop_session();
+	sPhase = kDone;
+	// Called from inside the tick loop with the audio and loader threads
+	// alive, so leave without running static destructors (all output is
+	// flushed above).
+	std::fflush(nullptr);
+	std::_Exit(sReplay.mismatches == 0 ? 0 : npx::kReplayMismatch);
+}
+
+void replay_verify(const pc_netplay_inlog::Frame& f, uint64_t total, const uint64_t subs[7])
+{
+	if (!f.haveTotal) return;
+	++sReplay.verified;
+	if (total == f.total) return;
+	++sReplay.mismatches;
+	if (!sReplay.haveBad) {
+		sReplay.haveBad       = true;
+		sReplay.firstBadFrame = f.frame;
+	}
+	if (sReplay.mismatches > 5) return;
+	printf("[netplay] replay: hash mismatch at frame=%u (tick %u): recorded total=%016llx replay total=%016llx\n",
+	       f.frame, f.frame + 1, (unsigned long long)f.total, (unsigned long long)total);
+	if (f.haveSubs) {
+		fx::TickSubs a, b;
+		for (int i = 0; i < 7; ++i) {
+			a.subs[i] = f.subs[i];
+			b.subs[i] = subs[i];
+		}
+		printf("[netplay] replay:   differing sub-hashes: %s\n", fx::subs_mask_text(fx::differing_subs(a, b)).c_str());
+	}
+	fflush(stdout);
+}
+
+// One loop turn of the replay: a few logged frames, no pacing, no network.
+bool replay_turn(System* sys, BaseApp* app)
+{
+	sys->mControllerMgr.update(); // keeps the window and audio pumping
+	const std::vector<pc_netplay_inlog::Frame>& frames = sReplay.log.frames;
+	int n = 0;
+	while (n < 4 && sReplay.next < frames.size() && sPhase == kSession) {
+		const pc_netplay_inlog::Frame& f = frames[sReplay.next];
+		if (f.frame != (uint32_t)sAdvances) {
+			printf("[netplay] replay: the log has no record for frame=%llu (next is frame=%u); a gap cannot be "
+			       "replayed\n",
+			       (unsigned long long)sAdvances, f.frame);
+			fflush(stdout);
+			sReplay.mismatches += 1;
+			replay_finish();
+			return true;
+		}
+		uint8_t inputs[32];
+		std::memcpy(inputs, f.in[0], 16);
+		std::memcpy(inputs + 16, f.in[1], 16);
+		++sReplay.next;
+		++n;
+		const bool alive = run_advance(sys, app, (int)f.frame, inputs, false);
+		uint64_t total = 0, subs[7] = { 0, 0, 0, 0, 0, 0, 0 }, tick = 0;
+		if (pc_state_hash_current(&total, subs, &tick)) replay_verify(f, total, subs);
+		if (!alive) {
+			replay_finish();
+			return true;
+		}
+	}
+	if (sReplay.next >= frames.size() && sPhase == kSession) replay_finish();
+	return true;
+}
+
+// ---- the desync exchange ----
+//
+// After a desync each peer sends two messages (pc_netplay_forensics.h): its
+// sub-hash ring, then, once it holds the other's ring, the object hashes of
+// the first differing tick. They travel in fragments on the handshake channel
+// (unreliable): stable header, kHsFxFrag, kind u8, total u32, offset u32,
+// bytes. Every fragment of a message is resent every 250 ms until the peer
+// acknowledges the whole message (kHsFxAck, kind u8).
+constexpr uint8_t kHsFxFrag    = 0x50;
+constexpr uint8_t kHsFxAck     = 0x51;
+constexpr size_t kFxHeader     = 16;
+constexpr size_t kFxChunk      = 3584;
+constexpr size_t kFxMaxBytes   = 1u << 22;
+constexpr double kFxResendMs   = 250.0;
+static_assert(kFxHeader + kFxChunk + 1 <= pc_netplay_transport::kMaxDatagram, "a fragment fits one datagram");
+
+struct FxOut {
+	uint8_t kind = 0;
+	std::vector<uint8_t> data;
+	bool acked        = false;
+	double nextSendMs = 0;
+};
+struct FxIn {
+	uint32_t total = 0;
+	std::vector<uint8_t> data;
+	std::vector<uint8_t> have;
+	size_t count  = 0;
+	bool complete = false;
+};
+std::vector<FxOut> sFxOut;
+FxIn sFxIn[2]; // ring, objs
+
+int fx_slot(uint8_t kind) { return kind == fx::kBulkDesyncRing ? 0 : kind == fx::kBulkDesyncObjs ? 1 : -1; }
+
+void fx_header(uint8_t* p, uint8_t type)
+{
+	std::memcpy(p, xfer::kHsMagic, 4);
+	p[4] = type;
+	xfer::put_u16(p + 5, kProtocolVersion);
+}
+
+void fx_send_all(const FxOut& o)
+{
+	uint8_t msg[kFxHeader + kFxChunk];
+	for (size_t off = 0; off < o.data.size(); off += kFxChunk) {
+		const size_t len = std::min(kFxChunk, o.data.size() - off);
+		fx_header(msg, kHsFxFrag);
+		msg[7] = o.kind;
+		xfer::put_u32(msg + 8, (uint32_t)o.data.size());
+		xfer::put_u32(msg + 12, (uint32_t)off);
+		std::memcpy(msg + kFxHeader, o.data.data() + off, len);
+		hs_send(msg, kFxHeader + len);
+	}
+}
+
+void fx_queue(uint8_t kind, std::vector<uint8_t> data)
+{
+	if (data.empty() || data.size() > kFxMaxBytes) return;
+	FxOut o;
+	o.kind = kind;
+	o.data = std::move(data);
+	sFxOut.push_back(std::move(o));
+}
+
+void fx_pump(double now)
+{
+	for (FxOut& o : sFxOut) {
+		if (o.acked || now < o.nextSendMs) continue;
+		fx_send_all(o);
+		o.nextSendMs = now + kFxResendMs;
+	}
+	for (auto& g : hs_drain()) {
+		uint8_t type = 0;
+		uint16_t proto = 0;
+		if (!xfer::decode_hello_header(g.payload.data(), g.payload.size(), &type, &proto)) continue;
+		if (proto != kProtocolVersion) continue;
+		if (sCfg.isHost && sHaveRemote && (g.fromIpHostOrder != sRemoteIp || g.fromPort != sRemotePort)) continue;
+		const uint8_t* p = g.payload.data();
+		const size_t len = g.payload.size();
+		if (type == kHsFxAck && len >= 8) {
+			for (FxOut& o : sFxOut)
+				if (o.kind == p[7]) o.acked = true;
+			continue;
+		}
+		if (type != kHsFxFrag || len < kFxHeader) continue;
+		const int slot = fx_slot(p[7]);
+		if (slot < 0) continue;
+		const uint32_t total = xfer::get_u32(p + 8);
+		const uint32_t off   = xfer::get_u32(p + 12);
+		const size_t chunk   = len - kFxHeader;
+		if (total == 0 || total > kFxMaxBytes || off >= total || off % kFxChunk != 0) continue;
+		if (chunk != std::min((size_t)kFxChunk, (size_t)(total - off))) continue;
+		FxIn& in = sFxIn[slot];
+		if (in.total == 0) {
+			in.total = total;
+			in.data.assign(total, 0);
+			in.have.assign((total + kFxChunk - 1) / kFxChunk, 0);
+		}
+		if (in.total != total) continue;
+		const size_t idx = off / kFxChunk;
+		if (!in.have[idx]) {
+			in.have[idx] = 1;
+			++in.count;
+			std::memcpy(in.data.data() + off, p + kFxHeader, chunk);
+			if (in.count == in.have.size()) in.complete = true;
+		}
+		if (in.complete) {
+			uint8_t ack[8];
+			fx_header(ack, kHsFxAck);
+			ack[7] = p[7];
+			hs_send(ack, sizeof(ack));
+		}
+	}
+}
+
+bool fx_all_acked()
+{
+	for (const FxOut& o : sFxOut)
+		if (!o.acked) return false;
+	return true;
+}
+
+// ---- desync report ----
+
+struct DesyncLines {
+	std::vector<std::string> lines;
+	void add(const char* fmt, ...)
+#if defined(__GNUC__)
+	    __attribute__((format(printf, 2, 3)))
+#endif
+	    ;
+};
+void DesyncLines::add(const char* fmt, ...)
+{
+	char buf[1536];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	lines.emplace_back(buf);
+}
+
+std::vector<fx::TickSubs> desync_local_ring(uint64_t fromTick, bool all)
+{
+	std::vector<fx::TickSubs> out;
+	uint64_t newest = 0, total = 0, subs[7] = { 0, 0, 0, 0, 0, 0, 0 };
+	if (!pc_state_hash_current(&total, subs, &newest)) return out;
+	uint64_t lo = all ? (newest > (uint64_t)kHashRing ? newest - (uint64_t)kHashRing + 1 : 1) : fromTick;
+	if (lo < 1) lo = 1;
+	for (uint64_t t = lo; t <= newest; ++t) {
+		const HashEntry* e = hash_ring_find(t);
+		if (e == nullptr) continue;
+		fx::TickSubs s;
+		s.tick  = e->tick;
+		s.total = e->total;
+		for (int i = 0; i < 7; ++i) s.subs[i] = e->subs[i];
+		s.xtra = e->xtra;
+		out.push_back(s);
+	}
+	return out;
+}
+
+std::string subs_line(const char* who, const fx::TickSubs& t)
+{
+	char buf[512];
+	snprintf(buf, sizeof(buf),
+	         "desync subs %s tick=%llu: total=%016llx navi=%016llx piki=%016llx teki=%016llx item=%016llx "
+	         "world=%016llx rng=%016llx mode=%016llx xtra=%016llx",
+	         who, (unsigned long long)t.tick, (unsigned long long)t.total, (unsigned long long)t.subs[0],
+	         (unsigned long long)t.subs[1], (unsigned long long)t.subs[2], (unsigned long long)t.subs[3],
+	         (unsigned long long)t.subs[4], (unsigned long long)t.subs[5], (unsigned long long)t.subs[6],
+	         (unsigned long long)t.xtra);
+	return buf;
+}
+
+bool write_text_file(const std::string& path, const std::vector<std::string>& lines)
+{
+	FILE* f = std::fopen(path.c_str(), "wb");
+	if (f == nullptr) return false;
+	for (const std::string& l : lines) std::fprintf(f, "%s\n", l.c_str());
+	return std::fclose(f) == 0;
+}
+
+// Runs before stop_session (GekkoNet and the transport are still up): swap
+// the sub-hash rings, then the per-object hashes of the first differing tick,
+// print both sides and write the files. At least 1 s, so GekkoNet's own
+// checksum reaches the other game, and at most kDesyncExchangeMs.
+constexpr double kDesyncExchangeMs = 4000.0;
+void desync_forensics(int frame, uint32_t localCk, uint32_t remoteCk)
+{
+	const uint64_t wantTick = frame >= 0 ? (uint64_t)frame + 1 : 0;
+	const char* myName      = sCfg.isHost ? "host" : "join";
+	const char* peerName    = sCfg.isHost ? "join" : "host";
+
+	fx::RingMsg mine;
+	mine.role           = sCfg.isHost ? 0 : 1;
+	mine.frame          = (uint32_t)frame;
+	mine.localChecksum  = localCk;
+	mine.remoteChecksum = remoteCk;
+	mine.ticks          = desync_local_ring(wantTick > 150 ? wantTick - 150 : 1, false);
+	if (mine.ticks.size() > 400) mine.ticks.erase(mine.ticks.begin(), mine.ticks.end() - 400);
+	const bool canSend = !mine.ticks.empty();
+	if (canSend) fx_queue(fx::kBulkDesyncRing, fx::encode_ring(mine));
+
+	fx::RingMsg peerRing;
+	fx::ObjsMsg peerObjs;
+	bool haveRing = false, haveObjs = false, sentObjs = false;
+	std::vector<uint64_t> objTicks;
+	uint64_t diffTick = 0, xtraTick = 0;
+	bool haveDiff = false, haveXtra = false;
+	const double t0 = now_ms();
+	while (sGekko != nullptr && now_ms() - t0 < kDesyncExchangeMs) {
+		gekko_network_poll(sGekko);
+		fx_pump(now_ms());
+		if (!haveRing && sFxIn[0].complete) {
+			haveRing = fx::decode_ring(sFxIn[0].data.data(), sFxIn[0].data.size(), &peerRing);
+			if (!haveRing) sFxIn[0] = FxIn();
+		}
+		if (haveRing && !sentObjs && canSend) {
+			haveDiff = fx::first_diff_total(mine.ticks, peerRing.ticks, &diffTick);
+			haveXtra = fx::first_diff_xtra(mine.ticks, peerRing.ticks, &xtraTick);
+			const uint64_t first = haveDiff ? diffTick : wantTick;
+			objTicks.push_back(first);
+			if (haveXtra && xtraTick != first) objTicks.push_back(xtraTick);
+			fx::ObjsMsg om;
+			om.role = mine.role;
+			for (uint64_t t : objTicks) {
+				const std::vector<fx::ObjRec>* recs = pc_state_dump_find(t);
+				if (recs == nullptr) continue;
+				fx::ObjTick ot;
+				ot.tick = t;
+				for (const fx::ObjRec& r : *recs) ot.keys.push_back(fx::key_of(r));
+				om.ticks.push_back(std::move(ot));
+			}
+			fx_queue(fx::kBulkDesyncObjs, fx::encode_objs(om));
+			sentObjs = true;
+		}
+		if (!haveObjs && sFxIn[1].complete) {
+			haveObjs = fx::decode_objs(sFxIn[1].data.data(), sFxIn[1].data.size(), &peerObjs);
+			if (!haveObjs) sFxIn[1] = FxIn();
+		}
+		const double el = now_ms() - t0;
+		if (!canSend && el >= 1000.0) break;
+		if (haveRing && haveObjs && sentObjs && fx_all_acked() && el >= 1000.0) break;
+		sleep_hires_ms(2.0, 0.0);
+	}
+
+	DesyncLines R;
+	const fx::TickSubs* myAt = fx::find_tick(mine.ticks, wantTick);
+	R.add("desync report: frame=%d this=%s peer=%s local-checksum=%08x remote-checksum=%08x", frame, myName, peerName,
+	      localCk, remoteCk);
+	if (myAt != nullptr) R.lines.push_back(subs_line(myName, *myAt));
+	else R.add("desync subs %s tick=%llu: not in this game's hash ring", myName, (unsigned long long)wantTick);
+	uint64_t reportTick = wantTick;
+	if (haveRing) {
+		const fx::TickSubs* peerAt = fx::find_tick(peerRing.ticks, wantTick);
+		if (peerAt != nullptr) R.lines.push_back(subs_line(peerName, *peerAt));
+		else R.add("desync subs %s tick=%llu: not in the other game's ring", peerName, (unsigned long long)wantTick);
+		if (myAt != nullptr && peerAt != nullptr)
+			R.add("desync differing sub-hashes at tick=%llu: %s", (unsigned long long)wantTick,
+			      fx::subs_mask_text(fx::differing_subs(*myAt, *peerAt)).c_str());
+		if (peerRing.frame != (uint32_t)frame)
+			R.add("desync note: the other game reported frame=%u (this game: frame=%d)", peerRing.frame, frame);
+		if (haveDiff) {
+			const fx::TickSubs* a = fx::find_tick(mine.ticks, diffTick);
+			const fx::TickSubs* b = fx::find_tick(peerRing.ticks, diffTick);
+			R.add("desync first differing tick in the exchanged window (%llu ticks, %llu..%llu): tick=%llu, "
+			      "differing sub-hashes: %s",
+			      (unsigned long long)mine.ticks.size(),
+			      (unsigned long long)(mine.ticks.empty() ? 0 : mine.ticks.front().tick),
+			      (unsigned long long)(mine.ticks.empty() ? 0 : mine.ticks.back().tick), (unsigned long long)diffTick,
+			      a != nullptr && b != nullptr ? fx::subs_mask_text(fx::differing_subs(*a, *b)).c_str() : "?");
+			reportTick = diffTick;
+		} else {
+			R.add("desync no tick in the exchanged window (%llu ticks) has different totals",
+			      (unsigned long long)mine.ticks.size());
+		}
+		if (haveXtra)
+			R.add("desync first differing xtra hash (state the seven columns do not cover): tick=%llu%s",
+			      (unsigned long long)xtraTick,
+			      haveDiff && xtraTick < diffTick ? " (earlier than the visible divergence)" : "");
+		else R.add("desync xtra hash: identical on both sides over the window");
+		for (uint64_t t : objTicks) {
+			const std::vector<fx::ObjRec>* recs = pc_state_dump_find(t);
+			const fx::ObjTick* pt               = nullptr;
+			for (const fx::ObjTick& ot : peerObjs.ticks)
+				if (ot.tick == t) pt = &ot;
+			if (recs == nullptr || pt == nullptr) {
+				R.add("desync objects at tick=%llu: %s", (unsigned long long)t,
+				      recs == nullptr ? "this game no longer has them in its object ring"
+				                      : "the other game did not send them");
+				continue;
+			}
+			std::vector<fx::ObjKey> lk;
+			for (const fx::ObjRec& r : *recs) lk.push_back(fx::key_of(r));
+			const fx::ObjDiff d = fx::diff_objs(lk, pt->keys);
+			R.add("desync objects at tick=%llu: %llu differ, %llu only on this game, %llu only on the other%s",
+			      (unsigned long long)t, (unsigned long long)d.changed.size(), (unsigned long long)d.onlyLocal.size(),
+			      (unsigned long long)d.onlyRemote.size(), d.countMismatch ? " (object counts differ)" : "");
+			size_t shown = 0;
+			for (const fx::ObjDiff::Changed& c : d.changed) {
+				if (++shown > 24) {
+					R.add("desync   ... %llu more", (unsigned long long)(d.changed.size() - 24));
+					break;
+				}
+				R.add("desync   differs: %s=%s%s%s | %s=%s", myName, fx::format_key(c.local).c_str(),
+				      c.local.type != c.remote.type ? " TYPE-DIFFERS" : "",
+				      c.local.hash == c.remote.hash ? " (xhash only)" : "", peerName, fx::format_key(c.remote).c_str());
+				for (const fx::ObjRec& r : *recs)
+					if (r.kind == c.local.kind && r.ord == c.local.ord)
+						R.add("desync     %s: %s", myName, fx::format_obj(r).c_str());
+			}
+			shown = 0;
+			for (const fx::ObjKey& k : d.onlyLocal) {
+				if (++shown > 12) break;
+				R.add("desync   only on %s: %s", myName, fx::format_key(k).c_str());
+			}
+			shown = 0;
+			for (const fx::ObjKey& k : d.onlyRemote) {
+				if (++shown > 12) break;
+				R.add("desync   only on %s: %s", peerName, fx::format_key(k).c_str());
+			}
+		}
+	} else {
+		R.add("desync report: the other game's sub-hashes did not arrive within %.0f s; only this game's side is "
+		      "printed. Send both run folders.",
+		      (now_ms() - t0) / 1000.0);
+	}
+	for (const std::string& l : R.lines) printf("[netplay] %s\n", l.c_str());
+
+	{
+		std::vector<std::string> subsFile;
+		subsFile.push_back(std::string("# netplay desync sub-hash ring (this game=") + myName + ", desync frame "
+		                   + std::to_string(frame) + ", hash tick = frame+1)");
+		subsFile.push_back(fx::subs_header());
+		subsFile.push_back(std::string("# ") + myName + " (this game), every tick in the ring");
+		for (const fx::TickSubs& t : desync_local_ring(0, true)) subsFile.push_back(fx::format_subs(t));
+		if (haveRing) {
+			subsFile.push_back(std::string("# ") + peerName + " (received from the other game)");
+			for (const fx::TickSubs& t : peerRing.ticks) {
+				const fx::TickSubs* a = fx::find_tick(mine.ticks, t.tick);
+				std::string l         = fx::format_subs(t);
+				if (a != nullptr && a->total != t.total) l += "  <- total differs from this game's";
+				else if (a != nullptr && a->xtra != t.xtra) l += "  <- only xtra differs";
+				subsFile.push_back(l);
+			}
+		}
+		write_text_file(forensics_path("desync-subs.txt"), subsFile);
+	}
+	{
+		std::vector<uint64_t> ticks;
+		auto addTick = [&](uint64_t t) {
+			if (t == 0) return;
+			for (uint64_t x : ticks)
+				if (x == t) return;
+			ticks.push_back(t);
+		};
+		if (reportTick > 1) addTick(reportTick - 1);
+		addTick(reportTick);
+		if (haveXtra) addTick(xtraTick);
+		addTick(wantTick);
+		std::sort(ticks.begin(), ticks.end());
+		FILE* f = std::fopen(forensics_path("desync-objects.txt").c_str(), "wb");
+		if (f != nullptr) {
+			std::fprintf(f,
+			             "# netplay desync state dump (this game=%s, desync frame %d). One section per tick; one line\n"
+			             "# per object, in manager order: kind ord type state hp pos rot vel drv face aux hash xhash.\n"
+			             "# Diff against the other game's file with tools/netplay/diff_desync.py.\n",
+			             myName, frame);
+			for (uint64_t t : ticks)
+				if (!pc_state_dump_write_tick(f, t))
+					std::fprintf(f, "# tick %llu: no longer in the object ring (%llu ticks are kept)\n",
+					             (unsigned long long)t, (unsigned long long)kStateDumpRingTicks);
+			std::fclose(f);
+		}
+		if (haveRing) {
+			std::vector<std::string> pk;
+			pk.push_back(std::string("# object hashes the other game (") + peerName + ") sent for the differing tick(s)");
+			for (const fx::ObjTick& ot : peerObjs.ticks) {
+				pk.push_back("# tick " + std::to_string((unsigned long long)ot.tick));
+				for (const fx::ObjKey& k : ot.keys) pk.push_back(fx::format_key(k));
+			}
+			write_text_file(forensics_path("desync-peer-objects.txt"), pk);
+		}
+	}
+	std::vector<std::string> rep = R.lines;
+	rep.push_back(std::string("files: ") + forensics_dir() + " (desync-report.txt desync-subs.txt desync-objects.txt"
+	              + (haveRing ? " desync-peer-objects.txt" : "") + (sInLog.is_open() ? " session-inputs.pknl" : "")
+	              + ")");
+	write_text_file(forensics_path("desync-report.txt"), rep);
+	printf("[netplay] desync forensics written to %s: desync-report.txt, desync-subs.txt, desync-objects.txt%s%s\n",
+	       forensics_dir().c_str(), haveRing ? ", desync-peer-objects.txt" : "",
+	       sInLog.is_open() ? ", session-inputs.pknl (the replayable input log)" : "");
+	fflush(stdout);
+	inlog_flush();
+}
+
+// ---- ICE code exchange ----
+
+// Prints the code (one line after its tag, which the pair tools grep for),
+// copies it to the clipboard unless PIKMIN_NETPLAY_NO_CLIPBOARD=1, writes it
+// atomically to --netplay-code-out and keeps a copy in the run folder.
+void ice_emit_code(const char* kind, const std::string& code)
+{
+	const PcNetplayLaunch& L = pc_netplay_launch_setup();
+	printf("[netplay] ice %s code:\n%s\n", kind, code.c_str());
+	if (env_is_one("PIKMIN_NETPLAY_NO_CLIPBOARD")) {
+		printf("[netplay] launch: %s code not copied to the clipboard (PIKMIN_NETPLAY_NO_CLIPBOARD)\n", kind);
+	} else if (SDL_SetClipboardText(code.c_str()) == 0) {
+		printf("[netplay] launch: %s code copied to the clipboard (%llu chars)\n", kind,
+		       (unsigned long long)code.size());
+	} else {
+		printf("[netplay] launch: clipboard copy failed (%s); copy the code above\n", SDL_GetError());
+	}
+	std::string err;
+	if (!L.codeOut.empty()) {
+		if (pc_netplay_ice::ice_write_code_file(L.codeOut, code, &err))
+			printf("[netplay] launch: %s code written to %s\n", kind, L.codeOut.c_str());
+		else
+			printf("[netplay] launch: %s\n", err.c_str());
+	}
+	if (!L.runDir.empty()) pc_netplay_ice::ice_write_code_file(L.runDir + "/" + kind + ".txt", code, &err);
+	fflush(stdout);
+}
+
+[[noreturn]] void ice_fail(const std::string& err)
+{
+	printf("[netplay] ice: %s\n", err.c_str());
+	fflush(stdout);
+	stop_session();
+	std::exit(npx::kTransport);
+}
+
+// The blocking code exchange on the first turn: the host gathers and prints
+// its offer (the session bundle: seed, sim settings, captains), waits for the
+// answer (--netplay-answer-in, else the console); the joiner gathers and
+// prints its answer. Then both wait for ICE to connect. The window keeps
+// pumping; closing it ends the game.
+void ice_connect(System* sys)
+{
+	const PcNetplayLaunch& L                 = pc_netplay_launch_setup();
+	const pc_netplay_ice::IceNetConfig nic = pc_netplay_ice::ice_net_config_from_env();
+	printf("[netplay] ice: %s\n", pc_netplay_ice::ice_net_config_text(nic).c_str());
+	fflush(stdout);
+	std::function<void()> pump = [sys]() {
+		sys->mControllerMgr.update();
+		if (pc_window_should_close()) {
+			printf("[netplay] ice: the window was closed during the code exchange\n");
+			std::fflush(nullptr);
+			std::_Exit(0);
+		}
+	};
+	sIce = new pc_netplay_ice::IceSocket();
+	std::string err;
+	double completedMs = -1;
+	if (sCfg.isHost) {
+		pc_netplay_ice::SessionBundle bundle;
+		bundle.seed       = sCfg.seed;
+		bundle.configText = pc_settings_netplay_config_text();
+		bundle.descriptor = pc_netplay_launch_descriptor(pc_coop_captain(0), pc_coop_captain(1));
+		std::string offer, answer;
+		if (!sIce->host_create_offer(nic, bundle, &offer, &err, pump)) ice_fail(err);
+		ice_emit_code("offer", offer);
+		bool got = false;
+		if (!L.answerIn.empty()) {
+			printf("[netplay] launch: waiting for the answer code in %s (up to %.0f min)\n", L.answerIn.c_str(),
+			       pc_netplay_ice::ice_connect_timeout_ms() / 60000.0);
+			fflush(stdout);
+			got = pc_netplay_ice::ice_poll_answer_file(L.answerIn, pc_netplay_ice::ice_connect_timeout_ms(), pump,
+			                                           &answer, &err);
+		} else {
+			got = pc_netplay_ice::ice_read_answer_stdin(pump, &answer, &err);
+		}
+		if (!got) ice_fail(err);
+		if (!sIce->host_apply_answer(answer, &err)) ice_fail(err);
+	} else {
+		std::string answer;
+		if (!sIce->join_create_answer(nic, L.offerCode, &answer, &err, pump, nullptr)) ice_fail(err);
+		ice_emit_code("answer", answer);
+	}
+	if (!sIce->wait_connected(pc_netplay_ice::ice_connect_timeout_ms(), &completedMs, &err, pump)) ice_fail(err);
+	printf("[netplay] ice transport ready (connect %.0fms) local [%s] remote [%s]\n", completedMs,
+	       sIce->selected_local().c_str(), sIce->selected_remote().c_str());
+	fflush(stdout);
+	sIceLink = new pc_netplay_ice::IceLink(sIce);
+	// The handshake learns the peer from its first datagram, which over ICE
+	// carries the placeholder address.
 }
 
 // ---- the GekkoNet session ----
@@ -1569,7 +2498,7 @@ void start_gekko_session()
 	if (lp.lossPct < 0) lp.lossPct = 0;
 	if (lp.lossPct > 100) lp.lossPct = 100;
 	const bool lossy = lp.latencyMs > 0 || lp.jitterMs > 0 || lp.lossPct > 0 || (lp.reorderPct > 0 && lp.reorderExtraMs > 0);
-	GekkoNetAdapter* base = sLink->adapter();
+	GekkoNetAdapter* base = sIceLink != nullptr ? sIceLink->adapter() : sLink->adapter();
 	if (lossy) {
 		sLossy   = new pc_netplay_transport::LossyLink(base, lp);
 		sAdapter = sLossy->adapter();
@@ -1594,8 +2523,10 @@ void start_gekko_session()
 	gekko_net_adapter_set(sGekko, sAdapter);
 	// Role-ordered actors, so handle 0 is the host/P1 and handle 1 the
 	// joiner/P2 on both peers.
-	const uint32_t ip   = sCfg.isHost ? sRemoteIp : sCfg.joinIp;
-	const uint16_t port = sCfg.isHost ? sRemotePort : sCfg.joinPort;
+	// Over ICE the agent is connected 1:1 and every datagram carries the
+	// fixed placeholder address 127.0.0.1:1 (pc_netplay_ice.h).
+	const uint32_t ip   = sIce != nullptr ? 0x7F000001u : (sCfg.isHost ? sRemoteIp : sCfg.joinIp);
+	const uint16_t port = sIce != nullptr ? (uint16_t)1 : (sCfg.isHost ? sRemotePort : sCfg.joinPort);
 	sRemoteAddrBlob[0]  = (uint8_t)((ip >> 24) & 0xFF);
 	sRemoteAddrBlob[1]  = (uint8_t)((ip >> 16) & 0xFF);
 	sRemoteAddrBlob[2]  = (uint8_t)((ip >> 8) & 0xFF);
@@ -1619,6 +2550,7 @@ void start_gekko_session()
 	loadguard_configure(disconnectMs);
 	pc_state_hash_set_netplay_capture(true);
 	load_scripted_file();
+	forensics_enable();
 	sNaviPosTrace = env_is_one("PIKMIN_NETPLAY_DEBUG_NAVI_POS");
 	// DELAY=auto: ceil((RTT/2)/33.333 ms - 0.05) + 1 from the median
 	// handshake RTT, clamped to 1..8. The 0.05-slot tolerance keeps exact
@@ -1644,16 +2576,18 @@ void start_gekko_session()
 		const long long v = strtoll(e, &end, 10);
 		if (end != e && *end == '\0' && v >= 0) sTestDesyncFrame = v;
 	}
+	inlog_open();
 	sSessionStartMs = now_ms();
 	// The drift-free deadline starts here, so the first turn never overruns.
 	sNextTurnMs = sSessionStartMs + 1000.0 / 30.0;
 	sPhase      = kSession;
 }
 
-// GekkoNet reported a desync: print the desynced tick's sub-hashes, keep
-// polling for a moment so this peer's own checksum reaches the other game
-// (both then stop with exit 5), and exit.
-[[noreturn]] void handle_desync(int frame, uint32_t localCk, uint32_t remoteCk, int remoteHandle)
+// GekkoNet reported a desync: print the desynced tick's sub-hashes, swap the
+// forensics with the other game (which also keeps polling GekkoNet, so this
+// peer's own checksum reaches it and both stop with exit 5), write the
+// report, then exit 5, after the end banner when one is shown.
+void handle_desync(int frame, uint32_t localCk, uint32_t remoteCk, int remoteHandle)
 {
 	const uint64_t wantTick = frame >= 0 ? (uint64_t)frame + 1 : 0;
 	const HashEntry* e      = hash_ring_find(wantTick);
@@ -1675,16 +2609,22 @@ void start_gekko_session()
 	       (unsigned long long)subs[6]);
 	fflush(stdout);
 	pc_state_hash_flush();
-	const double t0 = now_ms();
-	while (sGekko != nullptr && now_ms() - t0 < 1000.0) {
-		gekko_network_poll(sGekko);
-		sleep_hires_ms(5.0, 0.0);
-	}
+	desync_forensics(frame, localCk, remoteCk);
+	inlog_end("desync frame=" + std::to_string(frame));
 	stop_session();
 	sPhase = kDone;
 	printf("[netplay] session stopped: desync (exit %d)\n", npx::kDesync);
 	fflush(stdout);
-	std::exit(npx::kDesync);
+	std::vector<std::string> lines;
+	lines.push_back("The two games stopped agreeing at frame " + std::to_string(frame) + ".");
+	std::string folder = forensics_dir();
+	const size_t slash = folder.find_last_of("/\\");
+	if (slash != std::string::npos && slash + 1 < folder.size()) folder = folder.substr(slash + 1);
+	lines.push_back("Both games wrote desync-report.txt and session-inputs.pknl to their netplay folder");
+	lines.push_back("(this game: " + folder + ").");
+	lines.push_back("Please send both folders with a bug report.");
+	begin_banner(npx::kDesync, "DESYNC - SESSION STOPPED", true, lines);
+	if (!sBannerOn) std::exit(npx::kDesync);
 }
 
 void handle_session_events()
@@ -1711,14 +2651,21 @@ void handle_session_events()
 			       peerQuit ? "the other player left" : "connection lost", sLastAdvanceFrame);
 			fflush(stdout);
 			pc_state_hash_flush();
+			inlog_end(std::string(peerQuit ? "peer quit" : "connection lost") + " frame=" + std::to_string(sLastAdvanceFrame));
 			stop_session();
 			sPhase = kDone;
-			request_quit();
+			std::vector<std::string> lines;
+			if (peerQuit) lines.push_back("The other player closed the game.");
+			else lines.push_back("No data from the other player for a while: the connection was lost.");
+			lines.push_back("Start a new session to play again (Host Co-op / Join Co-op in the launcher).");
+			begin_banner(-1, peerQuit ? "THE OTHER PLAYER LEFT" : "CONNECTION LOST", !peerQuit, lines);
+			if (!sBannerOn) request_quit();
 			return; // the session is gone: stop processing this batch
 		}
 		case GekkoDesyncDetected:
 			handle_desync(ev[i]->data.desynced.frame, ev[i]->data.desynced.local_checksum,
 			              ev[i]->data.desynced.remote_checksum, ev[i]->data.desynced.remote_handle);
+			return; // the session is gone
 		default:
 			break;
 		}
@@ -1762,6 +2709,7 @@ bool run_advance(System* sys, BaseApp* app, int frame, const uint8_t* inputs, bo
 	(void)OSCheckActiveThreads();
 	sys->updateSysClock();
 	pc_netplay_on_tick_begin();
+	forensics_tick_begin(frame);
 	pc_netplay_camlead_check_applied((uint64_t)frame, inputs + 16 * sLocalRole);
 	pc_netplay_camlead_begin_frame((uint64_t)frame);
 	loadguard_tick_begin((uint32_t)frame, speculative);
@@ -1772,7 +2720,13 @@ bool run_advance(System* sys, BaseApp* app, int frame, const uint8_t* inputs, bo
 	pc_state_hash_tick_end();
 	{
 		uint64_t total = 0, subs[7] = { 0, 0, 0, 0, 0, 0, 0 }, tick = 0;
-		if (pc_state_hash_current(&total, subs, &tick) && tick > 0) hash_ring_store(tick, total, subs);
+		const bool haveHash = pc_state_hash_current(&total, subs, &tick) && tick > 0;
+		if (haveHash) {
+			if (sForensicsOn) pc_state_dump_capture(tick, subs);
+			hash_ring_store(tick, total, subs, sForensicsOn ? pc_state_dump_last_xtra() : 0);
+		}
+		inlog_frame(frame, inputs, total, subs, haveHash);
+		if (haveHash) test_settings_save(tick);
 	}
 	sLastAdvanceFrame = (uint32_t)frame;
 	loadguard_after_advance((uint32_t)frame, speculative);
@@ -1801,6 +2755,7 @@ bool run_advance(System* sys, BaseApp* app, int frame, const uint8_t* inputs, bo
 		       slotLossPct);
 		fflush(stdout);
 		pc_state_hash_flush();
+		inlog_end("exit after " + std::to_string((unsigned long long)sSessionTicks) + " ticks");
 		stop_session();
 		sPhase = kDone;
 		request_quit();
@@ -1885,9 +2840,22 @@ int handle_game_events(System* sys, BaseApp* app)
 void session_setup(System* sys)
 {
 	pc_netplay_det_force_on();
-	pc_settings_netplay_session_begin();
+	pc_settings_netplay_session_begin(nullptr);
 	apply_input_selection();
 	compute_local_hello();
+	if (sCfg.replay) {
+		replay_start();
+		return;
+	}
+	if (sCfg.ice) {
+		printf("[netplay] mode=%s (ice) delay=%s seed=%u\n", sCfg.isHost ? "host" : "join",
+		       sCfg.delayAuto ? "auto" : std::to_string(sCfg.localDelay).c_str(), sCfg.seed);
+		printf("[netplay] config text: %s\n", sCfgText.c_str());
+		fflush(stdout);
+		ice_connect(sys);
+		netplay_timer_power_opt(true);
+		return;
+	}
 	printf("[netplay] mode=%s delay=%s seed=%u bind=%s\n", sCfg.isHost ? "host" : "join",
 	       sCfg.delayAuto ? "auto" : std::to_string(sCfg.localDelay).c_str(), sCfg.seed,
 	       getenv_nonempty("PIKMIN_NETPLAY_UDP_BIND") != nullptr ? getenv_nonempty("PIKMIN_NETPLAY_UDP_BIND")
@@ -1915,6 +2883,41 @@ void session_setup(System* sys)
 } // namespace
 
 bool pc_netplay_is_host(void) { return sCfg.active && sCfg.isHost; }
+
+const char* pc_netplay_session_replay_settings(void)
+{
+	return sCfg.replay && !sReplay.settings.empty() ? sReplay.settings.c_str() : nullptr;
+}
+
+bool pc_netplay_hud_info(PcNetplayHudInfo* out)
+{
+	if (out == nullptr || !sInitialised || !sCfg.active || sCfg.replay) return false;
+	*out           = PcNetplayHudInfo();
+	out->isHost    = sCfg.isHost;
+	out->inputKind = sCfg.inputKind;
+	out->frame     = sLastAdvanceFrame;
+	PcNetplayLiveStats st;
+	if (sGekkoStarted && sAdvances > 0 && pc_netplay_live_stats(&st)) {
+		out->running             = true;
+		out->numbers.havePing    = st.rttP50Ms >= 0;
+		out->numbers.pingMs      = st.rttP50Ms;
+		out->numbers.jitterMs    = st.jitterMs;
+		out->numbers.delay       = st.delay;
+		out->numbers.stalls10s   = st.stallsLast10s;
+		out->numbers.stallMs10s  = st.stallMsLast10s;
+	}
+	if (sBannerOn) {
+		out->banner       = true;
+		out->bannerError  = sBannerError;
+		out->bannerLeftMs = sBannerMs - (now_ms() - sBannerStartMs);
+		snprintf(out->bannerTitle, sizeof(out->bannerTitle), "%s", sBannerTitle.c_str());
+		for (const std::string& l : sBannerLines) {
+			if (out->bannerLines >= kBannerMaxLines) break;
+			snprintf(out->bannerLine[out->bannerLines++], sizeof(out->bannerLine[0]), "%s", l.c_str());
+		}
+	}
+	return true;
+}
 
 bool pc_netplay_live_stats(PcNetplayLiveStats* out)
 {
@@ -1989,13 +2992,39 @@ bool pc_netplay_session_drive(System* sys, BaseApp* app)
 			const bool inSession = sPhase == kSession && sGekko != nullptr && sGekkoStarted;
 			if (inSession) send_quit_notice();
 			pc_state_hash_flush();
+			if (inSession) inlog_end("local quit frame=" + std::to_string(sLastAdvanceFrame));
 			stop_session();
 			sPhase = kDone;
+		}
+		if (sBannerOn && sBannerExit >= 0) {
+			fflush(stdout);
+			std::exit(sBannerExit); // closed during a desync banner: keep its exit code
 		}
 		return false;
 	}
 
 	if (sPhase == kDone) {
+		if (sBannerOn) {
+			// The end banner, between ticks (no sim runs): one presented
+			// frame per turn at about 30 Hz until it times out or any key or
+			// button is pressed.
+			int kind = 0, pad = 0;
+			const bool dismissed = pc_window_take_button_press(&kind, &pad);
+			const double shown   = now_ms() - sBannerStartMs;
+			if (dismissed || shown >= sBannerMs) {
+				sBannerOn = false;
+				printf("[netplay] end banner: closed after %.0f ms (%s)\n", shown, dismissed ? "key" : "timeout");
+				fflush(stdout);
+				if (sBannerExit >= 0) std::exit(sBannerExit);
+				request_quit();
+				return true;
+			}
+			sys->beginRender();
+			sys->doneRender();
+			sys->waitRetrace(); // overlays (the banner), present, swap, window events
+			sleep_hires_ms(33.0);
+			return true;
+		}
 		// Drain the quit event requested above (nothing else polls while the
 		// driver owns the loop), then relinquish so the loop breaks.
 		pc_window_poll_events(nullptr);
@@ -2015,6 +3044,7 @@ bool pc_netplay_session_drive(System* sys, BaseApp* app)
 	}
 
 	// kSession.
+	if (sCfg.replay) return replay_turn(sys, app);
 	const bool unthrottled   = pc_netplay_unthrottled();
 	const double turnStartMs = now_ms();
 	adaptive_note_turn_start(turnStartMs);

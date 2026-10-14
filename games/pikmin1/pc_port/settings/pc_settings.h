@@ -325,8 +325,11 @@ void pc_save_transfer_finished(bool ok, const char* message);
 const char* pc_settings_netplay_config_text(void);
 // Netplay builds: locks those settings for the session. A save keeps them
 // at the values the session started with, so an F1 edit of a sim row
-// reverts when the menu closes; presentation settings still save.
-void pc_settings_netplay_session_begin(void);
+// reverts when the menu closes; presentation settings still save. With
+// adoptConfigText (the host's pc_settings_netplay_config_text) the session
+// takes those values instead, and the settings file keeps this player's own.
+// Only the first call takes effect.
+void pc_settings_netplay_session_begin(const char* adoptConfigText);
 #endif
 
 #ifdef __cplusplus

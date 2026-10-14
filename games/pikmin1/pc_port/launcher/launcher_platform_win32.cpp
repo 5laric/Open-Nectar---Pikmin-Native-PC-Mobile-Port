@@ -388,7 +388,8 @@ void relaunch(const fs::path& program, const std::vector<std::string>& arguments
     std::exit(0);
 }
 
-[[noreturn]] void launchGame(const fs::path& dataRoot, const fs::path& gameBinary)
+[[noreturn]] void launchGame(const fs::path& dataRoot, const fs::path& gameBinary,
+                             const std::vector<std::string>& arguments)
 {
     if (!SetCurrentDirectoryW(dataRoot.c_str())) {
         std::cerr << "No se pudo entrar en " << dataRoot.string() << '\n';
@@ -398,7 +399,7 @@ void relaunch(const fs::path& program, const std::vector<std::string>& arguments
     // Windows no tiene exec(): se crea el proceso del juego y el launcher espera
     // a que termine para devolver su mismo código de salida. Así el
     // comportamiento visible coincide con el de Linux.
-    std::wstring command = L"\"" + gameBinary.wstring() + L"\"";
+    std::wstring command = quotedCommand(gameBinary, arguments);
 
     STARTUPINFOW startup {};
     startup.cb = sizeof(startup);
@@ -417,6 +418,44 @@ void relaunch(const fs::path& program, const std::vector<std::string>& arguments
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
     std::exit(static_cast<int>(code));
+}
+
+bool spawnGame(const fs::path& dataRoot, const fs::path& gameBinary, const std::vector<std::string>& arguments,
+               GameProcess& process, std::string& error)
+{
+    std::wstring command = quotedCommand(gameBinary, arguments);
+    STARTUPINFOW self {};
+    self.cb = sizeof(self);
+    GetStartupInfoW(&self);
+    STARTUPINFOW startup {};
+    startup.cb = sizeof(startup);
+    if (self.dwFlags & STARTF_USESHOWWINDOW) {
+        startup.dwFlags     = STARTF_USESHOWWINDOW;
+        startup.wShowWindow = self.wShowWindow;
+    }
+    PROCESS_INFORMATION info {};
+    if (!CreateProcessW(gameBinary.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, dataRoot.c_str(),
+                        &startup, &info)) {
+        error = "could not start " + gameBinary.string() + " (error " + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    CloseHandle(info.hThread);
+    process.handle = reinterpret_cast<unsigned long long>(info.hProcess);
+    process.pid    = info.dwProcessId;
+    return true;
+}
+
+bool gameRunning(GameProcess& process, int& exitCode)
+{
+    if (process.handle == 0) return false;
+    HANDLE h = reinterpret_cast<HANDLE>(process.handle);
+    if (WaitForSingleObject(h, 0) == WAIT_TIMEOUT) return true;
+    DWORD code = 1;
+    GetExitCodeProcess(h, &code);
+    CloseHandle(h);
+    process.handle = 0;
+    exitCode       = static_cast<int>(code);
+    return false;
 }
 
 } // namespace platform
