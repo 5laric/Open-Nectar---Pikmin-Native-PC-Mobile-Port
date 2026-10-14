@@ -89,6 +89,9 @@ void testRefused(const JoinCredentials& hostCreds, const JoinCredentials& guestC
           label);
     check(host.state() == JoinState::Rejected && host.error() == JoinError::Refused, "host records refusal");
     check(reply.size() <= hello.size(), "refusal is never larger than the request");
+    bool nonceHidden = true;
+    for (std::size_t i = reply.size() - 17; i < reply.size() - 1; ++i) nonceHidden = nonceHidden && reply[i] == 0;
+    check(nonceHidden, "a refusal does not reveal the room nonce");
 
     const std::vector<std::uint8_t> ping = encoded(MessageType::Ping, 0);
     std::vector<std::uint8_t> unused;

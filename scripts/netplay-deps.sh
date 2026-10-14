@@ -29,6 +29,8 @@ protobuf_version=3.21.12
 protobuf_sha=4eab9b524aa5913c6fffb20b2a8abf5ef7f95a80bc0701f3a6dbb4c607f73460
 gns_commit=d534c19aa760df3fb75fd20db13ba1932b8a5463
 gns_sha=099d4b0ff1837f0f27c83d4ce05869ec1d32136866f69a3336cc137e951189ab
+miniupnpc_version=2.3.3
+miniupnpc_sha=d52a0afa614ad6c088cc9ddff1ae7d29c8c595ac5fdd321170a05f41e634bd1a
 
 case "${target}" in
     linux|mingw64|android-arm64) ;;
@@ -72,6 +74,9 @@ fetch "protobuf-cpp-${protobuf_version}.tar.gz" \
 fetch "GameNetworkingSockets-${gns_commit:0:8}.tar.gz" \
     "https://github.com/ValveSoftware/GameNetworkingSockets/archive/${gns_commit}.tar.gz" \
     "${gns_sha}"
+fetch "miniupnpc-${miniupnpc_version}.tar.gz" \
+    "https://miniupnp.tuxfamily.org/files/miniupnpc-${miniupnpc_version}.tar.gz" \
+    "${miniupnpc_sha}"
 
 # Toolchain arguments shared by the CMake builds.
 cmake_target=()
@@ -164,5 +169,14 @@ if [[ "${target}" == mingw64 ]]; then
     # sensitive. Windows itself is not, so lower case is correct everywhere.
     sed -i 's/;Iphlpapi;/;iphlpapi;/' "${prefix}/lib/cmake/GameNetworkingSockets/GameNetworkingSockets.cmake"
 fi
+
+# 5. miniupnpc for UPnP IGD port mapping (the PCP/NAT-PMP client is ours).
+extract "miniupnpc-${miniupnpc_version}.tar.gz" "miniupnpc-${miniupnpc_version}"
+rm -rf "${work}/miniupnpc-build"
+cmake -S "${work}/miniupnpc-${miniupnpc_version}" -B "${work}/miniupnpc-build" "${cmake_common[@]}" \
+    "${cmake_target[@]}" -DUPNPC_BUILD_STATIC=ON -DUPNPC_BUILD_SHARED=OFF -DUPNPC_BUILD_TESTS=OFF \
+    -DUPNPC_BUILD_SAMPLE=OFF
+cmake --build "${work}/miniupnpc-build" -j "${jobs}"
+cmake --install "${work}/miniupnpc-build"
 
 printf '\nDependencias de red para %s instaladas en:\n  %s\n' "${target}" "${prefix}"

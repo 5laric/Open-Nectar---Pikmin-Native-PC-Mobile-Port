@@ -93,6 +93,12 @@ int main()
           "first guest survives the second attempt");
     second.reset();
 
+    // Quality stays -1 until GNS has measured it; RTT is known at once.
+    TransportStats stats;
+    check(host->stats(stats) && stats.rttMs >= 0
+              && (stats.localQuality == -1.0f || (stats.localQuality >= 0.0f && stats.localQuality <= 1.0f)),
+          "real link reports RTT and a valid quality");
+
     const std::uint8_t gameplay[] = {'p', 'i', 'k'};
     check(guest->send(Delivery::ReliableOrdered, gameplay, sizeof(gameplay)), "guest sends gameplay");
     check(pumpUntil(*guest, *host, TransportEventType::Message, [] { return true; }),
@@ -111,6 +117,41 @@ int main()
 
     again->close();
     host->close();
+
+    // Compatibility over real UDP: a PAL guest is told why, then a matching
+    // guest gets in through the same room.
+    CompatibilityInfo usa;
+    usa.game = static_cast<std::uint8_t>(GameId::Pikmin1);
+    usa.region = 1;
+    CompatibilityInfo pal = usa;
+    pal.region = 2;
+    const Endpoint compatEndpoint{"127.0.0.1", 39874};
+    auto compatRoom = make(GatedTransport::Role::Host, credentials(1));
+    compatRoom->requireCompatibility(usa);
+    check(compatRoom->listen(compatEndpoint), "compat room listens");
+    auto palGuest = make(GatedTransport::Role::Guest, credentials(1));
+    palGuest->requireCompatibility(pal);
+    palGuest->connect(compatEndpoint);
+    bool explained = false;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!explained && std::chrono::steady_clock::now() < until) {
+        TransportEvent event;
+        while (compatRoom->poll(event)) {
+        }
+        while (palGuest->poll(event)) explained = explained || event.detail == "incompatible:region";
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    check(explained, "incompatible guest is told the region differs over real UDP");
+    palGuest.reset();
+    auto usaGuest = make(GatedTransport::Role::Guest, credentials(1));
+    usaGuest->requireCompatibility(usa);
+    usaGuest->connect(compatEndpoint);
+    check(pumpUntil(*compatRoom, *usaGuest, TransportEventType::Connected,
+                    [&] { return compatRoom->state() == TransportState::Connected; }),
+          "compatible guest joins the same room afterwards");
+    check(compatRoom->bannedOrigins() == 0, "incompatible attempt is not penalised");
+    usaGuest->close();
+    compatRoom->close();
     std::printf("nectar_net_gated_gns_test: %s\n", failures == 0 ? "all tests passed" : "FAILED");
     return failures == 0 ? 0 : 1;
 }

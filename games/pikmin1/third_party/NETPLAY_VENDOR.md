@@ -59,12 +59,19 @@ install anything.
 | protobuf (runtime + host `protoc`) | 3.21.12 (`v21.12`, `f0dc78d7e6e331b8c6bb2d5283e06aa26883ca7c`) | `4eab9b524aa5913c6fffb20b2a8abf5ef7f95a80bc0701f3a6dbb4c607f73460` | BSD-3-Clause | all |
 | OpenSSL `libcrypto` | 3.5.5 (LTS branch) | `b28c91532a8b65a1f983b4c28b7488174e4a01008e29ce8e69bd789f28bc2a89` | Apache-2.0 | Linux, Android |
 | Windows BCrypt | system | — | Windows component | Windows |
+| miniupnpc (UPnP IGD) | 2.3.3 | `d52a0afa614ad6c088cc9ddff1ae7d29c8c595ac5fdd321170a05f41e634bd1a` | BSD-3-Clause | all |
 
 Verification done on 2026-10-14: the OpenSSL hash matches the
 `.sha256` published with the release; the GNS archive is byte-identical to the
 spike checkout of the pinned commit; the protobuf release archive matches the
 `v21.12` commit except for two packaging files (`Makefile.in`,
-`method_dump.sh`) not used by the build.
+`method_dump.sh`) not used by the build. miniupnpc comes from the official
+tarball (miniupnp.tuxfamily.org); its code is identical to the GitHub tag
+`miniupnpc_2_3_3` (`bf4215a7`) except for CVS `$Id$` lines. Its GPG
+signature was not checked (the author's public key was not available).
+The PCP/NAT-PMP client is our own code (`nectar_net/port_mapping.h`): both
+protocols are small fixed-layout UDP exchanges, and no maintained library
+covers PCP on all three platforms.
 
 Build choices:
 - GNS: static, `ENABLE_ICE=OFF`, no WebRTC, examples, tests or tools.

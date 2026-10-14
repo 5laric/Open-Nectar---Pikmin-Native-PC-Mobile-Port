@@ -73,6 +73,9 @@ ConnectionCodeError base32Decode(const std::string& text, std::vector<std::uint8
             bytes.push_back(static_cast<std::uint8_t>(accumulator >> bits));
         }
     }
+    // Canonical form only: a whole spare character (5+ leftover bits) or
+    // non-zero padding would let two different texts decode to one code.
+    if (bits >= 5) return ConnectionCodeError::BadPadding;
     if (bits != 0 && (accumulator & ((1U << bits) - 1U)) != 0) return ConnectionCodeError::BadPadding;
     return ConnectionCodeError::None;
 }
@@ -96,6 +99,7 @@ std::string encodeConnectionCode(const ConnectionCode& code)
     if (code.protocolMajor == 0) return {};
     if (allZero(code.sessionNonce) || allZero(code.joinSecret)) return {};
     if (code.endpoints.empty() || code.endpoints.size() > ConnectionCode::kMaxEndpoints) return {};
+    if (code.expiresUnixSeconds > UINT32_MAX) return {};
     for (const DirectEndpoint& endpoint : code.endpoints)
         if (!validEndpoint(endpoint)) return {};
 
@@ -105,10 +109,9 @@ std::string encodeConnectionCode(const ConnectionCode& code)
     writer.writeU16(code.protocolMajor);
     writer.writeU16(code.flags);
     writer.writeU8(static_cast<std::uint8_t>(code.endpoints.size()));
-    writer.writeU64(code.expiresUnixSeconds);
+    writer.writeU32(static_cast<std::uint32_t>(code.expiresUnixSeconds));
     writer.writeBytes(code.sessionNonce.data(), code.sessionNonce.size());
     writer.writeBytes(code.joinSecret.data(), code.joinSecret.size());
-    writer.writeBytes(code.hostFingerprint.data(), code.hostFingerprint.size());
     for (const DirectEndpoint& endpoint : code.endpoints) {
         writer.writeU8(static_cast<std::uint8_t>(endpoint.family));
         writer.writeU16(endpoint.port);
@@ -153,7 +156,7 @@ ConnectionCodeError decodeConnectionCode(const std::string& text, ConnectionCode
     std::vector<std::uint8_t> wire;
     const ConnectionCodeError base32Error = base32Decode(normalized.substr(sizeof(kPrefix) - 1U), wire);
     if (base32Error != ConnectionCodeError::None) return base32Error;
-    constexpr std::size_t kFixedBytes = 4U + 1U + 2U + 2U + 1U + 8U + 16U + 16U + 32U;
+    constexpr std::size_t kFixedBytes = 4U + 1U + 2U + 2U + 1U + 4U + 16U + 16U;
     if (wire.size() < kFixedBytes + 8U + 4U) return ConnectionCodeError::Truncated;
 
     const std::size_t bodySize = wire.size() - 4U;
@@ -166,16 +169,17 @@ ConnectionCodeError decodeConnectionCode(const std::string& text, ConnectionCode
     std::uint8_t magic[4]{};
     std::uint8_t version = 0;
     std::uint8_t endpointCount = 0;
+    std::uint32_t expires = 0;
     if (!reader.readBytes(magic, sizeof(magic)) || !std::equal(magic, magic + 4, kMagic))
         return ConnectionCodeError::BadMagic;
     if (!reader.readU8(version)) return ConnectionCodeError::Truncated;
     if (version != ConnectionCode::kFormatVersion) return ConnectionCodeError::UnsupportedVersion;
     if (!reader.readU16(code.protocolMajor) || !reader.readU16(code.flags) || !reader.readU8(endpointCount)
-        || !reader.readU64(code.expiresUnixSeconds)
+        || !reader.readU32(expires)
         || !reader.readBytes(code.sessionNonce.data(), code.sessionNonce.size())
-        || !reader.readBytes(code.joinSecret.data(), code.joinSecret.size())
-        || !reader.readBytes(code.hostFingerprint.data(), code.hostFingerprint.size()))
+        || !reader.readBytes(code.joinSecret.data(), code.joinSecret.size()))
         return ConnectionCodeError::Truncated;
+    code.expiresUnixSeconds = expires;
     if (endpointCount == 0 || endpointCount > ConnectionCode::kMaxEndpoints)
         return ConnectionCodeError::InvalidEndpointCount;
     if (code.protocolMajor == 0) return ConnectionCodeError::InvalidProtocol;
@@ -203,7 +207,6 @@ ConnectionCodeError decodeConnectionCode(const std::string& text, ConnectionCode
 
 ConnectionCodeError createConnectionCode(std::uint16_t protocolMajor, std::uint16_t flags,
                                          std::uint64_t nowUnixSeconds, std::uint64_t lifetimeSeconds,
-                                         const std::array<std::uint8_t, 32>& hostFingerprint,
                                          const std::vector<DirectEndpoint>& endpoints, ConnectionCode& code)
 {
     code = ConnectionCode{};
@@ -215,13 +218,12 @@ ConnectionCodeError createConnectionCode(std::uint16_t protocolMajor, std::uint1
             return ConnectionCodeError::InvalidAddressFamily;
         if (endpoint.port == 0) return ConnectionCodeError::InvalidPort;
     }
-    if (lifetimeSeconds == 0 || nowUnixSeconds > UINT64_MAX - lifetimeSeconds)
+    if (lifetimeSeconds == 0 || nowUnixSeconds > UINT32_MAX || lifetimeSeconds > UINT32_MAX - nowUnixSeconds)
         return ConnectionCodeError::Expired;
 
     code.protocolMajor = protocolMajor;
     code.flags = flags;
     code.expiresUnixSeconds = nowUnixSeconds + lifetimeSeconds;
-    code.hostFingerprint = hostFingerprint;
     code.endpoints = endpoints;
     if (!secureRandomBytes(code.sessionNonce.data(), code.sessionNonce.size())
         || !secureRandomBytes(code.joinSecret.data(), code.joinSecret.size())) {

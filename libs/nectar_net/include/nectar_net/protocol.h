@@ -19,6 +19,7 @@ enum class MessageType : std::uint8_t {
     CompatibilityResult = 6,
     Ping                 = 7,
     Pong                 = 8,
+    CompatibilityOffer   = 9,
     InputBundle          = 16,
     WorldDelta           = 32,
     WorldSnapshot        = 33,

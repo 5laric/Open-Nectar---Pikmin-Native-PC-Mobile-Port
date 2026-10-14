@@ -40,15 +40,53 @@ Estado: contrato previo a implementación. Los números son provisionales hasta 
 
 ## Handshake
 
-1. El invitado decodifica el código y conecta a un endpoint.
-2. El host responde a un `ClientProbe` pequeño con una cookie sin estado, sin amplificar bytes.
-3. `ClientHello` demuestra posesión de `join_secret` y vincula el transcript a la clave/fingerprint del host.
-4. Ambos negocian protocolo, juego, build, región, manifest de gameplay y capabilities.
-5. El host envía `SessionRules`; el invitado acepta o rechaza explícitamente.
-6. Tras autenticar se acuerdan `session_id` y un `resume_secret` distinto.
-7. El host consume la plaza y deja de aceptar nuevos handshakes.
+Implementado en `nectar_net` (`GatedTransport`, ADR-0002):
 
-El código nunca es un token de sesión permanente. Checksum sólo detecta errores de copia; el MAC/fingerprint autentica.
+1. El invitado decodifica el código `NECTAR1` y conecta a un endpoint. GNS
+   resuelve el desafío sin estado (cookie antiamplificación) y cifra el canal.
+2. Cuarentena: el invitado envía `ClientHello` (nonce de sala 16 + `join_secret`
+   16) por el canal fiable. El host compara ambos en tiempo constante y
+   responde `HostHello` (nonce 16 + veredicto 1); un rechazo lleva el nonce a
+   ceros para no revelar la sala a quien no tiene el secreto. Un solo intento por conexión,
+   5 s de plazo; cualquier otro mensaje antes del veredicto cierra la conexión.
+   Tres fallos desde un mismo origen lo vetan 30 s, doblando hasta 10 min.
+3. Compatibilidad: el invitado envía `CompatibilityOffer` con su
+   `CompatibilityInfo`; el host responde `CompatibilityResult` con el primer
+   campo distinto (juego, región, build, contenido, capabilities) y su propia
+   info, 10 s de plazo. El invitado vuelve a comparar y trata como violación un
+   veredicto que contradiga la info del host. Un invitado incompatible no se
+   penaliza: conocía el secreto.
+4. Sólo entonces ambos lados informan `Connected` y aceptan gameplay.
+5. Pendiente: `SessionRules`, `session_id` y `resume_secret` distinto.
+
+Riesgo aceptado (ADR-0002): un atacante activo en la ruta durante el handshake
+puede suplantar a cualquiera de los dos. El código nunca es un token de sesión
+permanente; el checksum sólo detecta errores de copia.
+
+### `CompatibilityInfo` (76 bytes, big endian)
+
+| Offset | Campo | Bytes |
+|---:|---|---:|
+| 0 | protocol_minor | 2 |
+| 2 | game (1 Pikmin 1, 2 Pikmin 2) | 1 |
+| 3 | region (código del juego) | 1 |
+| 4 | build digest | 32 |
+| 36 | content digest (datos y mods de lógica) | 32 |
+| 68 | capabilities | 4 |
+| 72 | required capabilities | 4 |
+
+`CompatibilityResult` = campo (1) + `CompatibilityInfo` del host.
+
+### Código `NECTAR1` (congelado el 14-10-2026)
+
+`NECTAR1-` + Crockford Base32 canónico en grupos de 5 de:
+magic `NCJC` | versión 1 | protocol_major u16 | flags u16 | nº endpoints u8 |
+caducidad u32 (Unix) | nonce 16 | join_secret 16 | por endpoint: familia u8,
+puerto u16, prioridad u8, 4 o 16 bytes | CRC32. Máximo 4 endpoints y 384
+caracteres. Con un IPv4 ocupa 119 caracteres. Se rechazan relleno no canónico,
+caracteres sobrantes y datos tras el CRC. Vectores de referencia en
+`libs/nectar_net/tests/connection_code_test.cpp`; cambiarlos rompe códigos ya
+compartidos y exige un formato nuevo (`NECTAR2`).
 
 ## Tipos v0 reservados
 
@@ -62,6 +100,7 @@ El código nunca es un token de sesión permanente. Checksum sólo detecta error
 | 6 | CompatibilityResult | control | ambas |
 | 7 | Ping | control | ambas |
 | 8 | Pong | control | ambas |
+| 9 | CompatibilityOffer | control | C→H |
 | 16 | InputBundle | input | C→H |
 | 32 | WorldDelta | state | H→C |
 | 33 | WorldSnapshot | bulk | H→C |
@@ -105,5 +144,4 @@ Todos los límites se centralizarán en `nectar_net/limits.h` y reducirlos será
 
 - Asignación definitiva de IDs y representación cuantizada.
 - Esquemas por familia de entidad.
-- Algoritmo exacto de MAC/cookie según la API final del transporte.
 - Ventanas de secuencia, tick y reanudación medidas en pruebas de red.

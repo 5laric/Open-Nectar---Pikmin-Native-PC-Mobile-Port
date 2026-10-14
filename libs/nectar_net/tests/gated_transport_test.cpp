@@ -37,6 +37,7 @@ struct FakeEnd final : ITransport {
     std::deque<TransportEvent> inbox;
     int disconnects = 0;
     bool lastFlush = false;
+    std::string address = "192.0.2.10"; // what the host sees for this peer
 
     FakeEnd(std::shared_ptr<FakeLink> shared, bool host) : link(std::move(shared)), isHost(host)
     {
@@ -67,6 +68,7 @@ struct FakeEnd final : ITransport {
         current = other->current = TransportState::Connected;
         push(TransportEventType::Connected);
         other->push(TransportEventType::Connected);
+        other->inbox.back().peerAddress = address;
         return true;
     }
     bool send(Delivery delivery, const std::uint8_t* data, std::size_t size) override
@@ -100,6 +102,13 @@ struct FakeEnd final : ITransport {
         current = TransportState::Closed;
     }
     TransportState state() const override { return current; }
+    bool stats(TransportStats& output) const override
+    {
+        output = TransportStats{};
+        if (current != TransportState::Connected) return false;
+        output.rttMs = 42;
+        return true;
+    }
 };
 
 JoinCredentials credentials(std::uint8_t seed)
@@ -257,6 +266,141 @@ void testGameplayBeforeSecretIsDropped()
     check(!pair.hostEnd->lastFlush, "out-of-turn peer gets no reply");
 }
 
+// A peer that keeps failing is banned, the ban doubles, and the right guest
+// from another origin still gets in while the ban runs.
+void testRepeatedFailuresAreBanned()
+{
+    const JoinCredentials good = credentials(6);
+    JoinCredentials bad = good;
+    bad.joinSecret[0] ^= 1;
+    Pair pair(good, good);
+    std::deque<TransportEvent> hostEvents, guestEvents;
+
+    auto attempt = [&](const JoinCredentials& creds, const char* address) {
+        auto end = std::make_unique<FakeEnd>(pair.link, false);
+        end->address = address;
+        GatedTransport peer(std::move(end), GatedTransport::Role::Guest, creds, [&] { return pair.now; }, 5000);
+        peer.connect({"127.0.0.1", 1});
+        for (int round = 0; round < 8; ++round) {
+            TransportEvent event;
+            while (pair.host->poll(event)) hostEvents.push_back(event);
+            while (peer.poll(event)) {
+            }
+        }
+        const bool connected = pair.host->state() == TransportState::Connected;
+        if (connected) pair.host->disconnectPeer(false);
+        TransportEvent event;
+        while (pair.host->poll(event)) {
+        }
+        return connected;
+    };
+
+    for (std::uint32_t i = 0; i < GatedTransport::kFailuresBeforeBan; ++i) attempt(bad, "198.51.100.7");
+    check(pair.host->bannedOrigins() == 1, "origin is banned after repeated failures");
+    const std::uint32_t before = pair.host->rejectedPeers();
+    check(!attempt(good, "198.51.100.7"), "banned origin is dropped even with the right secret");
+    check(pair.host->lastJoinError() == JoinError::RateLimited && pair.host->rejectedPeers() == before + 1,
+          "ban is reported as rate_limited");
+    check(attempt(good, "203.0.113.5"), "another origin still joins while the ban runs");
+
+    pair.now += GatedTransport::kFirstBanMs;
+    check(pair.host->bannedOrigins() == 0, "ban expires");
+    attempt(bad, "198.51.100.7");
+    check(pair.host->bannedOrigins() == 1, "one more failure re-bans at once");
+    pair.now += GatedTransport::kFirstBanMs;
+    check(pair.host->bannedOrigins() == 1, "second ban lasts twice as long");
+    pair.now += GatedTransport::kFirstBanMs;
+    check(attempt(good, "198.51.100.7"), "origin joins once the ban is over");
+    attempt(bad, "198.51.100.7");
+    check(pair.host->bannedOrigins() == 0, "a success resets the failure count");
+}
+
+void testOriginTableIsBounded()
+{
+    const JoinCredentials good = credentials(7);
+    JoinCredentials bad = good;
+    bad.joinSecret[0] ^= 1;
+    Pair pair(good, good);
+    char address[32];
+    for (std::size_t i = 0; i < GatedTransport::kMaxTrackedOrigins * 2; ++i) {
+        std::snprintf(address, sizeof(address), "10.0.%zu.%zu", i / 200, i % 200);
+        for (std::uint32_t n = 0; n < GatedTransport::kFailuresBeforeBan; ++n) {
+            auto end = std::make_unique<FakeEnd>(pair.link, false);
+            end->address = address;
+            GatedTransport peer(std::move(end), GatedTransport::Role::Guest, bad, [&] { return pair.now; }, 5000);
+            peer.connect({"127.0.0.1", 1});
+            TransportEvent event;
+            for (int round = 0; round < 6; ++round) {
+                while (pair.host->poll(event)) {
+                }
+                while (peer.poll(event)) {
+                }
+            }
+        }
+    }
+    check(pair.host->bannedOrigins() <= GatedTransport::kMaxTrackedOrigins, "origin table stays bounded");
+}
+
+void testStatsPassThrough()
+{
+    const JoinCredentials creds = credentials(8);
+    Pair pair(creds, creds);
+    TransportStats stats;
+    check(!pair.host->stats(stats) && stats.rttMs == -1, "no stats without a peer");
+    pair.guest->connect({"127.0.0.1", 1});
+    std::deque<TransportEvent> hostEvents, guestEvents;
+    pair.pump(hostEvents, guestEvents);
+    check(pair.host->stats(stats) && stats.rttMs == 42, "stats come from the inner transport");
+}
+
+CompatibilityInfo compatInfo(std::uint8_t region)
+{
+    CompatibilityInfo info;
+    info.game = static_cast<std::uint8_t>(GameId::Pikmin1);
+    info.region = region;
+    info.build[0] = 0x42;
+    return info;
+}
+
+void testCompatibilityStep()
+{
+    const JoinCredentials creds = credentials(9);
+    {
+        Pair pair(creds, creds);
+        pair.host->requireCompatibility(compatInfo(1));
+        pair.guest->requireCompatibility(compatInfo(1));
+        pair.guest->connect({"127.0.0.1", 1});
+        std::deque<TransportEvent> hostEvents, guestEvents;
+        pair.pump(hostEvents, guestEvents);
+        check(has(hostEvents, TransportEventType::Connected) && has(guestEvents, TransportEventType::Connected),
+              "compatible pair connects after both steps");
+        check(!has(hostEvents, TransportEventType::Message) && !has(guestEvents, TransportEventType::Message),
+              "compatibility messages never reach the session layer");
+        const std::uint8_t byte = 1;
+        check(pair.guest->send(Delivery::Unreliable, &byte, 1), "gameplay flows once compatible");
+    }
+    {
+        Pair pair(creds, creds);
+        pair.host->requireCompatibility(compatInfo(1));
+        pair.guest->requireCompatibility(compatInfo(2));
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            pair.guest->connect({"127.0.0.1", 1});
+            std::deque<TransportEvent> hostEvents, guestEvents;
+            pair.pump(hostEvents, guestEvents);
+            bool explained = false;
+            for (const TransportEvent& event : guestEvents) explained = explained || event.detail == "incompatible:region";
+            check(explained && !has(guestEvents, TransportEventType::Connected),
+                  "guest is told the region differs and never connects");
+            check(hostEvents.empty() && pair.host->state() == TransportState::Listening,
+                  "host stays open and silent for an incompatible guest");
+            check(pair.guest->compatibility()->peer().region == 1, "guest knows the host's region");
+            const std::uint8_t byte = 1;
+            check(!pair.host->send(Delivery::Unreliable, &byte, 1), "no gameplay with an incompatible guest");
+        }
+        check(pair.host->bannedOrigins() == 0, "an incompatible friend is never banned");
+    }
+}
+
 void testRoleMisuse()
 {
     const JoinCredentials creds = credentials(5);
@@ -273,6 +417,10 @@ int main()
     testWrongSecretKeepsRoomOpen();
     testSilentPeerTimesOut();
     testGameplayBeforeSecretIsDropped();
+    testRepeatedFailuresAreBanned();
+    testOriginTableIsBounded();
+    testStatsPassThrough();
+    testCompatibilityStep();
     testRoleMisuse();
 
     std::printf("nectar_net_gated_transport_test: %s\n", failures == 0 ? "all tests passed" : "FAILED");

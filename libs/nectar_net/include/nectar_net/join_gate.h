@@ -43,6 +43,8 @@ enum class JoinError {
     Malformed,
     ProtocolMismatch,
     Refused, // wrong secret or a code from another room; deliberately not split
+    RateLimited, // host: origin temporarily banned after repeated failures
+    Incompatible, // authenticated, but game/region/build/content differ
 };
 
 enum class JoinAction {

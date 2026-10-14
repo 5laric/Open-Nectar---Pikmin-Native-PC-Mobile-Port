@@ -102,8 +102,11 @@ JoinAction HostJoinGate::onMessage(Delivery delivery, const std::uint8_t* data, 
     secureWipe(message.payload.data(), message.payload.size());
     const bool accepted = nonceOk & secretOk;
 
-    std::uint8_t reply[kHostHelloPayloadBytes];
-    std::memcpy(reply, mCredentials.sessionNonce.data(), 16);
+    // A refusal carries no room nonce: a peer without the secret learns
+    // nothing about the room, and a guest with a stale code can still tell
+    // "refused" apart from a malformed answer.
+    std::uint8_t reply[kHostHelloPayloadBytes] = {};
+    if (accepted) std::memcpy(reply, mCredentials.sessionNonce.data(), 16);
     reply[16] = accepted ? kVerdictAccepted : kVerdictRefused;
     if (!encodeHandshake(MessageType::HostHello, reply, sizeof(reply), output)) return reject(JoinError::Malformed);
 
@@ -167,11 +170,12 @@ JoinAction GuestJoinGate::onMessage(Delivery delivery, const std::uint8_t* data,
     const JoinError error =
         decodeHandshake(delivery, data, size, MessageType::HostHello, kHostHelloPayloadBytes, message);
     if (error != JoinError::None) return reject(error);
-    if (!constantTimeEqual(message.payload.data(), mCredentials.sessionNonce.data(), 16))
-        return reject(JoinError::Malformed);
 
     switch (message.payload[16]) {
     case kVerdictAccepted:
+        // An acceptance must name this room.
+        if (!constantTimeEqual(message.payload.data(), mCredentials.sessionNonce.data(), 16))
+            return reject(JoinError::Malformed);
         mState = JoinState::Authenticated;
         return JoinAction::None;
     case kVerdictRefused:
@@ -196,6 +200,8 @@ const char* joinErrorString(JoinError error)
     case JoinError::Malformed:         return "malformed";
     case JoinError::ProtocolMismatch:  return "protocol_mismatch";
     case JoinError::Refused:           return "refused";
+    case JoinError::RateLimited:       return "rate_limited";
+    case JoinError::Incompatible:      return "incompatible";
     }
     return "invalid_join_error";
 }

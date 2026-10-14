@@ -1256,9 +1256,15 @@ Progreso verificable: [`docs/netplay/TRANSPORT_SPIKE.md`](docs/netplay/TRANSPORT
 - [x] build Android NDK 28 arm64; las 6 pruebas y el cruce de dos procesos
   Linux↔Android pasan bajo `qemu-aarch64` (emulación, no dispositivo);
 - [ ] conexión en un dispositivo Android real y entre máquinas distintas.
-- [ ] RTT/pérdida/estado expuestos por `ITransport` sin tipos de GNS;
-- [ ] pruebas de saturación, segundo invitado, reconexión, destrucción repetida
-  y revisión ASan/TSan de fugas/carreras en las tres plataformas.
+- [x] `ITransport::stats()`: RTT, calidad local/remota, ritmo y colas
+  pendientes, sin tipos de GNS (calidad -1 hasta que GNS la mide);
+- [x] Linux: `nectar_net_gns_stress_test` (2000 mensajes fiables de 1 KiB
+  completos y en orden con control de cola, 30 ciclos de entrar/salir con
+  cierres limpios y abruptos, destrucción del host conectado), segundo
+  invitado y reconexión en `gated_gns_test`; ASan+UBSan+LSan sin errores;
+  TSan sin carreras de datos (108 avisos de orden de cerrojos, todos internos
+  de GNS con `try_lock_for` temporizado, que no puede interbloquear);
+- [ ] las mismas pruebas en Windows y Android reales.
 
 Entregables:
 
@@ -1300,17 +1306,51 @@ Progreso verificable: `libs/nectar_net/include/nectar_net/connection_code.h` y
   rechazado, invitado correcto, segundo invitado rechazado, gameplay y
   reconexión) correctos, también con ASan+UBSan+LeakSanitizer
   (`-fno-sanitize=vptr`: GNS se compila sin RTTI y da falso positivo);
-- [ ] riesgo abierto: un peer sin secreto ocupa la única plaza hasta 5 s
-  (timeout) y puede reintentarlo en bucle para bloquear la sala. Requiere
-  conocer IP y puerto del código; mitigar en endurecimiento (timeout menor,
-  límite por dirección o sustituir una conexión aún en cuarentena);
-- [ ] congelar el significado del campo de identidad de 32 bytes y versionar
-  de nuevo el código si pasa de fingerprint a clave pública;
-- [ ] custodia del secreto efímero y borrado seguro al terminar la sesión;
-- [ ] PCP, NAT-PMP, UPnP e IPv6 global;
-- [ ] integración del código único en launcher y Android;
-- [ ] handshake autenticado, canal ligado al transcript, anti-replay, cookie
-  antiamplificación y respuesta automática del invitado;
+- [x] bloqueo de sala mitigado: tres fallos (secreto erróneo, silencio,
+  mensaje fuera de turno o colgar en cuarentena) desde un mismo origen lo
+  vetan 30 s, doblando hasta 10 min; tabla acotada a 64 orígenes, sólo en
+  memoria. Un amigo incompatible no se penaliza. Riesgo residual: muchos
+  orígenes distintos (no realista para una sala entre amigos);
+- [x] `NECTAR1` congelado: eliminado el campo de identidad de 32 bytes
+  (ADR-0002 no lo usa), caducidad u32, Base32 canónico estricto (se rechazan
+  caracteres sobrantes: fallo real encontrado al acortar el formato), vectores
+  de referencia; 119 caracteres con un IPv4;
+- [x] secretos borrados con `secureWipe` en las puertas y mensajes del
+  handshake; comparación en tiempo constante;
+- [x] comprobación de compatibilidad tras el secreto (`CompatibilityCheck`,
+  integrada en `GatedTransport`): juego, región, build, contenido y
+  capabilities; el invitado recibe el campo y la info del host para
+  explicarlo; probada con transporte falso y UDP real;
+- [x] fuzzing determinista de código, cabecera, compatibilidad y cuarentena
+  (`nectar_net_decoder_fuzz_test`, 200 000 iteraciones, también con
+  ASan+UBSan): ningún secreto alterado autentica y ninguna oferta
+  incompatible pasa;
+- [x] publicación del puerto implementada y probada con routers simulados
+  (`PortPublisher`): PCP (cliente propio, RFC 6887) → NAT-PMP si el router
+  responde "versión no soportada" → UPnP IGD (miniupnpc 2.3.3); IPv6 global y
+  endpoint LAN opcional; clasificación `public`/`ipv6_only`/`behind_cgnat`/
+  `no_automatic_mapping`; un mapping cuya dirección externa no es pública se
+  retira al momento; renovación a mitad de vida con reintento a 30 s y aviso
+  de cambio de endpoint; borrado al cerrar. Respuestas del router validadas
+  estrictamente (tamaño, opcode, nonce, protocolo, puerto) y fuzzeadas;
+- [ ] **EN CURSO (necesita al mantenedor)** prueba con routers reales:
+  `nectar_net_publish_probe` abre y cierra un puerto y dice qué método
+  funcionó, sin mostrar direcciones salvo `--show-addresses`;
+- [ ] Android: `/proc/net/route` está vetado a las apps desde Android 10; el
+  gateway lo debe pasar la capa Java (UPnP funciona sin él);
+- [x] lógica de sala de un solo código para ambos juegos (`nectar_net/room.h`):
+  `HostRoom` elige puerto alto aleatorio (o fijo), publica, emite el código,
+  lo reemite si cambia el endpoint y al cerrar borra mapping y secreto;
+  `GuestJoin` prueba los endpoints por prioridad con 6 s cada uno y devuelve
+  un fallo explicable (`bad_code`, `expired`, `wrong_version`, `unreachable`,
+  `refused`, `incompatible` + campo, `room_full`, `lost`). Probada con red
+  simulada y con GNS real; las 13 pruebas pasan en Linux y como binarios
+  Android ARM64 bajo `qemu-aarch64`; MinGW compila;
+- [ ] **BLOQUEADO** pantallas Crear/Unirse en el launcher: `launcher_gui.cpp`
+  y `launcher_main.cpp` tienen cambios locales ajenos sin commit;
+- [x] respuesta automática del invitado por la conexión y cookie
+  antiamplificación (desafío sin estado de GNS);
+- [ ] `SessionRules`, `session_id` y `resume_secret` para reanudar;
 - [ ] fallback manual y segundo código sólo en modo avanzado.
 
 Entregables:
@@ -1497,16 +1537,21 @@ orden actualizado, evitando conectar gameplay sobre una base insegura, es:
    dependencia de `/tmp` o paquetes globales.
 4. **Cross-build temprano:** compilar y ejecutar handshake/transporte en Linux,
    MinGW x86-64 y Android NDK 28 arm64 antes de ampliar el protocolo.
-5. **Endurecer transporte:** métricas RTT/pérdida, límites, segundo invitado,
-   cierre/reconexión, saturación y ASan/TSan.
-6. **Handshake Nectar:** vincular `join_secret`, nonces, identidad del host,
+5. **Endurecer transporte — HECHO en Linux:** métricas RTT/pérdida, límites,
+   segundo invitado, cierre/reconexión, saturación, veto por origen y
+   ASan/TSan; falta repetirlo en Windows y Android reales.
+6. **Handshake Nectar — cuarentena y compatibilidad HECHAS; faltan
+   `SessionRules` y reanudación:** vincular `join_secret`, nonces, identidad del host,
    transcript, versión y capabilities; añadir cookie antiamplificación,
    anti-replay, rotación y borrado seguro.
-7. **Congelar `NECTAR1`:** actualizar el campo de identidad si hace falta,
+7. **Congelar `NECTAR1` — HECHO:** actualizar el campo de identidad si hace falta,
    publicar golden vectors y conservar compatibilidad sólo cuando sea segura.
-8. **Publicación directa:** interfaz `PortMapper`, gateways simulados, después
-   PCP, NAT-PMP, UPnP, IPv6 global y fallback manual; nunca STUN/TURN.
-9. **Launcher de un código:** crear sala, mostrar/copiar/QR, pegar/escanear,
+8. **Publicación directa — implementada con gateways simulados; falta probar
+   routers reales y el gateway en Android:** interfaz `PortMapper`, gateways
+   simulados, después PCP, NAT-PMP, UPnP, IPv6 global y fallback manual;
+   nunca STUN/TURN.
+9. **Launcher de un código — lógica hecha (`room.h`); falta la interfaz, a la
+   espera de los cambios locales del launcher:** crear sala, mostrar/copiar/QR, pegar/escanear,
    respuesta automática, mensajes CGNAT/firewall y cancelación que limpie
    secretos/mappings. El flujo NPIX queda sólo como herramienta heredada.
 10. **Protocolo/fake transport:** completar mensajes v1, clocks, replay,

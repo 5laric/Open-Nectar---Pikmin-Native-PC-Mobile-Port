@@ -99,7 +99,8 @@ ganaría ver o alterar una partida. Se acepta ese riesgo residual. Se adopta:
 - un solo invitado por sala; cerrar la sala invalida el código y el mapping;
 - la defensa principal es la validación estricta de todos los mensajes y la
   cookie antiamplificación propia de GNS;
-- el campo de 32 bytes de `NECTAR1` deja de usarse para autenticación.
+- el campo de 32 bytes de `NECTAR1` se eliminó al congelar el formato
+  (14-10-2026); volver a Noise exigirá un formato nuevo (`NECTAR2`).
 
 Riesgo aceptado y documentado: un atacante en ruta durante el handshake podría
 retransmitir el secreto y suplantar a cualquiera de los dos. Las opciones A y B

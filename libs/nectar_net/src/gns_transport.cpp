@@ -104,7 +104,7 @@ struct GnsTransport::Impl {
             if (info.m_info.m_hListenSocket == k_HSteamListenSocket_Invalid) break;
             if (connection != k_HSteamNetConnection_Invalid
                 || sockets->AcceptConnection(info.m_hConn) != k_EResultOK) {
-                sockets->CloseConnection(info.m_hConn, 0, "Only one guest is allowed", false);
+                sockets->CloseConnection(info.m_hConn, 0, kRoomFullReason, false);
                 break;
             }
             connection = info.m_hConn;
@@ -114,10 +114,14 @@ struct GnsTransport::Impl {
                 connections[connection] = this;
             }
             break;
-        case k_ESteamNetworkingConnectionState_Connected:
+        case k_ESteamNetworkingConnectionState_Connected: {
             currentState = TransportState::Connected;
+            char peer[SteamNetworkingIPAddr::k_cchMaxString] = {};
+            info.m_info.m_addrRemote.ToString(peer, sizeof(peer), false);
             queue(TransportEventType::Connected);
+            events.back().peerAddress = peer;
             break;
+        }
         case k_ESteamNetworkingConnectionState_ClosedByPeer:
         case k_ESteamNetworkingConnectionState_ProblemDetectedLocally: {
             // A refused second guest may still produce a terminal callback
@@ -299,5 +303,23 @@ bool GnsTransport::poll(TransportEvent& event)
 void GnsTransport::disconnectPeer(bool flushReliable) { mImpl->disconnectPeer(flushReliable); }
 void GnsTransport::close() { mImpl->close(); }
 TransportState GnsTransport::state() const { return mImpl->currentState; }
+
+bool GnsTransport::stats(TransportStats& output) const
+{
+    output = TransportStats{};
+    if (mImpl->sockets == nullptr || mImpl->connection == k_HSteamNetConnection_Invalid) return false;
+    SteamNetConnectionRealTimeStatus_t status{};
+    if (mImpl->sockets->GetConnectionRealTimeStatus(mImpl->connection, &status, 0, nullptr) != k_EResultOK)
+        return false;
+    output.rttMs = status.m_nPing;
+    output.localQuality = status.m_flConnectionQualityLocal;
+    output.remoteQuality = status.m_flConnectionQualityRemote;
+    output.sendRateBytesPerSecond = status.m_nSendRateBytesPerSecond;
+    output.pendingReliableBytes = status.m_cbPendingReliable;
+    output.pendingUnreliableBytes = status.m_cbPendingUnreliable;
+    output.outBytesPerSecond = status.m_flOutBytesPerSec;
+    output.inBytesPerSecond = status.m_flInBytesPerSec;
+    return true;
+}
 
 } // namespace nectar::net

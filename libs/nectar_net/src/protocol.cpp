@@ -19,6 +19,7 @@ bool isKnownMessageType(MessageType type)
     case MessageType::CompatibilityResult:
     case MessageType::Ping:
     case MessageType::Pong:
+    case MessageType::CompatibilityOffer:
     case MessageType::InputBundle:
     case MessageType::WorldDelta:
     case MessageType::WorldSnapshot:

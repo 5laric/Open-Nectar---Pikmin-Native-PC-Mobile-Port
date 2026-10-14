@@ -28,9 +28,9 @@ No se aceptará que el ejecutable dependa de una DLL/.so no incluida en el paque
 
 | Plataforma | Configuración | Build | Conexión directa | Estado |
 |---|---:|---:|---:|---|
-| Linux x86-64 | sí | sí | localhost sí | 6/6 pruebas, binario sin `.so` de OpenSSL/protobuf |
-| Windows x86-64/MinGW | sí | sí | no ejecutado | sin Wine ni Windows aquí; el `.exe` sólo importa DLL del sistema |
-| Android arm64/NDK 28 | sí | sí | bajo `qemu-aarch64` sí | 6/6 pruebas y cruce con Linux; falta dispositivo real |
+| Linux x86-64 | sí | sí | localhost sí | 13/13 pruebas, binario sin `.so` de OpenSSL/protobuf/miniupnpc |
+| Windows x86-64/MinGW | sí | sí | no ejecutado | sin Wine ni Windows aquí; los `.exe` sólo importan DLL del sistema |
+| Android arm64/NDK 28 | sí | sí | bajo `qemu-aarch64` sí | 13/13 pruebas y cruce con Linux; falta dispositivo real |
 
 Dependencias reproducibles (2026-10-14): `scripts/netplay-deps.sh` descarga
 las versiones fijadas, comprueba SHA-256 y compila estático para las tres

@@ -7,9 +7,9 @@
 namespace nectar::net {
 
 // Direct encrypted UDP transport backed by Valve GameNetworkingSockets.
-// This class is built only when NECTAR_NET_ENABLE_GNS is enabled. GNS protects
-// packets in transit; the application handshake must still bind the
-// NECTAR1 join secret and host fingerprint to defeat an active MITM.
+// This class is built only when NECTAR_NET_ENABLE_GNS is enabled. GNS
+// encrypts packets in transit but does not authenticate the peer: wrap it in
+// GatedTransport, which checks the NECTAR1 join secret (ADR-0002).
 class GnsTransport final : public ITransport {
 public:
     GnsTransport();
@@ -25,6 +25,7 @@ public:
     void disconnectPeer(bool flushReliable) override;
     void close() override;
     TransportState state() const override;
+    bool stats(TransportStats& output) const override;
 
 private:
     struct Impl;
