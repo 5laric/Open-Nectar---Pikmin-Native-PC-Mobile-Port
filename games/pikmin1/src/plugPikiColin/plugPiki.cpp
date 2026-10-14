@@ -19,6 +19,7 @@
 #include "netplay/pc_netplay_camlead.h"
 #include "netplay/pc_netplay_det.h"
 #include "netplay/pc_netplay_present.h"
+#include "pc_vs.h"
 #endif
 
 #define TIMER_STATE_X           (32) ///< Horizontal position to start printing timer debug text from.
@@ -331,7 +332,10 @@ int PlugPikiApp::idle()
 		pc_gfx_flush_batch();
 		pc_netplay_present_end_authoritative(*gsys->mDGXGfx);
 
-		if (!pc_netplay_present_skip_presentation()) {
+		// A section exit in the sim pass (QuittingGameModeState::postUpdate:
+		// exitStage, then softReset) leaves nothing to present: the stage
+		// managers are gone until the next idle builds the new section.
+		if (!pc_netplay_present_skip_presentation() && !gsys->mSoftResetPending) {
 			pc_render_begin_presentation(1.0);
 			gsys->mDGXGfx->resetPresentBuffer();
 			pc_netplay_present_begin_presentation(*gsys->mDGXGfx);
@@ -398,6 +402,13 @@ int PlugPikiApp::idle()
 
 	gsys->mTimer->_stop("all");
 
+#if defined(PIKI_PC_PORT)
+	// Netplay: the VS pause is sim state, decided at the end of the tick
+	// (otherwise the VS HUD in waitRetrace decides it).
+	if (pc_netplay_deterministic()) {
+		pc_vs_det_tick_end();
+	}
+#endif
 	gsys->waitRetrace();
 	gsys->setHeap(SYSHEAP_NULL);
 

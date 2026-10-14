@@ -54,6 +54,7 @@
 #include "pc_coop.h"
 #include "timing/pc_render_phase.h"
 #include "netplay/pc_netplay_camlead.h"
+#include "netplay/pc_netplay_det.h"
 #include "netplay/pc_netplay_present.h"
 #if defined(PIKI_PC_PORT)
 #include "pc_permadeath.h"
@@ -1022,10 +1023,16 @@ ModeState* IntroGameModeState::update(u32& result)
 ModeState* RunningModeState::update(u32& result)
 {
 #if defined(PIKI_PC_PORT)
+	// Netplay: the end screen's choice comes from both players' synced pads,
+	// so every peer leaves on the same tick.
+	if (pc_vs_active() && pc_netplay_deterministic() && sP1Controller && sP2Controller) {
+		pc_vs_end_screen_sim_input(sP1Controller->mInputPressed, sP2Controller->mInputPressed);
+	}
 	// VS: revancha o título, pedidos desde la pantalla final.
 	if (const int vsExit = pc_vs_take_exit_request()) {
 		gameflow.mPauseAll                         = FALSE;
 		mParentSection->mPendingOnePlayerSectionID = vsExit == PC_VS_EXIT_REMATCH ? ONEPLAYER_NewPikiGame : ONEPLAYER_GameExit;
+		if (vsExit != PC_VS_EXIT_REMATCH) pc_vs_note_left_to_title();
 		gsys->setFade(0.0f);
 		return new QuittingGameModeState(mParentSection);
 	}
@@ -1227,6 +1234,7 @@ ModeState* RunningModeState::update(u32& result)
 		// y "salir", volver al título.
 		gameflow.mIsUIOverlayActive                = mIsOverlayCached;
 		mParentSection->mPendingOnePlayerSectionID = state == zen::ogScrPauseMgr::PAUSE_ExitToSunset ? ONEPLAYER_NewPikiGame : ONEPLAYER_GameExit;
+		if (state == zen::ogScrPauseMgr::PAUSE_ExitToTitle) pc_vs_note_left_to_title();
 		gsys->setFade(0.0f);
 		return new QuittingGameModeState(mParentSection);
 #endif

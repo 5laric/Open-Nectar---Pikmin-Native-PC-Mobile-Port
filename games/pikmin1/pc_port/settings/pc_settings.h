@@ -131,6 +131,10 @@ void pc_settings_draw_vs_hud(void);
 void pc_settings_draw_achievement_toast(void);
 /// VS: pasa las reglas guardadas (menú previo) a la partida.
 void pc_settings_apply_vs_rules(void);
+#if defined(PIKI_PC_PORT)
+/// VS: el mapa elegido en el menú previo (id de pc_vs_map_list; "" = la arena de serie).
+const char* pc_settings_get_vs_map(void);
+#endif
 /// VS: menú previo con la explicación y las reglas. Resultado: PC_DEVASSIGN_*.
 void pc_vsrules_prompt_open(void);
 bool pc_vsrules_prompt_active(void);
