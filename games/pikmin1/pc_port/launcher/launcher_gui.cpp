@@ -10,6 +10,9 @@
 #include "launcher_gui.h"
 
 #include "bti_decode.h"
+#if PIKMIN_LAUNCHER_NETPLAY
+#include "launcher_coop.h"
+#endif
 #include "launcher_platform.h"
 #include "settings_model.h"
 #include "release_update.h"
@@ -38,6 +41,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -624,8 +628,52 @@ struct Hub {
     std::string toast;
     float toastTime = 0.0f;
     bool chosen = false;
+    bool coopOpen = false;
 
     Hub(const HubState& s, HubResult& r) : state(s), result(r) {}
+
+#if PIKMIN_LAUNCHER_NETPLAY
+    // Online co-op panel (netplay builds of the game): the game runs as a
+    // child while the panel shows and takes the connection codes.
+    platform::GameProcess coopProcess;
+    std::unique_ptr<CoopFlow> coop;
+    std::vector<char> coopInput = std::vector<char>(32768, '\0');
+    std::string coopError;
+
+    CoopFlow& coopFlow()
+    {
+        if (!coop) {
+            coop = std::make_unique<CoopFlow>(
+                [this](const std::vector<std::string>& args, std::string& error) {
+                    const GameInstall& game = state.games[int(HubGame::Pikmin1)];
+                    return platform::spawnGame(game.directory, game.executable, args, coopProcess, error);
+                },
+                [this](int& code) { return platform::gameRunning(coopProcess, code); });
+        }
+        return *coop;
+    }
+
+    static fs::path coopExchangeDir()
+    {
+        const auto stamp = std::chrono::system_clock::now().time_since_epoch().count();
+        return platform::cacheDirectory() / "netplay"
+             / ("session-" + std::to_string(platform::currentProcessId()) + "-" + std::to_string(stamp));
+    }
+
+    void openCoop(bool host)
+    {
+        coopError.clear();
+        std::fill(coopInput.begin(), coopInput.end(), '\0');
+        CoopFlow& flow = coopFlow();
+        if (host) {
+            std::string err;
+            flow.startHost(coopExchangeDir(), err);
+        } else {
+            flow.startJoin(coopExchangeDir());
+        }
+        coopOpen = true;
+    }
+#endif
 
     void choose(HubAction action, HubGame game)
     {
@@ -891,6 +939,16 @@ struct Hub {
                 ImGui::SetCursorScreenPos(ImVec2(x + buttonW + 12.0f, below + 38.0f));
                 if (glassButton("Map editor", ImVec2(buttonW, 44.0f))) choose(HubAction::MapEditor, HubGame(i));
             }
+#if PIKMIN_LAUNCHER_NETPLAY
+            // Online co-op: two captains on two PCs (netplay builds).
+            if (installed && !isPikmin2 && state.netplay) {
+                const float coopW = (cardW - 12.0f) * 0.5f;
+                ImGui::SetCursorScreenPos(ImVec2(x, below + 38.0f + 44.0f + 10.0f));
+                if (glassButton("Host Co-op", ImVec2(coopW, 44.0f))) openCoop(true);
+                ImGui::SetCursorScreenPos(ImVec2(x + coopW + 12.0f, below + 38.0f + 44.0f + 10.0f));
+                if (glassButton("Join Co-op", ImVec2(coopW, 44.0f))) openCoop(false);
+            }
+#endif
             ImGui::PopID();
         }
     }
@@ -1434,6 +1492,104 @@ struct Hub {
         ImGui::End();
     }
 
+#if PIKMIN_LAUNCHER_NETPLAY
+    // A connection code, read-only, wrapped, with a copy button under it.
+    void coopCode(const char* id, const std::string& code, float width)
+    {
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(4, 22, 8, 255));
+        std::vector<char> shown(code.begin(), code.end());
+        shown.push_back('\0');
+        ImGui::InputTextMultiline(id, shown.data(), shown.size(), ImVec2(width, 110.0f), ImGuiInputTextFlags_ReadOnly);
+        ImGui::PopStyleColor();
+        if (glassButton("Copy code", ImVec2(170.0f, 44.0f))) {
+            SDL_SetClipboardText(code.c_str());
+            notify("Code copied. Send it to the other player.");
+        }
+    }
+
+    // Host Co-op / Join Co-op: the same overlay style as "What's new".
+    void drawCoop(ImVec2 size)
+    {
+        CoopFlow& flow = coopFlow();
+        flow.poll();
+        ImGui::SetNextWindowPos(ImVec2(0, 0));
+        ImGui::SetNextWindowSize(size);
+        ImGui::Begin("##coop", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings
+                         | ImGuiWindowFlags_NoBackground);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(ImVec2(0, 0), size, IM_COL32(2, 12, 4, 170));
+        const ImVec2 panel(std::min(size.x - 80.0f, 820.0f), std::min(size.y - 80.0f, 560.0f));
+        const ImVec2 a((size.x - panel.x) * 0.5f, (size.y - panel.y) * 0.5f);
+        const ImVec2 b(a.x + panel.x, a.y + panel.y);
+        dl->AddRectFilled(ImVec2(a.x + 8, a.y + 12), ImVec2(b.x + 8, b.y + 12), IM_COL32(0, 0, 0, 110), 22.0f);
+        dl->AddRectFilled(a, b, IM_COL32(10, 40, 15, 250), 22.0f);
+        dl->AddRect(a, b, col(kOrange), 22.0f, 0, 3.0f);
+        const bool host = flow.role() == CoopFlow::Role::Host;
+        dl->AddText(fonts.title, 32.0f, ImVec2(a.x + 34.0f, a.y + 28.0f), col(kOrange),
+                    host ? "Host Co-op" : "Join Co-op");
+
+        const float innerW = panel.x - 68.0f;
+        ImGui::SetCursorScreenPos(ImVec2(a.x + 34.0f, a.y + 80.0f));
+        ImGui::BeginChild("##coopbody", ImVec2(innerW, panel.y - 80.0f - 90.0f), ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoBackground);
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, col(ImVec4(1.0f, 0.93f, 0.80f, 1.0f)));
+        ImGui::TextWrapped("%s", flow.status().c_str());
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, 6.0f));
+        const CoopFlow::Stage stage = flow.stage();
+        const bool takesPaste = (!host && stage == CoopFlow::Stage::PasteOffer)
+                             || (host && stage == CoopFlow::Stage::ShowOffer);
+        if (host && (stage == CoopFlow::Stage::ShowOffer || stage == CoopFlow::Stage::Connecting)) {
+            ImGui::TextUnformatted("Your offer code:");
+            coopCode("##offer", flow.offer(), innerW);
+            ImGui::Dummy(ImVec2(0, 6.0f));
+        }
+        if (!host && stage == CoopFlow::Stage::Connecting) {
+            ImGui::TextUnformatted("Your answer code:");
+            coopCode("##answer", flow.answer(), innerW);
+        }
+        if (takesPaste) {
+            ImGui::TextUnformatted(host ? "The other player's answer code:" : "The host's offer code:");
+            ImGui::InputTextMultiline("##paste", coopInput.data(), coopInput.size(), ImVec2(innerW, 90.0f));
+            if (glassButton("Paste", ImVec2(130.0f, 44.0f))) {
+                if (char* clip = SDL_GetClipboardText()) {
+                    std::snprintf(coopInput.data(), coopInput.size(), "%s", clip);
+                    SDL_free(clip);
+                }
+            }
+            ImGui::SameLine();
+            if (glassButton(host ? "Connect" : "Join", ImVec2(150.0f, 44.0f), true)) {
+                std::string err;
+                const bool ok = host ? flow.submitAnswer(coopInput.data(), err) : flow.submitOffer(coopInput.data(), err);
+                coopError = ok ? std::string() : err;
+            }
+            if (!coopError.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 130, 110, 255));
+                ImGui::TextWrapped("%s", coopError.c_str());
+                ImGui::PopStyleColor();
+            }
+        }
+        ImGui::Dummy(ImVec2(0, 6.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, col(ImVec4(0.80f, 0.86f, 0.78f, 1.0f)));
+        ImGui::TextWrapped("Both players need the same game version. If the games cannot reach each other, allow "
+                           "the game through the firewall when Windows asks, or see docs/NETPLAY.md for TURN and "
+                           "Tailscale.");
+        ImGui::PopStyleColor();
+        ImGui::PopTextWrapPos();
+        ImGui::EndChild();
+
+        const float buttonsH = 50.0f, closeW = 130.0f, y = b.y - buttonsH - 26.0f;
+        ImGui::SetCursorScreenPos(ImVec2(b.x - 34.0f - closeW, y));
+        if (glassButton("Close", ImVec2(closeW, buttonsH)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            // The game keeps running; closing only hides the panel.
+            coopOpen = false;
+        }
+        ImGui::End();
+    }
+#endif
+
     void drawFooter(ImVec2 size)
     {
         ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -1468,7 +1624,7 @@ struct Hub {
         ImGui::Begin("##hub", nullptr,
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings
                          | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoBackground);
-        ImGui::BeginDisabled(!interactive || whatsNewOpen);
+        ImGui::BeginDisabled(!interactive || whatsNewOpen || coopOpen);
 
         const float logoW = std::min(size.x * 0.56f, 700.0f);
         const float logoH = logoW / logo.aspect();
@@ -1503,6 +1659,9 @@ struct Hub {
         toastTime = std::max(0.0f, toastTime - dt);
         drawFooter(size);
         if (whatsNewOpen && interactive) drawWhatsNew(size);
+#if PIKMIN_LAUNCHER_NETPLAY
+        if (coopOpen && interactive) drawCoop(size);
+#endif
     }
 
     void release()

@@ -45,6 +45,8 @@ struct HubState {
     // Editor de mapas VS (nectar-mapmaker) junto al launcher o en la
     // instalación de Pikmin 1. Vacío = no hay: sin botón.
     std::string mapEditor;
+    // Host Co-op / Join Co-op under Pikmin 1 (netplay builds of the game).
+    bool netplay = false;
 };
 
 struct HubResult {

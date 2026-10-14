@@ -118,11 +118,19 @@ bool runAndCapture(const fs::path&, const std::vector<std::string>&, const fs::p
 
 void relaunch(const fs::path&, const std::vector<std::string>&) { }
 
-[[noreturn]] void launchGame(const fs::path&, const fs::path&)
+[[noreturn]] void launchGame(const fs::path&, const fs::path&, const std::vector<std::string>&)
 {
     // launcher_android_main.cpp arranca el juego por JNI; esto no se usa.
     std::exit(0);
 }
+
+bool spawnGame(const fs::path&, const fs::path&, const std::vector<std::string>&, GameProcess&, std::string& error)
+{
+    error = "Online co-op is not available on Android.";
+    return false;
+}
+
+bool gameRunning(GameProcess&, int&) { return false; }
 
 } // namespace platform
 } // namespace launcher
