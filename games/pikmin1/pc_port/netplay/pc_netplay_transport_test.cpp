@@ -151,14 +151,15 @@ int main()
 		in.triggerL   = 255;
 		in.triggerR   = 1;
 		in.controlYaw = 0x1234;
-		in.flags      = 0;
+		in.ext        = 0x0A;
+		in.cursorRotate = -2;
 		uint8_t wire[16];
 		CHECK(pc_netplay_input_encode(in, wire) == 16, "encode 16 bytes");
 		PcNetplayInput out;
 		CHECK(pc_netplay_input_decode(wire, 16, out), "decode ok");
 		CHECK(out.buttons == 0xABCD && out.stickX == -100 && out.stickY == 96
 		          && out.substickX == -128 && out.substickY == 127 && out.triggerL == 255
-		          && out.triggerR == 1 && out.controlYaw == 0x1234 && out.flags == 0,
+		          && out.triggerR == 1 && out.controlYaw == 0x1234 && out.ext == 0x0A && out.cursorRotate == -2,
 		      "round trip fields");
 		CHECK(!pc_netplay_input_decode(wire, 15, out), "short decode fails");
 		PcNetplayInput n = pc_netplay_input_neutral();
@@ -181,9 +182,9 @@ int main()
 		CHECK(!pc_netplay_transport::parse_endpoint("127.0.0.1:5x", &ip, &port), "trailing junk");
 		CHECK(!pc_netplay_transport::parse_endpoint("127.0.0.1 :5077", &ip, &port), "space junk");
 	}
-	// 2b. Input accumulator: button bits OR
+	// 2b. Input accumulator: button and ext bits OR
 	// across turns between submits, sticks/triggers/yaw keep the latest
-	// sample, take() clears the button latch.
+	// sample, the cursor rotate sums, take() clears the latches.
 	{
 		PcNetplayAccum ac;
 		PcNetplayInput t0 = ac.take();
@@ -198,9 +199,25 @@ int main()
 		          && m.triggerL == 9 && m.triggerR == 10,
 		      "accum keeps latest sticks/triggers");
 		CHECK(m.controlYaw == 200, "accum keeps latest yaw");
-		CHECK(m.flags == 0, "accum flags zero");
+		CHECK(m.ext == 0 && m.cursorRotate == 0, "accum ext zero");
+		ac.add_ext(0x01, 1000);
+		ac.add_ext(0x08, -300);
+		PcNetplayInput e = ac.take();
+		CHECK(e.ext == 0x09 && e.cursorRotate == 700, "accum ORs ext and sums the rotate");
+		ac.add_ext(0, 30000);
+		ac.add_ext(0, 30000);
+		CHECK(ac.take().cursorRotate == 32767, "accum rotate saturates");
+		uint8_t wire[16];
+		PcNetplayInput w;
+		w.ext          = 0x0F;
+		w.cursorRotate = -12345;
+		pc_netplay_input_encode(w, wire);
+		PcNetplayInput wd;
+		CHECK(pc_netplay_input_decode(wire, 16, wd) && wd.ext == 0x0F && wd.cursorRotate == -12345
+		          && wire[13] == 0 && wire[14] == 0 && wire[15] == 0,
+		      "ext and rotate round-trip");
 		PcNetplayInput t1 = ac.take();
-		CHECK(t1.buttons == 0, "take clears the button latch");
+		CHECK(t1.buttons == 0 && t1.ext == 0 && t1.cursorRotate == 0, "take clears the button and ext latches");
 		CHECK(t1.stickX == 50 && t1.controlYaw == 200, "sticks/yaw stay at latest");
 		ac.reset();
 		PcNetplayInput t2 = ac.take();

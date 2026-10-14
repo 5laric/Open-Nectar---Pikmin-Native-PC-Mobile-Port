@@ -51,6 +51,7 @@ bool pc_input_log_decode_tick(const uint8_t* data, size_t avail, PcInputPad pads
 		pads[p].err          = (int8_t)data[at + 10];
 		pads[p].controlYaw   = (uint16_t)(data[at + 11] | ((uint16_t)data[at + 12] << 8));
 		pads[p].flags        = data[at + 13];
+		pads[p].cursorRotate = 0;
 		at += pc_input_log::kPadBytes;
 	}
 	return true;
@@ -93,7 +94,38 @@ bool pc_input_log_decode_tick_v1(const uint8_t* data, size_t avail, PcInputPad p
 		pads[p].err          = (int8_t)data[at + 10];
 		pads[p].controlYaw   = 0;
 		pads[p].flags        = 0;
+		pads[p].cursorRotate = 0;
 		at += pc_input_log::kPadBytesV1;
+	}
+	return true;
+}
+
+size_t pc_input_log_encode_tick_v3(const PcInputPad pads[4], uint8_t out[64])
+{
+	size_t at = 0;
+	for (int p = 0; p < 4; ++p) {
+		const PcInputPad one[4] = { pads[p], pads[p], pads[p], pads[p] };
+		uint8_t rec[pc_input_log::kRecordBytes];
+		pc_input_log_encode_tick(one, rec);
+		for (size_t i = 0; i < pc_input_log::kPadBytes; ++i) out[at++] = rec[i];
+		out[at++] = (uint8_t)((uint16_t)pads[p].cursorRotate & 0xFF);
+		out[at++] = (uint8_t)(((uint16_t)pads[p].cursorRotate >> 8) & 0xFF);
+	}
+	return at;
+}
+
+bool pc_input_log_decode_tick_v3(const uint8_t* data, size_t avail, PcInputPad pads[4])
+{
+	if (data == nullptr || pads == nullptr) return false;
+	if (avail < pc_input_log::kRecordBytesV3) return false;
+	for (int p = 0; p < 4; ++p) {
+		const uint8_t* in = data + p * pc_input_log::kPadBytesV3;
+		uint8_t rec[pc_input_log::kRecordBytes] = {};
+		for (size_t i = 0; i < pc_input_log::kPadBytes; ++i) rec[i] = in[i];
+		PcInputPad one[4];
+		pc_input_log_decode_tick(rec, sizeof(rec), one);
+		pads[p]              = one[0];
+		pads[p].cursorRotate = (int16_t)(uint16_t)(in[14] | ((uint16_t)in[15] << 8));
 	}
 	return true;
 }
@@ -128,6 +160,21 @@ void pc_input_log_write_header_v1(std::vector<uint8_t>& out)
 	out.push_back((uint8_t)((rec >> 8) & 0xFF));
 }
 
+void pc_input_log_write_header_v3(std::vector<uint8_t>& out)
+{
+	out.push_back(pc_input_log::kMagic[0]);
+	out.push_back(pc_input_log::kMagic[1]);
+	out.push_back(pc_input_log::kMagic[2]);
+	out.push_back(pc_input_log::kMagic[3]);
+	out.push_back((uint8_t)(pc_input_log::kVersionV3 & 0xFF));
+	out.push_back((uint8_t)((pc_input_log::kVersionV3 >> 8) & 0xFF));
+	out.push_back((uint8_t)(pc_input_log::kPadCount & 0xFF));
+	out.push_back((uint8_t)((pc_input_log::kPadCount >> 8) & 0xFF));
+	const uint16_t rec = (uint16_t)pc_input_log::kRecordBytesV3;
+	out.push_back((uint8_t)(rec & 0xFF));
+	out.push_back((uint8_t)((rec >> 8) & 0xFF));
+}
+
 PcInputHeaderResult pc_input_log_read_header(const uint8_t* data, size_t len, uint16_t& version,
                                              uint16_t& padCount, uint16_t& recordSize)
 {
@@ -143,7 +190,9 @@ PcInputHeaderResult pc_input_log_read_header(const uint8_t* data, size_t len, ui
 	               && recordSize == pc_input_log::kRecordBytesV1;
 	const bool v2ok = version == pc_input_log::kVersion && padCount == pc_input_log::kPadCount
 	               && recordSize == pc_input_log::kRecordBytes;
-	if (!v1ok && !v2ok) return PC_INPUT_HEADER_UNSUPPORTED;
+	const bool v3ok = version == pc_input_log::kVersionV3 && padCount == pc_input_log::kPadCount
+	               && recordSize == pc_input_log::kRecordBytesV3;
+	if (!v1ok && !v2ok && !v3ok) return PC_INPUT_HEADER_UNSUPPORTED;
 	return PC_INPUT_HEADER_OK;
 }
 
@@ -195,6 +244,20 @@ bool sYawValid[4]     = { false, false, false, false };
 uint16_t sYawRaw[4]   = { 0, 0, 0, 0 };
 uint8_t sYawFlags[4]  = { 0, 0, 0, 0 };
 PcYawCaptureFn sYawCaptureFn = nullptr;
+// Current-tick ext bits and cursor rotate, cleared with the yaw.
+uint8_t sExt[4]    = { 0, 0, 0, 0 };
+int16_t sRotate[4] = { 0, 0, 0, 0 };
+bool sRecordV3     = false;
+float sLocalRotate = 0.0f;
+
+void clear_tick_slots()
+{
+	for (int p = 0; p < 4; ++p) {
+		sYawValid[p] = false;
+		sExt[p]      = 0;
+		sRotate[p]   = 0;
+	}
+}
 
 const char* argvValue(int argc, char** argv, const char* flag)
 {
@@ -254,6 +317,49 @@ uint8_t pc_input_log_yaw_flags(int pad)
 {
 	if (pad < 0 || pad >= 4) return 0;
 	return sYawFlags[pad];
+}
+
+void pc_input_log_ext_set(int pad, uint8_t ext, int16_t cursorRotate)
+{
+	if (pad < 0 || pad >= 4) return;
+	sExt[pad]    = ext;
+	sRotate[pad] = cursorRotate;
+}
+
+uint8_t pc_netplay_ext_bits(int pad)
+{
+	if (pad < 0 || pad >= 4) return 0;
+	return sExt[pad];
+}
+
+int16_t pc_netplay_ext_cursor_rotate(int pad)
+{
+	if (pad < 0 || pad >= 4) return 0;
+	return sRotate[pad];
+}
+
+bool pc_netplay_ext_trace(void)
+{
+	static const bool on = [] {
+		const char* v = std::getenv("PIKMIN_NETPLAY_DEBUG_EXT");
+		return v != nullptr && v[0] == '1';
+	}();
+	return on;
+}
+
+void pc_input_log_local_rotate_add(float angleRad)
+{
+	if (!std::isfinite(angleRad)) return;
+	sLocalRotate += angleRad / pc_input_log::kYawTurnsToRad;
+	if (sLocalRotate > 32767.0f) sLocalRotate = 32767.0f;
+	if (sLocalRotate < -32767.0f) sLocalRotate = -32767.0f;
+}
+
+int16_t pc_input_log_local_rotate_take(void)
+{
+	const long q = std::lround(sLocalRotate);
+	sLocalRotate -= (float)q;
+	return (int16_t)q;
 }
 
 bool pc_netplay_control_yaw(int pad, float* sinYaw, float* cosYaw)
@@ -336,11 +442,13 @@ void pc_input_log_tick(void)
 		if (recordPath != nullptr && *recordPath != '\0') {
 			sRecordFile = std::fopen(recordPath, "wb");
 			if (sRecordFile != nullptr) {
+				sRecordV3 = sReplayActive && sReplayVersion == pc_input_log::kVersionV3;
 				std::vector<uint8_t> header;
-				pc_input_log_write_header(header);
+				if (sRecordV3) pc_input_log_write_header_v3(header);
+				else pc_input_log_write_header(header);
 				std::fwrite(header.data(), 1, header.size(), sRecordFile);
 				sRecordActive = true;
-				std::printf("[netplay] input record: %s (v2)\n", recordPath);
+				std::printf("[netplay] input record: %s (v%d)\n", recordPath, sRecordV3 ? 3 : 2);
 				std::fflush(stdout);
 			} else {
 				std::printf("[netplay] input record: cannot open %s\n", recordPath);
@@ -354,14 +462,14 @@ void pc_input_log_tick(void)
 			// session runs in) still needs a fresh yaw every tick, so clear
 			// the slots and run the pre-sim capture before returning. The hook itself
 			// checks det/record, so the switch-off path stays untouched.
-			for (int p = 0; p < 4; ++p) sYawValid[p] = false;
+			clear_tick_slots();
 			if (sYawCaptureFn != nullptr) sYawCaptureFn();
 			return;
 		}
 	}
 
 	if (!sRecordActive && !sReplayActive) {
-		for (int p = 0; p < 4; ++p) sYawValid[p] = false;
+		clear_tick_slots();
 		if (sYawCaptureFn != nullptr) sYawCaptureFn();
 		return;
 	}
@@ -370,7 +478,7 @@ void pc_input_log_tick(void)
 	// capture hook fills the rest (live camera, quantised). The sim never
 	// reads the camera, so the input for tick N is complete before the sim
 	// for tick N runs.
-	for (int p = 0; p < 4; ++p) sYawValid[p] = false;
+	clear_tick_slots();
 
 	PADStatus* pads = pc_netplay_pad_status();
 
@@ -397,7 +505,9 @@ void pc_input_log_tick(void)
 				}
 			} else {
 				PcInputPad decoded[4];
-				if (pc_input_log_decode_tick(rec, sReplayRec, decoded)) {
+				const bool v3 = sReplayVersion == pc_input_log::kVersionV3;
+				if (v3 ? pc_input_log_decode_tick_v3(rec, sReplayRec, decoded)
+				       : pc_input_log_decode_tick(rec, sReplayRec, decoded)) {
 					for (int p = 0; p < 4; ++p) {
 						pads[p].button       = decoded[p].button;
 						pads[p].stickX       = decoded[p].stickX;
@@ -410,8 +520,12 @@ void pc_input_log_tick(void)
 						pads[p].analogB      = decoded[p].analogB;
 						pads[p].err          = decoded[p].err;
 						sYawRaw[p]           = decoded[p].controlYaw;
-						sYawFlags[p]         = decoded[p].flags;
+						sYawFlags[p]         = v3 ? pc_input_log::kFlagsNone : decoded[p].flags;
 						sYawValid[p]         = true;
+						if (v3) {
+							sExt[p]    = decoded[p].flags;
+							sRotate[p] = decoded[p].cursorRotate;
+						}
 					}
 				}
 			}
@@ -458,10 +572,15 @@ void pc_input_log_tick(void)
 			cur[p].err          = pads[p].err;
 			cur[p].controlYaw   = sYawValid[p] ? sYawRaw[p] : (uint16_t)0;
 			cur[p].flags        = sYawValid[p] ? sYawFlags[p] : (uint8_t)0;
+			cur[p].cursorRotate = 0;
+			if (sRecordV3) {
+				cur[p].flags        = sExt[p];
+				cur[p].cursorRotate = sRotate[p];
+			}
 		}
-		uint8_t out[56];
-		pc_input_log_encode_tick(cur, out);
-		std::fwrite(out, 1, sizeof(out), sRecordFile);
+		uint8_t out[pc_input_log::kRecordBytesV3];
+		const size_t n = sRecordV3 ? pc_input_log_encode_tick_v3(cur, out) : pc_input_log_encode_tick(cur, out);
+		std::fwrite(out, 1, n, sRecordFile);
 		if ((sTickIndex + 1) % 300 == 0) std::fflush(sRecordFile);
 	}
 }

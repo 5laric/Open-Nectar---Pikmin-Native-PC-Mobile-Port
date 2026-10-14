@@ -69,10 +69,14 @@ game files of another version, is refused (`handshake refused: vsmap`).
 - Captains: the host's (`--coop-captains=<p1>,<p2>`). A captain that needs a
   local Pikmin 2 install is refused when the other PC cannot load it
   (`handshake refused: captain`).
+- The Bomb, Lock-On and Charge buttons, the Swarm button and turning the
+  cursor with a mouse, touch or stick camera drag travel with each player's
+  input, so they work online in co-op and VS (Bomb Control, Lock-On and Charge
+  come from the host's settings). Online every captain can lock on, not only
+  P1. A press reaches the game a couple of frames later, like every button.
 - Not online yet (left out on purpose, so both games stay in step): the mouse
-  wheel and touch icon colour pickers (the D-pad still picks the colour), the
-  Bomb, Lock-On and Charge buttons, turning the cursor with a mouse or touch
-  camera drag, and the F5-F8 debug keys.
+  wheel and touch icon colour pickers (the D-pad still picks the colour) and
+  the F5-F8 debug keys.
 
 Command line:
 
@@ -228,6 +232,10 @@ py -3.12 tools\netplay\replay_session.py --exe <build>\bin\nectar.exe --assets <
 py -3.12 tools\netplay\run_pair.py --mode vs --ice --exe <build>\bin\nectar.exe --assets <assets> `
     --ticks 2700 --vs-matches 2 --out <scratch>\vs `
     --env PIKMIN_NETPLAY_TEST_KNOBS=1 PIKMIN_NETPLAY_TEST_VS_MATCH_SECONDS=60
+# Bomb, Lock-On, Charge and cursor turning online: seeded events on both peers
+# (gen_inputs --ext); the sim's [EXT] trace must match on both.
+py -3.12 tools\netplay\run_pair.py --ice --exe <build>\bin\nectar.exe --assets <assets> --ticks 3000 `
+    --out <scratch>\ext --config bombControl=1 lockOn=1 charge=1 --ext --require-ext input,rotate
 # The launcher's Host Co-op / Join Co-op flow, scripted.
 py -3.12 tools\netplay\launcher_smoke.py --launcher <build>\bin\nectar-launcher.exe `
     --exe <build>\bin\nectar.exe --assets <assets> --out <scratch>\launcher

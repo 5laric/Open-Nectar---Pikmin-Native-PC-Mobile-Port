@@ -40,16 +40,16 @@ int main()
 	using namespace pc_netplay_xfer;
 	const Hello h = sample();
 	uint8_t wire[kHsLen];
-	encode_hello(kHsAck, kProtocolV2, h, kFieldMode, wire);
+	encode_hello(kHsAck, kProtocolV3, h, kFieldMode, wire);
 	check(std::memcmp(wire, "NPHU", 4) == 0, "magic");
-	check(wire[4] == kHsAck && get_u16(wire + 5) == kProtocolV2, "header type and protocol");
+	check(wire[4] == kHsAck && get_u16(wire + 5) == kProtocolV3, "header type and protocol");
 	check(wire[kHsRefuseOffset] == kFieldMode, "refuse field offset");
 
 	uint8_t type = 0, refuse = 0;
 	uint16_t proto = 0;
 	Hello d;
 	check(decode_hello(wire, sizeof(wire), &type, &proto, &d, &refuse), "decode");
-	check(type == kHsAck && proto == kProtocolV2 && refuse == kFieldMode, "decoded header");
+	check(type == kHsAck && proto == kProtocolV3 && refuse == kFieldMode, "decoded header");
 	check(std::memcmp(d.build, h.build, 32) == 0 && std::memcmp(d.cfg, h.cfg, 32) == 0, "decoded digests");
 	check(d.seed == h.seed && d.nonce == h.nonce, "decoded seed and nonce");
 	check(d.mode == h.mode, "decoded mode descriptor");

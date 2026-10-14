@@ -56,6 +56,14 @@ lines, a VS mode column that changes, and with --vs-matches N at least N match
 starts ("[VS] piece kind 5" once per match). Use a short match:
 --env PIKMIN_NETPLAY_TEST_KNOBS=1 PIKMIN_NETPLAY_TEST_VS_MATCH_SECONDS=60.
 
+Ext inputs (Bomb, Lock-On, Charge/Swarm, cursor rotate): --ext gives both
+peers seeded ext events (gen_inputs --ext), --ext-events[-host|-join] explicit
+ones (gen_inputs --ext-events); either turns on PIKMIN_NETPLAY_DEBUG_EXT=1.
+The sim's "[EXT]" lines must then be identical on both peers, and
+--require-ext KIND[,...] wants each KIND on both: input, rotate, bomb, lock,
+charge, release (per captain, --require-ext-navis) and explode (any).
+Enable the mods with --config bombControl=1 lockOn=1 charge=1.
+
 Examples:
     py tools/netplay/run_pair.py --exe <build>/bin/nectar.exe --assets <assets> \\
         --ticks 3000 --out run/pair1
@@ -336,7 +344,7 @@ def check_vs(h, j, args):
         if not p["vs_over"]:
             print(f"run_pair: FAIL: {name} logged no '[VS] match over' line")
             ok = False
-        if not p["vs_score"] and not any(re.search(r"pieces [1-9]|pieces \d+ - [1-9]", ln) for ln in p["vs_over"]):
+        if not args.vs_no_score and not p["vs_score"] and not any(re.search(r"pieces [1-9]|pieces \d+ - [1-9]", ln) for ln in p["vs_over"]):
             print(f"run_pair: FAIL: {name} recorded no scoring")
             ok = False
         if p["distinct_mode"] < 3:
@@ -361,6 +369,55 @@ def check_vs(h, j, args):
 def launcher_run_dir(run):
     dirs = sorted((run / "netplay").glob("run-*")) if (run / "netplay").is_dir() else []
     return dirs[-1] if dirs else None
+
+
+EXT_KINDS = {
+    "input": re.compile(r"navi=(\d) input ext="),
+    "rotate": re.compile(r"navi=(\d) input ext=0x[0-9a-f]+ rotate=-?[1-9]"),
+    "bomb": re.compile(r"navi=(\d) bomb command"),
+    "lock": re.compile(r"navi=(\d) lock acquired"),
+    "charge": re.compile(r"navi=(\d) charge started"),
+    "release": re.compile(r"navi=(\d) charge released"),
+    "explode": re.compile(r"bomb exploded"),
+}
+
+
+def ext_lines(text):
+    return [ln.strip() for ln in text.splitlines() if ln.startswith("[EXT]")]
+
+
+def check_ext(h, j, args):
+    """The sim's [EXT] trace: the same lines on both peers, and every
+    --require-ext kind on both (per captain except explode)."""
+    ok = True
+    hl, jl = ext_lines(h["text"]), ext_lines(j["text"])
+    if hl != jl:
+        first = next((i for i, (x, y) in enumerate(zip(hl, jl)) if x != y), min(len(hl), len(jl)))
+        print(f"run_pair: FAIL: the peers' [EXT] lines differ ({len(hl)} vs {len(jl)}, first at line {first})")
+        ok = False
+    else:
+        print(f"run_pair: [EXT] lines identical on both peers ({len(hl)} lines)")
+    navis = [int(n) for n in args.require_ext_navis.split(",") if n.strip()]
+    for kind, rx in EXT_KINDS.items():
+        counts = {}
+        for ln in hl:
+            m = rx.search(ln)
+            if m:
+                key = int(m.group(1)) if m.groups() else "any"
+                counts[key] = counts.get(key, 0) + 1
+        print(f"run_pair: [EXT] {kind}: " + (", ".join(f"navi {k}: {v}" if k != "any" else f"{v}"
+                                                      for k, v in sorted(counts.items(), key=str)) or "none"))
+        if kind in args.require_ext:
+            need = ["any"] if kind == "explode" else navis
+            missing = [n for n in need if not counts.get(n)]
+            if missing:
+                print(f"run_pair: FAIL: [EXT] {kind} missing for {missing}")
+                ok = False
+    for kind in ("bomb", "lock", "charge", "release", "rotate", "explode"):
+        sample = [ln for ln in hl if EXT_KINDS[kind].search(ln)][:2]
+        for ln in sample:
+            print(f"run_pair:   {ln}")
+    return ok
 
 
 def check_desync(h, j, args):
@@ -527,6 +584,16 @@ def main(argv=None):
     p.add_argument("--vs-tap-windows", default="126:400,1790:1000000", help="--mode vs: gen_inputs --vs-tap-windows")
     p.add_argument("--vs-tap-windows-join", default=None, help="--mode vs: the joiner's own tap windows")
     p.add_argument("--vs-matches", type=int, default=1, help="--mode vs, --expect sync: matches that must start")
+    p.add_argument("--ext", action="store_true", help="seeded ext events on both peers (gen_inputs --ext)")
+    p.add_argument("--ext-events", default=None, help="explicit ext events for both (gen_inputs --ext-events)")
+    p.add_argument("--ext-events-host", default=None)
+    p.add_argument("--ext-events-join", default=None)
+    p.add_argument("--require-ext", default="", help="ext kinds that must take effect: " + ",".join(EXT_KINDS))
+    p.add_argument("--require-ext-navis", default="0,1", help="captains that must show each --require-ext kind")
+    p.add_argument("--gen-args", default="", help="extra gen_inputs.py arguments for both (one string)")
+    p.add_argument("--gen-args-host", default="")
+    p.add_argument("--gen-args-join", default="")
+    p.add_argument("--vs-no-score", action="store_true", help="--mode vs: a match without scoring still passes")
     a = p.parse_args(argv)
 
     a.out = a.out.resolve()
@@ -555,6 +622,20 @@ def main(argv=None):
                                "--vs-yaw=" + str(a.vs_yaw_host if role == "host" else a.vs_yaw_join)]
     else:
         a.vs_matches = 0
+    for role in ("host", "join"):
+        extra = a.gen_args.split() + (a.gen_args_host if role == "host" else a.gen_args_join).split()
+        if extra:
+            gen_extra[role] = (gen_extra[role] or []) + extra
+    a.require_ext = [k for k in a.require_ext.split(",") if k.strip()]
+    a.ext_on = bool(a.ext or a.ext_events or a.ext_events_host or a.ext_events_join)
+    if a.ext_on:
+        shared_env["PIKMIN_NETPLAY_DEBUG_EXT"] = "1"
+        for role in ("host", "join"):
+            extra = ["--ext"] if a.ext else []
+            events = (a.ext_events_host if role == "host" else a.ext_events_join) or a.ext_events
+            if events:
+                extra.append("--ext-events=" + events)
+            gen_extra[role] = (gen_extra[role] or []) + extra
     if a.desync_nudge is not None:
         a.env_join = list(a.env_join) + ["PIKMIN_NETPLAY_TEST_KNOBS=1",
                                          f"PIKMIN_NETPLAY_TEST_DESYNC_NUDGE={a.desync_nudge}"]
@@ -693,6 +774,8 @@ def main(argv=None):
                 print(f"run_pair: {name}:   {ln.strip()}")
     if a.expect == "sync":
         ok = check_sync(h, j, a)
+        if a.ext_on or a.require_ext:
+            ok = check_ext(h, j, a) and ok
     elif a.expect == "desync":
         ok = check_desync(h, j, a)
     else:
