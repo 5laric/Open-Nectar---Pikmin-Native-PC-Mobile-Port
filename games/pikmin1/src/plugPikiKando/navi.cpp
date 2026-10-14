@@ -60,6 +60,7 @@ static f32 pcNaviHurt(f32 damage) { return damage; }
 #include "timing/pc_render_phase.h"
 #include "netplay/pc_netplay_det.h"
 #include "netplay/pc_input_log.h"
+#include "audio/pc_audio_source.h"
 #endif
 #include "NaviState.h"
 #include "Pcam/Camera.h"
@@ -396,6 +397,9 @@ bool Navi::isRopable()
  */
 bool Navi::startDamage()
 {
+#if defined(PIKI_PC_PORT)
+	PcAudioSource audioSource(mNaviID); // whose sounds these are (netplay audio ownership)
+#endif
 	int stateID      = mStateMachine->getCurrID(this);
 	NaviState* state = mStateMachine->getNaviState(this);
 	if (state->invincible(this)) {
@@ -413,6 +417,9 @@ bool Navi::startDamage()
  */
 void Navi::startDamageEffect()
 {
+#if defined(PIKI_PC_PORT)
+	PcAudioSource audioSource(mNaviID); // whose sounds these are (netplay audio ownership)
+#endif
 	CollPart* part = mCollInfo->getSphere('cent');
 	if (!part) {
 		return;
@@ -467,6 +474,9 @@ void Navi::startDamageEffect()
  */
 void Navi::finishDamage()
 {
+#if defined(PIKI_PC_PORT)
+	PcAudioSource audioSource(mNaviID); // whose sounds these are (netplay audio ownership)
+#endif
 	resetStateDamaged();
 	mStateMachine->restart(this);
 
@@ -2154,6 +2164,9 @@ void Navi::pcPinCursorFirstPerson()
 void Navi::update()
 {
 #if defined(PIKI_PC_PORT)
+	PcAudioSource audioSource(mNaviID); // whose sounds these are (netplay audio ownership)
+#endif
+#if defined(PIKI_PC_PORT)
 	pcUpdateLockOn();
 	pcUpdateBombCommand();
 #endif
@@ -2289,6 +2302,9 @@ void Navi::update()
  */
 void Navi::animationKeyUpdated(immut PaniAnimKeyEvent& event)
 {
+#if defined(PIKI_PC_PORT)
+	PcAudioSource audioSource(mNaviID); // whose sounds these are (netplay audio ownership)
+#endif
 	// sure kando.
 	int lowerMotionID = mNaviAnimMgr.getLowerAnimator().getCurrentMotionIndex();
 	int upperMotionID = mNaviAnimMgr.getUpperAnimator().getCurrentMotionIndex();
@@ -2679,6 +2695,9 @@ void Navi::releasePikis()
  */
 void Navi::doAI()
 {
+#if defined(PIKI_PC_PORT)
+	PcAudioSource audioSource(mNaviID); // whose sounds these are (netplay audio ownership)
+#endif
 	if (gameflow.mDemoFlags & CinePlayerFlags::NaviNoAI) {
 		return;
 	}
@@ -2994,6 +3013,9 @@ void Navi::letPikiWork()
  */
 void Navi::collisionCallback(immut CollEvent& event)
 {
+#if defined(PIKI_PC_PORT)
+	PcAudioSource audioSource(mNaviID); // whose sounds these are (netplay audio ownership)
+#endif
 	Creature* collider = event.mCollider;
 	if (collider != mCollidedWorkObj) {
 		switch (collider->mObjType) {
@@ -4219,6 +4241,11 @@ void Navi::procDamage(f32)
  */
 bool Navi::stimulate(immut Interaction& interaction)
 {
+#if defined(PIKI_PC_PORT)
+	// The hurt and fired sounds of Interact*::actNavi belong to the captain
+	// that is hit, not to the enemy code that raised them.
+	PcAudioSource audioSource(mNaviID);
+#endif
 	if (interaction.actCommon(this)) {
 		return interaction.actNavi(this);
 	}
