@@ -8,6 +8,7 @@
 #if defined(PIKI_PC_PORT)
 #include "settings/pc_settings.h"
 #include "netplay/pc_netplay_det.h"
+#include "netplay/pc_netplay_present.h"
 #if defined(PIKI_PC_PORT)
 #include "pc_photo_mode.h"
 #include "pc_coop.h"
@@ -2954,7 +2955,9 @@ void GameCoreSection::updateCoopCameras()
 void GameCoreSection::updateDynamicSplit(f32 dt)
 {
 	Camera* own[2] = { mNavi->mNaviCamera, mGameCamera2 };
-	if (!pc_settings_get_coop_merge_camera()) {
+	// Netplay: each peer shows its own captain, so the merged camera is off;
+	// both captains' cameras are still simulated.
+	if (pc_netplay_present_two_pass_active() || !pc_settings_get_coop_merge_camera()) {
 		// Pantalla partida fija: J1 izquierda/arriba, cámaras propias.
 		mSplitBlend = 1.0f;
 		mP1Side     = 0;
@@ -3066,7 +3069,9 @@ void GameCoreSection::setActiveView(int view)
 
 Camera* GameCoreSection::getViewCamera(int view)
 {
-	if (!pc_settings_get_coop_merge_camera()) {
+	// Netplay presentation pass: the merged views are never built (see
+	// updateDynamicSplit), so present the captain's own camera.
+	if (!pc_settings_get_coop_merge_camera() || !pc_netplay_present_sim_side()) {
 		return view == 1 ? mGameCamera2 : mNavi->mNaviCamera;
 	}
 	return &mViewCam[view == 1 ? 1 : 0];
@@ -3074,6 +3079,18 @@ Camera* GameCoreSection::getViewCamera(int view)
 
 void GameCoreSection::drawGameInfoHud(Graphics& gfx)
 {
+	// Netplay: no HUD work in the sim pass (the widgets animate per draw, so
+	// drawing there would make it depend on the followed captain); the
+	// presentation pass draws only the local captain's HUD, full screen.
+	if (pc_netplay_present_sim_pass()) {
+		return;
+	}
+	if (pc_netplay_present_two_pass_active() && isSplitScreen() && !gameflow.mMoviePlayer->mIsActive) {
+		const int local        = pc_netplay_present_local_player();
+		zen::DrawGameInfo* hud = (local == 1 && mDrawGameInfo2) ? mDrawGameInfo2 : mDrawGameInfo;
+		hud->draw(gfx);
+		return;
+	}
 	if (!isSplitScreen() || !mDrawGameInfo2 || gameflow.mMoviePlayer->mIsActive) {
 		mDrawGameInfo->draw(gfx);
 		return;
@@ -3112,6 +3129,16 @@ void GameCoreSection::drawGameInfoHud(Graphics& gfx)
 // de su mitad, con el mismo espacio virtual que su HUD.
 void GameCoreSection::drawContainerWindows(Graphics& gfx)
 {
+	// Netplay: as drawGameInfoHud, the local player's window only.
+	if (pc_netplay_present_sim_pass()) {
+		return;
+	}
+	if (pc_netplay_present_two_pass_active() && isSplitScreen() && !gameflow.mMoviePlayer->mIsActive) {
+		const int local         = pc_netplay_present_local_player();
+		zen::DrawContainer* win = (local == 1 && containerWindow2) ? containerWindow2 : containerWindow;
+		win->draw(gfx);
+		return;
+	}
 	if (!isSplitScreen() || !containerWindow2 || gameflow.mMoviePlayer->mIsActive) {
 		containerWindow->draw(gfx);
 		return;
@@ -3244,6 +3271,22 @@ void GameCoreSection::draw(Graphics& gfx)
 	if (mRenderPass != 0) advanceState = false;
 #endif
 	gsys->mTimer->start("se updt", true);
+#if defined(PIKI_PC_PORT)
+	// Netplay: audio is local output, updated in the presentation pass with
+	// the listener at the local captain; the sim pass never touches it.
+	if (pc_netplay_present_two_pass_active()) {
+		if (!pc_netplay_present_sim_side() && mRenderPass == 0) {
+			if (gameflow.mMoviePlayer->mIsActive) {
+				Vector3f pos;
+				gameflow.mMoviePlayer->getLookAtPos(pos);
+				seSystem->update(gfx, pos);
+			} else {
+				Navi* listener = (pc_netplay_present_local_player() == 1 && mNavi2) ? mNavi2 : mNavi;
+				seSystem->update(gfx, listener->mSRT.t);
+			}
+		}
+	} else
+#endif
 	if (advanceState && gameflow.mMoviePlayer->mIsActive) {
 		Vector3f pos;
 		gameflow.mMoviePlayer->getLookAtPos(pos);
