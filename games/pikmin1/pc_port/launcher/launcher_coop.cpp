@@ -18,16 +18,20 @@ std::string CoopFlow::clean(const std::string& text)
     return out;
 }
 
-std::vector<std::string> CoopFlow::hostArguments(const fs::path& dir)
+std::vector<std::string> CoopFlow::hostArguments(const fs::path& dir, bool vs)
 {
-    return { "--netplay-host-ice", "--netplay-code-out", (dir / "offer.txt").string(), "--netplay-answer-in",
-             (dir / "answer.txt").string() };
+    std::vector<std::string> args = { "--netplay-host-ice", "--netplay-code-out", (dir / "offer.txt").string(),
+                                      "--netplay-answer-in", (dir / "answer.txt").string() };
+    if (vs) args.insert(args.end(), { "--netplay-mode", "vs" });
+    return args;
 }
 
-std::vector<std::string> CoopFlow::joinArguments(const fs::path& dir)
+std::vector<std::string> CoopFlow::joinArguments(const fs::path& dir, bool vs)
 {
-    return { "--netplay-join-ice", "@" + (dir / "offer.txt").string(), "--netplay-code-out",
-             (dir / "answer.txt").string() };
+    std::vector<std::string> args = { "--netplay-join-ice", "@" + (dir / "offer.txt").string(), "--netplay-code-out",
+                                      (dir / "answer.txt").string() };
+    if (vs) args.insert(args.end(), { "--netplay-mode", "vs" });
+    return args;
 }
 
 bool CoopFlow::readCode(const fs::path& path, std::string& code)
@@ -68,6 +72,7 @@ bool CoopFlow::writeCode(const fs::path& path, const std::string& code, std::str
 void CoopFlow::reset()
 {
     mRole = Role::None;
+    mVs = false;
     mStage = Stage::Idle;
     mDir.clear();
     mExtra.clear();
@@ -91,10 +96,12 @@ bool CoopFlow::spawn(const std::vector<std::string>& arguments)
     return true;
 }
 
-bool CoopFlow::startHost(const fs::path& exchangeDir, std::string& error, const std::vector<std::string>& extraArguments)
+bool CoopFlow::startHost(const fs::path& exchangeDir, std::string& error, const std::vector<std::string>& extraArguments,
+                         bool vs)
 {
     reset();
     mRole = Role::Host;
+    mVs = vs;
     mDir = exchangeDir;
     mExtra = extraArguments;
     std::error_code ec;
@@ -104,17 +111,18 @@ bool CoopFlow::startHost(const fs::path& exchangeDir, std::string& error, const 
         mStage = Stage::Failed;
         return false;
     }
-    if (!spawn(hostArguments(mDir))) {
+    if (!spawn(hostArguments(mDir, mVs))) {
         error = mError;
         return false;
     }
     return true;
 }
 
-void CoopFlow::startJoin(const fs::path& exchangeDir, const std::vector<std::string>& extraArguments)
+void CoopFlow::startJoin(const fs::path& exchangeDir, const std::vector<std::string>& extraArguments, bool vs)
 {
     reset();
     mRole = Role::Join;
+    mVs = vs;
     mDir = exchangeDir;
     mExtra = extraArguments;
     mStage = Stage::PasteOffer;
@@ -146,7 +154,7 @@ bool CoopFlow::submitOffer(const std::string& text, std::string& error)
         return false;
     }
     mOffer = code;
-    if (!spawn(joinArguments(mDir))) {
+    if (!spawn(joinArguments(mDir, mVs))) {
         error = mError;
         return false;
     }

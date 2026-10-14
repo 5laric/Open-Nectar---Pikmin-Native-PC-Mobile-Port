@@ -1,6 +1,8 @@
 #pragma once
 
-// Online co-op from the launcher: Host Co-op and Join Co-op.
+// Online co-op from the launcher: Host Co-op and Join Co-op, and the same
+// for a 1v1 VS match (Host VS / Join VS: the same flow plus --netplay-mode vs;
+// the host plays the VS map chosen in its VS menu, and its offer carries it).
 //
 // The launcher starts the netplay game as a child process and carries the
 // connection codes through files in a private exchange folder, so the window
@@ -49,8 +51,9 @@ public:
     // `extraArguments` go after the netplay switches (for example
     // --netplay-run-root in tests).
     bool startHost(const std::filesystem::path& exchangeDir, std::string& error,
-                   const std::vector<std::string>& extraArguments = {});
-    void startJoin(const std::filesystem::path& exchangeDir, const std::vector<std::string>& extraArguments = {});
+                   const std::vector<std::string>& extraArguments = {}, bool vs = false);
+    void startJoin(const std::filesystem::path& exchangeDir, const std::vector<std::string>& extraArguments = {},
+                   bool vs = false);
     // Join: hands over the pasted offer and starts the game. False with a
     // reason when the text is not a host offer (NPIX2-...).
     bool submitOffer(const std::string& text, std::string& error);
@@ -62,6 +65,7 @@ public:
     void reset();
 
     Role role() const { return mRole; }
+    bool vs() const { return mVs; }
     Stage stage() const { return mStage; }
     const std::string& offer() const { return mOffer; }   // host: its offer; join: the pasted one
     const std::string& answer() const { return mAnswer; } // join: its answer; host: the pasted one
@@ -72,8 +76,8 @@ public:
     std::string status() const;
 
     // The arguments the game gets for each role (exposed for the test).
-    static std::vector<std::string> hostArguments(const std::filesystem::path& dir);
-    static std::vector<std::string> joinArguments(const std::filesystem::path& dir);
+    static std::vector<std::string> hostArguments(const std::filesystem::path& dir, bool vs = false);
+    static std::vector<std::string> joinArguments(const std::filesystem::path& dir, bool vs = false);
     // Trims spaces and line breaks from a pasted code.
     static std::string clean(const std::string& text);
 
@@ -85,6 +89,7 @@ private:
     Spawn mSpawn;
     Running mRunning;
     Role mRole = Role::None;
+    bool mVs = false;
     Stage mStage = Stage::Idle;
     std::filesystem::path mDir;
     std::vector<std::string> mExtra;

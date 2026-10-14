@@ -32,6 +32,9 @@ RandomAccessStream* pc_vs_arena_open(const char* path);
 /// partida sin sorpresas. nullptr si está listo; si no, el motivo, para
 /// enseñarlo en el menú.
 const char* pc_vs_arena_prepare(void);
+/// Lo compilado por pc_vs_arena_prepare (vacío si no hay): netplay compara su
+/// huella entre los dos PCs.
+void pc_vs_arena_compiled(const u8** mod, size_t* modLen, const u8** ini, size_t* iniLen);
 
 /// Posición y orientación inicial del capitán de cada jugador (0 = J1, 1 = J2).
 void pc_vs_arena_base(int player, Vector3f& pos, f32& faceDirection);

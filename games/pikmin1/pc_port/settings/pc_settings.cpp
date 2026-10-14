@@ -46,6 +46,7 @@
 #include "pc_coop.h"
 #include "pc_vs.h"
 #include "mods/pc_vs_map.h"
+#include "netplay/pc_netplay_det.h"
 #include "pc_achievements.h"
 #include "pc_speedrun.h"
 #include "pc_livesplit.h"
@@ -1979,7 +1980,9 @@ void pollMenuInput() {
 #if PIKI_PC_TOUCH
         pc_touch_claim_game_menu();
 #endif
-        pcVsEndScreenInput();
+        // Netplay: the choice comes from both players' synced pads, in the
+        // sim (pc_vs_end_screen_sim_input); the local devices only feed them.
+        if (!pc_netplay_deterministic()) pcVsEndScreenInput();
         return;
     }
     // Menú de cristal del título (Advanced Options): es dueño de la entrada
@@ -5816,6 +5819,7 @@ int pc_settings_in_gameplay(void) {
 
 void pc_settings_note_gameplay_frame(void) {
     sLastGameplayFrameMs = SDL_GetTicks();
+    pc_vs_note_gameplay_tick();
 }
 
 // El objetivo fijado se marca en el mundo (anillo y marcador, en navi.cpp);
@@ -5954,6 +5958,8 @@ constexpr Uint32 kVsEndScreenDelayMs = 2500;
 
 bool vsEndScreenShown()
 {
+    // Netplay: the end screen is sim state (pc_vs_det_end_screen_shown).
+    if (pc_netplay_deterministic()) return pc_vs_det_end_screen_shown();
     return pc_vs_active() && pc_vs_match_over() && sVsOverSince && SDL_GetTicks() - sVsOverSince >= kVsEndScreenDelayMs;
 }
 
@@ -6049,6 +6055,8 @@ void pc_settings_apply_vs_rules(void) {
     r.pelletSeconds = kVsPellets[std::clamp(sConfig.vsPellets, 0, 3)];
     pc_vs_set_rules(r);
 }
+
+const char* pc_settings_get_vs_map(void) { return sConfig.vsMap.c_str(); }
 
 void pc_vsrules_prompt_open(void) {
     sVsRulesOpen   = true;
@@ -6303,11 +6311,15 @@ void pc_settings_draw_vs_hud(void) {
         sVsOverSince = 0;
         sVsEndChoice = 0;
     }
+    // Netplay (deterministic mode): the countdown, the pause and the end
+    // screen are sim state (pc_vs_det_tick_end); this only draws and plays
+    // the local sounds. A local menu never holds the shared countdown.
+    const bool det = pc_netplay_deterministic();
     // Con un menú del port encima, la cuenta atrás espera (va con reloj real).
     const bool menuOver = sMenuOpen || pc_glass_menu_active();
-    pc_vs_countdown_set_frozen(menuOver);
+    if (!det) pc_vs_countdown_set_frozen(menuOver);
     if (menuOver) return;
-    const bool live = sLastGameplayFrameMs != 0 && SDL_GetTicks() - sLastGameplayFrameMs <= 250;
+    const bool live = det ? pc_vs_det_live() : sLastGameplayFrameMs != 0 && SDL_GetTicks() - sLastGameplayFrameMs <= 250;
     if (!live && !sPausedByVs) return;
     if (!gsys || !gsys->mDGXGfx) return;
 
@@ -6315,7 +6327,7 @@ void pc_settings_draw_vs_hud(void) {
     const int phase    = pc_vs_countdown_phase();
     const bool over    = pc_vs_match_over();
     const bool wantPause = phase > 0 || over;
-    if (wantPause != sPausedByVs) {
+    if (!det && wantPause != sPausedByVs) {
         gameflow.mPauseAll = wantPause ? TRUE : FALSE;
         sPausedByVs        = wantPause;
     }
@@ -6378,7 +6390,7 @@ void pc_settings_draw_vs_hud(void) {
         }
         const char* opts[2] = { es ? "Revancha" : "Rematch", es ? "Volver al título" : "Back to title" };
         for (int i = 0; i < 2; i++) {
-            const bool sel = i == sVsEndChoice;
+            const bool sel = i == (pc_netplay_deterministic() ? pc_vs_end_choice() : sVsEndChoice);
             char o[40];
             snprintf(o, sizeof(o), sel ? "> %s <" : "%s", opts[i]);
             const int ox = i == 0 ? panelX + 130 : panelX + panelW - 130;

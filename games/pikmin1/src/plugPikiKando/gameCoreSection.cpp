@@ -4,12 +4,14 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cmath>
+#include <cstring>
 #endif
 #if defined(PIKI_PC_PORT)
 #include "settings/pc_settings.h"
 #include "netplay/pc_netplay_det.h"
 #include "netplay/pc_netplay_present.h"
 #include "netplay/pc_coop_switch.h"
+#include "netplay/pc_state_hash.h"
 #if defined(PIKI_PC_PORT)
 #include "pc_photo_mode.h"
 #include "pc_coop.h"
@@ -1001,6 +1003,10 @@ ASM void asmTest(f32, f32)
 // entre 5 y 10 Pikmin las medianas y la más pesada la gorda. Cada pareja
 // simétrica del mapa usa la misma pieza, así los dos cargan lo mismo.
 static u32 sVsPieceIds[PC_VS_PIECE_KINDS];
+// Refuerzos (pcVsUpdate): estado por partida.
+static int sVsSerial       = -1;
+static f32 sEmptyFor[2]    = { 0.0f, 0.0f };
+static f32 sReinforceCd[2] = { 0.0f, 0.0f };
 
 // Fuentes de néctar: cada una deja caer una gota (FallWater, sin usar en el
 // juego original) cuando no hay néctar cerca; al tocar el suelo se vuelve un
@@ -1063,6 +1069,38 @@ static Pellet* pcVsSpawnPellet(MapMgr* map, u32 id, f32 x, f32 z)
 // Reloj y eventos, cada fotograma de juego.
 static void pcVsUpdate(MapMgr* map)
 {
+	// Test evidence (PIKMIN_NETPLAY_DEBUG_VS=1, deterministic mode): where each
+	// VS piece is and how many Pikmin carry it, every 150 ticks.
+	static const bool kPieceTrace = getenv("PIKMIN_NETPLAY_DEBUG_VS") != nullptr;
+	if (kPieceTrace && pc_netplay_deterministic() && pc_netplay_tick() % 150 == 0) {
+		Iterator it(pelletMgr);
+		CI_LOOP(it)
+		{
+			Pellet* p = static_cast<Pellet*>(*it);
+			if (!p->mConfig || !pc_vs_piece_points(p->mConfig->mPelletId.mId)) continue;
+			fprintf(stderr, "[VS] piece tick %u: %s at %.0f %.0f carriers %d\n", pc_netplay_tick(), p->mConfig->mPelletId.mStringID,
+			        p->mSRT.t.x, p->mSRT.t.z, int(p->mCarrierCount));
+		}
+		for (int player = 0; player < 2; player++) {
+			int n = 0, grouped = 0;
+			f32 x = 0.0f, z = 0.0f;
+			Iterator pit(pikiMgr);
+			CI_LOOP(pit)
+			{
+				Piki* piki = static_cast<Piki*>(*pit);
+				if (!piki->isAlive() || piki->mPlayerId != player) continue;
+				if (piki->mMode == PikiMode::FormationMode) {
+					grouped++;
+					continue;
+				}
+				n++;
+				x += piki->mSRT.t.x;
+				z += piki->mSRT.t.z;
+			}
+			fprintf(stderr, "[VS] pikmin tick %u: P%d %d in the group, %d out (mean %.0f %.0f)\n", pc_netplay_tick(), player + 1,
+			        grouped, n, n ? x / n : 0.0f, n ? z / n : 0.0f);
+		}
+	}
 	const bool wasOver = pc_vs_match_over();
 	pc_vs_match_update(gsys->getFrameTime());
 
@@ -1155,9 +1193,6 @@ static void pcVsUpdate(MapMgr* map)
 	}
 	// Refuerzos: un jugador sin ningún Pikmin (campo, brotes, cebollas) no
 	// puede recuperarse; a los 3 s recibe 3 en cada una de sus cebollas.
-	static int sVsSerial        = -1;
-	static f32 sEmptyFor[2]     = { 0.0f, 0.0f };
-	static f32 sReinforceCd[2]  = { 0.0f, 0.0f };
 	if (sVsSerial != pc_vs_match_serial()) {
 		sVsSerial = pc_vs_match_serial();
 		sEmptyFor[0] = sEmptyFor[1] = sReinforceCd[0] = sReinforceCd[1] = 0.0f;
@@ -1207,6 +1242,52 @@ static void pcVsUpdate(MapMgr* map)
 		                            : (w == 0 ? "TIME! PLAYER 1 WINS" : "TIME! PLAYER 2 WINS");
 		pc_vs_announce(msg, 600.0f);
 	}
+}
+
+// Netplay: the VS state the per-tick hash covers (its mode column): the
+// pc_vs globals, this file's per-match state and every object's VS owner.
+static u64 pcVsHashMode()
+{
+	if (!pc_vs_active()) return 0;
+	u64 h = pc_vs_state_hash();
+	auto mix = [&h](u32 v) {
+		for (int i = 0; i < 4; i++) {
+			h ^= (v >> (i * 8)) & 0xFF;
+			h *= 1099511628211ULL;
+		}
+	};
+	auto mixF = [&mix](f32 v) {
+		u32 bits;
+		memcpy(&bits, &v, sizeof(bits));
+		mix(bits);
+	};
+	for (u32 id : sVsPieceIds) mix(id);
+	mix(u32(sVsSerial));
+	for (int p = 0; p < 2; p++) {
+		mixF(sEmptyFor[p]);
+		mixF(sReinforceCd[p]);
+	}
+	if (!naviMgr) return h; // no live stage (see pc_state_hash.h)
+	if (pikiMgr) {
+		Iterator it(pikiMgr);
+		CI_LOOP(it)
+		{
+			Piki* piki = static_cast<Piki*>(*it);
+			mix(u32(piki->mPlayerId));
+			mix(piki->mPcSieging ? 1u : 0u);
+		}
+	}
+	if (itemMgr) {
+		Iterator it(itemMgr);
+		CI_LOOP(it)
+		{
+			Creature* c = *it;
+			if (c->mObjType == OBJTYPE_Goal) mix(u32(static_cast<GoalItem*>(c)->mPcOwner));
+			else if (c->mObjType == OBJTYPE_Ufo) mix(u32(static_cast<UfoItem*>(c)->mPcOwner));
+			else if (c->mObjType == OBJTYPE_Pikihead) mix(u32(static_cast<PikiHeadItem*>(c)->mPcOwner));
+		}
+	}
+	return h;
 }
 
 /// VS (fase 2): cada jugador recibe sus tres cebollas, 15 Pikmin (5 de cada
@@ -2015,6 +2096,8 @@ GameCoreSection::GameCoreSection(Controller* controller, MapMgr* mgr, Camera& ca
 	// unless deterministic mode is on.
 	pc_netplay_det_reseed_for_new_day(gameflow.mWorldClock.mCurrentDay,
 	    flowCont.mCurrentStage != nullptr ? static_cast<int>(flowCont.mCurrentStage->mStageID) : 0);
+	// The state hash's mode column: the VS state (0 outside VS).
+	pc_state_hash_set_mode_fn(&pcVsHashMode);
 #endif
 	mDrawHideType = 0;
 	textDemoState = 0;

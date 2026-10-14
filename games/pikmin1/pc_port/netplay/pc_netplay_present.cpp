@@ -6,9 +6,12 @@
 
 #include "netplay/pc_netplay_present.h"
 
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -202,9 +205,32 @@ void pc_netplay_present_end_authoritative(Graphics& gfx)
 	sSavedCamera = nullptr;
 }
 
+// TEST ONLY, with PIKMIN_NETPLAY_TEST_KNOBS=1:
+// PIKMIN_NETPLAY_TEST_PRESENT_STALL=<ms>:<every> sleeps <ms> at the start of
+// the presentation pass of every <every>-th tick, a slow frame on this peer
+// only (nothing in the sim may depend on it).
+static void presentStallKnob()
+{
+	static int sMs = -1, sEvery = 0;
+	if (sMs < 0) {
+		sMs              = 0;
+		const char* v    = std::getenv("PIKMIN_NETPLAY_TEST_PRESENT_STALL");
+		const char* knob = std::getenv("PIKMIN_NETPLAY_TEST_KNOBS");
+		if (v != nullptr && knob != nullptr && std::strcmp(knob, "1") == 0 && std::sscanf(v, "%d:%d", &sMs, &sEvery) == 2
+		    && sMs > 0 && sEvery > 0) {
+			std::printf("[netplay] test: presentation stall %d ms every %d ticks\n", sMs, sEvery);
+			std::fflush(stdout);
+		} else {
+			sMs = 0;
+		}
+	}
+	if (sMs > 0 && pc_netplay_tick() % (unsigned)sEvery == 0) std::this_thread::sleep_for(std::chrono::milliseconds(sMs));
+}
+
 void pc_netplay_present_begin_presentation(Graphics& gfx)
 {
 	(void)gfx;
+	presentStallKnob();
 	// A presentation that never reached the driver's restore (section
 	// construction in a soft-reset idle) may have left shapes pointing into
 	// the present pool; restore them before dropping the list.

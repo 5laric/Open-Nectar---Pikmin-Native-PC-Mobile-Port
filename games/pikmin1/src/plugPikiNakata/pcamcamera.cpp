@@ -302,13 +302,15 @@ void PcamCamera::control(Controller& controller)
 #endif
 #if defined(PIKI_PC_PORT)
 	// Netplay: the camera is local view state, but the cursor is sim. The
-	// free-camera L1 recentre and the drag rotation of the cursor would move
-	// the sim from a local camera input, so deterministic mode leaves the
-	// cursor alone (the camera still turns).
+	// drag rotation of the cursor would move the sim from a local mouse or
+	// touch drag, so deterministic mode leaves the cursor alone there (the
+	// camera still turns). The L1 recentre is a synced pad click on the
+	// captain's own Kontroller and moves the cursor from sim state only, so
+	// it stays.
 	const bool detMode = pc_netplay_deterministic();
 	// Cámara libre: L1 la devuelve detrás del capitán, y el cursor (que ha
 	// girado con ella) vuelve también delante de él (issue #74).
-	if (!detMode && pc_settings_get_free_camera() && controller.keyClick(KBBTN_L) && mTargetCreature
+	if (pc_settings_get_free_camera() && controller.keyClick(KBBTN_L) && mTargetCreature
 	    && mTargetCreature->mObjType == OBJTYPE_Navi) {
 		static_cast<Navi*>(mTargetCreature)->pcCursorToFront();
 	}

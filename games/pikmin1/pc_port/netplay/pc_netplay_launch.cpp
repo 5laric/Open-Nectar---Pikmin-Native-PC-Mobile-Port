@@ -223,6 +223,14 @@ void decode_offer()
 	sSetup.descriptor = bundle.descriptor;
 	sSetup.haveCaptains =
 	    pc_netplay_launch_parse_descriptor(sSetup.descriptor, &sSetup.captainP1, &sSetup.captainP2);
+	sSetup.mode = pc_netplay_launch_parse_mode(sSetup.descriptor, &sSetup.vsMapJson);
+}
+
+// The descriptor's keys, without the map.json that may end it.
+std::string descriptor_head(const std::string& text)
+{
+	const size_t at = text.find("vsMapJson=");
+	return at == std::string::npos ? text : text.substr(0, at);
 }
 
 void make_run_dir(int argc, char** argv)
@@ -272,13 +280,30 @@ void make_run_dir(int argc, char** argv)
 
 const PcNetplayLaunch& pc_netplay_launch_setup(void) { return sSetup; }
 
-std::string pc_netplay_launch_descriptor(int captainP1, int captainP2)
+std::string pc_netplay_launch_descriptor(int captainP1, int captainP2, int mode, const std::string& vsMapJson)
 {
-	return "captainP1=" + std::to_string(captainP1) + ";captainP2=" + std::to_string(captainP2) + ";";
+	std::string d = "captainP1=" + std::to_string(captainP1) + ";captainP2=" + std::to_string(captainP2) + ";";
+	if (mode == 2) {
+		d += "mode=vs;";
+		if (!vsMapJson.empty() && vsMapJson.size() <= kPcNetplayVsMapJsonMax) d += "vsMapJson=" + vsMapJson;
+	}
+	return d;
 }
 
-bool pc_netplay_launch_parse_descriptor(const std::string& text, int* captainP1, int* captainP2)
+int pc_netplay_launch_parse_mode(const std::string& text, std::string* vsMapJson)
 {
+	const std::string head = descriptor_head(text);
+	const bool vs          = head.rfind("mode=vs;", 0) == 0 || head.find(";mode=vs;") != std::string::npos;
+	if (vsMapJson != nullptr) {
+		const size_t at = text.find("vsMapJson=");
+		*vsMapJson      = vs && at != std::string::npos ? text.substr(at + 10) : std::string();
+	}
+	return vs ? 2 : 1;
+}
+
+bool pc_netplay_launch_parse_descriptor(const std::string& full, int* captainP1, int* captainP2)
+{
+	const std::string text = descriptor_head(full);
 	auto value = [&](const char* key, int* out) {
 		const std::string k = std::string(key) + "=";
 		size_t at           = text.find(k);
@@ -351,7 +376,7 @@ void pc_netplay_launch_preinit(int argc, char** argv)
 	rec += "seed " + std::to_string(sSetup.seed) + "\n";
 	if (!sSetup.isHost) {
 		rec += "host_config " + sSetup.configText + "\n";
-		rec += "host_descriptor " + sSetup.descriptor + "\n";
+		rec += "host_descriptor " + descriptor_head(sSetup.descriptor) + "\n";
 	}
 	rec += "started_unix " + std::to_string((long long)time(nullptr)) + "\n";
 	write_file(fs::path(sSetup.runDir) / "launch.txt", rec);
@@ -369,9 +394,10 @@ void pc_netplay_launch_preinit(int argc, char** argv)
 	printf("[netplay] launch: role=%s run folder %s\n", sSetup.isHost ? "host" : "join", sSetup.runDir.c_str());
 	printf("[netplay] launch: NECTAR_SAVE_DIR=%s\n", sSetup.saveDir.c_str());
 	if (!sSetup.isHost)
-		printf("[netplay] launch: offer bundle seed=%u config=%lluB descriptor=%s\n", sSetup.seed,
+		printf("[netplay] launch: offer bundle seed=%u config=%lluB descriptor=%s%s\n", sSetup.seed,
 		       (unsigned long long)sSetup.configText.size(),
-		       sSetup.descriptor.empty() ? "(none)" : sSetup.descriptor.c_str());
+		       sSetup.descriptor.empty() ? "(none)" : descriptor_head(sSetup.descriptor).c_str(),
+		       sSetup.vsMapJson.empty() ? "" : (" + VS map.json " + std::to_string(sSetup.vsMapJson.size()) + "B").c_str());
 	fflush(stdout);
 }
 

@@ -143,6 +143,24 @@ int main()
               "joiner exit code reported");
     }
 
+    // Host VS / Join VS: the same flow, with --netplay-mode vs.
+    {
+        std::string err;
+        game = FakeGame();
+        const fs::path dir = root / "vs-host";
+        check(flow.startHost(dir, err, {}, true) && flow.vs(), "VS host starts");
+        check(game.args.size() == 7 && argAfter(game.args, "--netplay-mode") == "vs", "VS host asks for VS");
+        check(CoopFlow::hostArguments(dir) == std::vector<std::string>(game.args.begin(), game.args.begin() + 5),
+              "VS host keeps the co-op arguments");
+        game = FakeGame();
+        flow.startJoin(root / "vs-join", {}, true);
+        check(flow.vs() && flow.submitOffer("NPIX2-OFFER", err), "VS joiner takes the offer");
+        check(game.args[0] == "--netplay-join-ice" && argAfter(game.args, "--netplay-mode") == "vs", "VS joiner asks for VS");
+        flow.startJoin(root / "coop-join");
+        check(!flow.vs(), "a co-op join after a VS one is co-op");
+        check(argAfter(CoopFlow::joinArguments(root), "--netplay-mode").empty(), "co-op arguments name no mode");
+    }
+
     // A game that cannot start.
     {
         std::string err;

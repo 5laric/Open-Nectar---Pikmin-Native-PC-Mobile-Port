@@ -756,10 +756,16 @@ bool pcIsLastNaviStanding(Navi* navi)
 	return true;
 }
 
+#if defined(PIKI_PC_PORT)
+// Netplay: which captain's throw preference is the keyboard's is sim state,
+// so deterministic mode fixes it to captain 0 on every peer.
+static int pcThrowKeyboardOwner() { return pc_netplay_deterministic() ? 0 : pc_window_get_keyboard_owner(); }
+#endif
+
 int pc_preferred_throw_color_for(Navi* navi)
 {
 	if (!navi) return -1;
-	if (navi->mNaviID == pc_window_get_keyboard_owner()) return sPreferredThrowColor;
+	if (navi->mNaviID == pcThrowKeyboardOwner()) return sPreferredThrowColor;
 	return sPreferredThrowColorP2;
 }
 
@@ -772,7 +778,7 @@ static int sPreferredThrowKind[2] = { -1, -1 };
 static bool sPreferredFromPad[2]   = { false, false };
 static int sPreferredBeforePad[2]  = { -1, -1 };
 
-static int pcThrowSlot(Navi* navi) { return navi && navi->mNaviID == pc_window_get_keyboard_owner() ? 0 : 1; }
+static int pcThrowSlot(Navi* navi) { return navi && navi->mNaviID == pcThrowKeyboardOwner() ? 0 : 1; }
 
 static bool pcKindMatches(Piki* piki, int kind)
 {
@@ -863,7 +869,7 @@ static bool pcSquadHasColor(int color)
  */
 static bool pcUpdatePreferredThrowColor(Navi* navi, bool allowKind = false)
 {
-	const bool keyboardOwner = navi->mNaviID == pc_window_get_keyboard_owner();
+	const bool keyboardOwner = navi->mNaviID == pcThrowKeyboardOwner();
 	int& preferred = keyboardOwner ? sPreferredThrowColor : sPreferredThrowColorP2;
 
 	// Tocar el icono del HUD cuenta como una muesca, y funciona aunque la
@@ -872,6 +878,14 @@ static bool pcUpdatePreferredThrowColor(Navi* navi, bool allowKind = false)
 #if PIKI_PC_TOUCH
 	if (keyboardOwner) touchSteps = pc_touch_take_color_taps();
 #endif
+	// Netplay: the wheel and the touch icon live outside PADStatus, so
+	// deterministic mode drains and ignores them (the D-pad still steps). The
+	// wheel's job is a local control setting, so the sim takes its default
+	// (the colour), as every peer's does.
+	const bool detMode = pc_netplay_deterministic();
+	if (detMode) {
+		touchSteps = 0;
+	}
 	// Cruceta izquierda/derecha como en Pikmin 2 (issue #43): vale para
 	// mando y teclado, con o sin A pulsado. Abajo sigue siendo el original.
 	int padSteps = 0;
@@ -893,7 +907,7 @@ static bool pcUpdatePreferredThrowColor(Navi* navi, bool allowKind = false)
 		sPreferredFromPad[pcThrowSlot(navi)]   = true;
 	}
 
-	const bool wheelOn = keyboardOwner && pc_settings_get_mouse_wheel_action() == 0;
+	const bool wheelOn = keyboardOwner && (detMode || pc_settings_get_mouse_wheel_action() == 0);
 	if (!wheelOn && touchSteps == 0 && padSteps == 0 && preferred < 0) {
 		return kindChanged;
 	}
@@ -920,8 +934,9 @@ static bool pcUpdatePreferredThrowColor(Navi* navi, bool allowKind = false)
 	}
 
 	int steps = touchSteps + padSteps;
-	if (wheelOn) {
-		steps += pc_window_take_wheel_steps();
+	if (wheelOn && pc_settings_get_mouse_wheel_action() == 0) {
+		const int wheelSteps = pc_window_take_wheel_steps();
+		if (!detMode) steps += wheelSteps;
 	}
 	if (steps != 0) {
 		index = ((index + steps) % presentCount + presentCount) % presentCount;
@@ -1567,6 +1582,10 @@ void Navi::pcDrawLockRing(Graphics& gfx)
 /// Reloj monotónico en ms para el swarm (vale con varias vistas por frame).
 static u32 pcSwarmNowMs()
 {
+	// Netplay: mPcSwarmMs is written in the sim, so deterministic mode counts ticks.
+	if (pc_netplay_deterministic()) {
+		return u32(pc_netplay_tick() * 1000.0 * pc_netplay_fixed_dt(gsys ? gsys->mFrameRate : 2)) + 1;
+	}
 	const u32 ms = u32(std::chrono::duration_cast<std::chrono::milliseconds>(
 	                       std::chrono::steady_clock::now().time_since_epoch())
 	                       .count());

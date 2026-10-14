@@ -86,6 +86,14 @@ const char* pc_vs_arena_prepare(void)
 	return nullptr;
 }
 
+void pc_vs_arena_compiled(const u8** mod, size_t* modLen, const u8** ini, size_t* iniLen)
+{
+	*mod    = sMod.data();
+	*modLen = sMod.size();
+	*ini    = sIni.data();
+	*iniLen = sIni.size();
+}
+
 RandomAccessStream* pc_vs_arena_open(const char* path)
 {
 	const bool isMod = strcmp(path, PC_VS_ARENA_MOD) == 0, isIni = strcmp(path, PC_VS_ARENA_STAGE) == 0;

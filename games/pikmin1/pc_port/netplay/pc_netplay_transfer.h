@@ -14,11 +14,11 @@
 //   71  netplay seed u32
 //   75  refuse field u8
 //   76  nonce u64               Hello: fresh per send; Ack: the echoed Hello nonce
-//   84  mode u8                 kModeCoopDirect; kModeVs is reserved
+//   84  mode u8                 kModeCoopDirect or kModeVs
 //   85  captain P1 u8
 //   86  captain P2 u8
 //   87  reserved u8[5]          zero
-//   92  VS map digest[32]       reserved, zero until online VS
+//   92  VS map digest[32]       SHA-256 of the compiled VS map (.mod + .ini); zero in co-op
 //   124 end
 
 #include <cstddef>
@@ -42,10 +42,11 @@ constexpr uint8_t kFieldConfig = 3;
 constexpr uint8_t kFieldSeed   = 4;
 constexpr uint8_t kFieldMode   = 5;
 constexpr uint8_t kFieldVsMap  = 6;
+constexpr uint8_t kFieldCaptain = 7; // refuse only: a captain this PC cannot load
 
 constexpr uint8_t kModeNone       = 0;
 constexpr uint8_t kModeCoopDirect = 1; // 2-captain story co-op, direct boot, fresh save
-constexpr uint8_t kModeVs         = 2; // reserved
+constexpr uint8_t kModeVs         = 2; // 1v1 VS on a VS map, --vs-map direct boot
 
 inline const char* field_name(uint8_t f)
 {
@@ -56,6 +57,7 @@ inline const char* field_name(uint8_t f)
 	case kFieldSeed: return "seed";
 	case kFieldMode: return "mode";
 	case kFieldVsMap: return "vsmap";
+	case kFieldCaptain: return "captain";
 	default: return "unknown";
 	}
 }
