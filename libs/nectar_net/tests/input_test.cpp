@@ -164,6 +164,25 @@ void testWindow()
     check(health == InputHealth::Live && f.held == kA, "first copy wins");
 }
 
+void testAppliedInputs()
+{
+    std::vector<std::vector<std::uint8_t>> blobs;
+    for (int i = 0; i < 8; ++i) blobs.push_back(std::vector<std::uint8_t>(32, static_cast<std::uint8_t>(i)));
+    const auto bytes = encodeAppliedInputs(500, blobs);
+    check(bytes.size() == 10 + 8 * 32, "applied inputs: 10-byte header + 8 blobs");
+    std::uint64_t tick = 0;
+    std::vector<std::vector<std::uint8_t>> back;
+    check(decodeAppliedInputs(bytes.data(), bytes.size(), 32, tick, back) && tick == 500 && back == blobs,
+          "applied inputs round-trip");
+    check(!decodeAppliedInputs(bytes.data(), bytes.size(), 16, tick, back), "blob size must match the game's");
+    check(!decodeAppliedInputs(bytes.data(), bytes.size() - 1, 32, tick, back), "truncated applied inputs");
+    check(encodeAppliedInputs(3, blobs).empty(), "ticks below zero cannot be encoded");
+    blobs.push_back(blobs[0]);
+    check(encodeAppliedInputs(500, blobs).empty(), "at most 8 ticks");
+    std::vector<std::vector<std::uint8_t>> uneven = {std::vector<std::uint8_t>(32), std::vector<std::uint8_t>(31)};
+    check(encodeAppliedInputs(500, uneven).empty(), "blobs must share one size");
+}
+
 } // namespace
 
 int main()
@@ -172,6 +191,7 @@ int main()
     testLossIsRepaired();
     testHoldThenNeutral();
     testWindow();
+    testAppliedInputs();
     std::printf("nectar_net_input_test: %s\n", failures == 0 ? "all tests passed" : "FAILED");
     return failures == 0 ? 0 : 1;
 }

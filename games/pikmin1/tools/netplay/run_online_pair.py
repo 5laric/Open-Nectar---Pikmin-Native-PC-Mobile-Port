@@ -67,6 +67,13 @@ def main(argv=None):
                    help="TEST ONLY: comma-separated host ticks where the host presses Start (pause/unpause)")
     p.add_argument("--guest-leave-at", type=int, default=0, help="TEST ONLY: guest tick to leave co-op")
     p.add_argument("--guest-rejoin-at", type=int, default=0, help="TEST ONLY: guest tick to ask to rejoin")
+    p.add_argument("--host-seed", type=int, default=None,
+                   help="PIKMIN_NETPLAY_SEED on the host only; the guest must adopt it from the rules")
+    p.add_argument("--guest-drop-at", type=int, default=0,
+                   help="the first guest leaves after this many ticks; a second guest then joins with the same "
+                        "code and must rebuild the running session (judged on the second guest)")
+    p.add_argument("--predictive", action="store_true",
+                   help="Phase 4 predictive guest (--online-predictive) instead of the exact replica")
     p.add_argument("--max-error", type=float, default=25.0,
                    help="fail when the guest captain's mean error exceeds this (world units)")
     a = p.parse_args(argv)
@@ -93,6 +100,8 @@ def main(argv=None):
             (run / "frames").mkdir(exist_ok=True)
         impair = dict(impair, PIKMIN_FRAME_DUMP="frames")  # relative to each peer's run folder
     host_env = dict(impair, PIKMIN_ONLINE_TEST_LOOPBACK="1")
+    if a.host_seed is not None:
+        host_env["PIKMIN_NETPLAY_SEED"] = str(a.host_seed)
     if a.host_start_at:
         host_env.update(PIKMIN_NETPLAY_TEST_KNOBS="1", PIKMIN_ONLINE_TEST_START_AT=a.host_start_at)
     hproc, hout = run_pair.launch(a.exe, host_run, ["--online-host", str(a.port), "--online-code-out", str(code_file),
@@ -108,9 +117,20 @@ def main(argv=None):
     if a.guest_leave_at:
         join_env.update(PIKMIN_NETPLAY_TEST_KNOBS="1", PIKMIN_ONLINE_TEST_LEAVE_AT=str(a.guest_leave_at),
                         PIKMIN_ONLINE_TEST_REJOIN_AT=str(a.guest_rejoin_at))
-    jproc, jout = run_pair.launch(a.exe, join_run, ["--online-join", "@" + str(code_file), "--netplay-input",
-                                                    str(join_pkni)], join_env, False, a.ticks)
-    rcs = run_pair.wait_all([("host", hproc), ("join", jproc)], a.ticks / 30.0 + 180)
+    join_args = ["--online-join", "@" + str(code_file), "--netplay-input", str(join_pkni)]
+    if a.predictive:
+        join_args.append("--online-predictive")
+    if a.guest_drop_at:
+        first_run = out / "join-first"
+        first_pkni = run_pair.prepare_run(first_run, assets, None, a.guest_drop_at, 3)
+        first_args = ["--online-join", "@" + str(code_file), "--netplay-input", str(first_pkni)]
+        fproc, fout = run_pair.launch(a.exe, first_run, first_args, join_env, False, a.guest_drop_at)
+        first_rc = run_pair.wait_all([("join-first", fproc)], a.guest_drop_at / 30.0 + 180)
+        fout.close()
+        print(f"run_online_pair: join-first: exit={first_rc.get('join-first')} (left after {a.guest_drop_at} ticks)")
+        time.sleep(3)  # the host plays on alone for a moment
+    jproc, jout = run_pair.launch(a.exe, join_run, join_args, join_env, False, a.ticks)
+    rcs = run_pair.wait_all([("host", hproc), ("join", jproc)], a.ticks / 30.0 + 300)
     hout.close()
     jout.close()
 
@@ -121,11 +141,28 @@ def main(argv=None):
         for line in log.splitlines():
             if line.startswith("[online]") and any(w in line for w in ("room", "joined", "ended", "left", "rules",
                                                                          "pause", "test:", "spectat", "rejoin",
-                                                                         "back in")):
+                                                                         "back in", "catching", "caught",
+                                                                         "running session", "history")):
                 print(f"run_online_pair: {name}:   {line}")
         stats = STATS_RE.findall(log)
         if stats:
             print(f"run_online_pair: {name}:   last: tick={stats[-1][0]} {stats[-1][1]}")
+
+    def hashes(path):
+        rows = {}
+        if path.exists():
+            for line in path.read_text().splitlines():
+                fields = line.split()
+                if len(fields) == 9:
+                    rows[int(fields[0])] = fields[1]
+        return rows
+
+    host_hash, join_hash = hashes(host_run / "hashes.txt"), hashes(join_run / "hashes.txt")
+    shared_hash = sorted(set(host_hash) & set(join_hash))
+    equal = sum(1 for t in shared_hash if host_hash[t] == join_hash[t])
+    first = next((t for t in shared_hash if host_hash[t] != join_hash[t]), None)
+    print(f"run_online_pair: state hashes: {len(shared_hash)} shared ticks, {equal} identical"
+          + (f", first difference at {first}" if first is not None else ""))
 
     host_pos, join_pos = navi_positions(host_log), navi_positions(join_log)
     shared = sorted(k for k in host_pos if k in join_pos)
@@ -138,8 +175,13 @@ def main(argv=None):
         mean = sum(errors) / len(errors)
         print(f"run_online_pair: {label}: {len(errors)} samples, mean error {mean:.2f}, max {max(errors):.2f}, "
               f"host path {path_length(host_pos, navi):.1f}")
-        if navi == 1 and mean > a.max_error:
+        if navi == 1 and a.predictive and mean > a.max_error:
             failures.append(f"{label} mean error {mean:.2f} > {a.max_error}")
+    if not a.predictive:
+        if not shared_hash or equal != len(shared_hash):
+            failures.append("the exact replica diverged from the host")
+        if "desync" in join_log:
+            failures.append("the guest reported a desync")
     if path_length(host_pos, 1) < 50:
         failures.append("the guest captain barely moved on the host: input did not reach it")
     for name in ("host", "join"):

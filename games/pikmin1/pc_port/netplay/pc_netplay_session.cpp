@@ -92,6 +92,8 @@
 #include "nectar_net/replication.h"
 #include "nectar_net/room.h"
 #include "nectar_net/scene.h"
+#include <array>
+#include <map>
 #include <memory>
 #else
 #define PC_ONLINE 0
@@ -114,6 +116,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <thread>
@@ -172,6 +175,7 @@ struct Config {
 	uint16_t onlinePort    = 0;  // --online-host <port>; 0 = random high port
 	std::string onlineCode;      // --online-join <code | @file>
 	std::string onlineCodeOut;   // --online-code-out <file>: the host writes its code there
+	bool onlinePredictive  = false; // --online-predictive: Phase 4 captain prediction instead of the exact replica
 };
 
 int sArgc     = 0;
@@ -521,6 +525,13 @@ uint32_t read_u32_env(const char* name, uint32_t fallback)
 	unsigned long n = strtoul(v, &end, 0);
 	if (end == v || *end != '\0' || n > 0xFFFFFFFFul) return fallback;
 	return (uint32_t)n;
+}
+
+bool argv_has(int argc, char** argv, const char* flag)
+{
+	for (int i = 1; i < argc; ++i)
+		if (argv[i] != nullptr && std::strcmp(argv[i], flag) == 0) return true;
+	return false;
 }
 
 const char* argv_value(int argc, char** argv, const char* flag)
@@ -1480,6 +1491,27 @@ void parse_config()
 	}
 	if (replayVal != nullptr && (hostVal != nullptr || joinVal != nullptr || launch.active))
 		usage_exit("--netplay-replay-log runs alone, without a host or join switch%s", "");
+	if (onlineHost != nullptr || onlineJoin != nullptr) {
+		// Like the lockstep launcher: an online session never writes this
+		// player's own saves. Both peers start from the same fresh card, which
+		// the exact replica needs; the host's folder keeps the session's save.
+		if (getenv_nonempty("NECTAR_SAVE_DIR") == nullptr) {
+			char stamp[32];
+			const time_t now = time(nullptr);
+			strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", localtime(&now));
+			const std::string dir = std::string("online-sessions/") + (onlineHost != nullptr ? "host-" : "guest-") + stamp
+			                      + "/save";
+			std::error_code ec;
+			std::filesystem::create_directories(dir, ec);
+			if (ec) usage_exit("cannot create the online save folder %s", dir.c_str());
+#ifdef _WIN32
+			_putenv_s("NECTAR_SAVE_DIR", dir.c_str());
+#else
+			setenv("NECTAR_SAVE_DIR", dir.c_str(), 1);
+#endif
+			printf("[online] this session saves to %s\n", dir.c_str());
+		}
+	}
 	if (onlineHost != nullptr) {
 		char* end    = nullptr;
 		const long p = strtol(onlineHost, &end, 10);
@@ -1505,9 +1537,10 @@ void parse_config()
 			code   = buf;
 			while (!code.empty() && (code.back() == '\n' || code.back() == '\r' || code.back() == ' ')) code.pop_back();
 		}
-		sCfg.active     = true;
-		sCfg.online     = true;
-		sCfg.onlineCode = code;
+		sCfg.active           = true;
+		sCfg.online           = true;
+		sCfg.onlineCode       = code;
+		sCfg.onlinePredictive = argv_has(sArgc, sArgv, "--online-predictive");
 	} else if (launch.active) {
 		sCfg.isHost = launch.isHost;
 		sCfg.active = true;
@@ -3123,6 +3156,27 @@ struct OnlineState {
 	uint64_t hostInputNext = 0;
 	int lastPause = -1;
 	std::vector<uint64_t> testStartTicks; // TEST ONLY: host Start presses
+	// Exact replica (default): the host sends what it simulated; the guest
+	// replays exactly those ticks and compares state hashes.
+	std::vector<std::vector<uint8_t>> appliedSent;          // host: newest first
+	std::map<uint64_t, std::array<uint8_t, 32>> applied;     // guest: ticks to replay
+	std::map<uint64_t, uint64_t> hostHashes;                 // guest: hash tick -> host total
+	std::map<uint64_t, uint64_t> ownHashes;                  // guest: hash tick -> own total
+	double nextSlotMs  = 0;   // guest: replay pacing
+	double nextInputMs = 0;   // guest: input sampling
+	uint64_t lastInputTick = 0;
+	uint64_t stalls    = 0;   // guest: ticks that were due but had not arrived
+	uint64_t stalledTick = UINT64_MAX;
+	uint64_t hashesChecked = 0;
+	bool desync        = false;
+	// Host: every applied tick since 0, so a guest joining later (or after a
+	// drop) replays the whole session. Bounded to four hours of play.
+	std::vector<std::array<uint8_t, 32>> appliedLog;
+	bool appliedLogFull  = false;
+	uint64_t backfillNext = 0, backfillEnd = 0; // host: ticks still to send to a late guest
+	bool catchingUp      = false;               // guest: replaying a backlog fast
+	double catchUpStartMs = 0;
+	uint64_t catchUpStartTick = 0;
 	// Spectator: P2 leaves co-op, keeps its slot and watches the host's
 	// captain; Start asks to rejoin, which the host grants at a safe tick.
 	bool spectator       = false; // both sides: P2 currently spectating
@@ -3213,6 +3267,15 @@ void online_send(nnet::MessageType type, uint64_t tick, const std::vector<uint8_
 // Closes the room (removes the router mapping, forgets the secret).
 void online_teardown()
 {
+	if (sOnline == nullptr) return;
+	// Both sides flush before closing: the host what the guest still has to
+	// replay, the guest its goodbye, or the host would keep its slot until
+	// the connection times out.
+	nnet::GatedTransport* link = online_link();
+	if (link != nullptr && link->state() == nnet::TransportState::Connected) {
+		link->disconnectPeer(true);
+		std::this_thread::sleep_for(std::chrono::milliseconds(sCfg.isHost ? 500 : 300));
+	}
 	delete sOnline;
 	sOnline = nullptr;
 }
@@ -3323,11 +3386,31 @@ bool online_decode(const nnet::TransportEvent& event, nnet::Message& message)
 }
 
 void online_host_set_spectator(bool on, uint64_t tick);
+void online_host_send_welcome();
 
 void online_host_events()
 {
 	nnet::TransportEvent event;
 	while (sOnline->link->poll(event)) {
+		if (event.type == nnet::TransportEventType::Connected && sOnline->startMs > 0) {
+			// A guest joining a running session (or coming back): the rules,
+			// then every tick so far; it catches up without drawing.
+			if (sOnline->appliedLogFull) {
+				printf("[online] a guest joined but the session is too long to replay; it is dropped\n");
+				sOnline->link->disconnectPeer(false);
+				continue;
+			}
+			sOnline->receiver      = nnet::InputReceiver(sOnline->receiver.policy());
+			sOnline->spectator     = false;
+			sOnline->rejoinPending = false;
+			online_host_send_welcome();
+			sOnline->backfillNext = 0;
+			sOnline->backfillEnd  = sOnline->nextTick;
+			printf("[online] guest joined a running session at tick=%llu; sending its history\n",
+			       (unsigned long long)sOnline->nextTick);
+			fflush(stdout);
+			continue;
+		}
 		if (event.type == nnet::TransportEventType::Disconnected || event.type == nnet::TransportEventType::Error) {
 			// The room stays open; P2 gets neutral input until someone joins.
 			printf("[online] guest left at tick=%llu; P2 is neutral\n", (unsigned long long)sOnline->nextTick);
@@ -3382,6 +3465,22 @@ void online_guest_events()
 				sOnline->clock.addSample(pong, (std::uint64_t)now_ms());
 		} else if (message.header.type == nnet::MessageType::SceneStart) {
 			sOnline->hostStartSeen = true;
+		} else if (message.header.type == nnet::MessageType::AppliedInputs) {
+			uint64_t newest = 0;
+			std::vector<std::vector<uint8_t>> blobs;
+			if (!nnet::decodeAppliedInputs(message.payload.data(), message.payload.size(), 32, newest, blobs)) continue;
+			for (size_t i = 0; i < blobs.size(); ++i) {
+				const uint64_t tick = newest - i;
+				// Only ticks still to replay, and never an unbounded backlog.
+				if (tick < sOnline->nextTick || tick > sOnline->nextTick + 500000) continue;
+				std::array<uint8_t, 32> entry;
+				std::memcpy(entry.data(), blobs[i].data(), 32);
+				sOnline->applied.emplace(tick, entry);
+			}
+		} else if (message.header.type == nnet::MessageType::StateHash) {
+			nnet::StateHashPayload hash;
+			if (nnet::decodeStateHash(message.payload.data(), message.payload.size(), hash) && sOnline->hostHashes.size() < 4096)
+				sOnline->hostHashes[hash.tick] = hash.hash;
 		} else if (message.header.type == nnet::MessageType::PlayerControlChanged) {
 			if (message.payload.size() != 10 || message.payload[0] != 1 || message.payload[1] > 1) continue;
 			const bool on      = message.payload[1] == 1;
@@ -3396,9 +3495,21 @@ void online_guest_events()
 			// Printable "key=value;" text, bounded; anything else is refused.
 			const std::vector<uint8_t>& text = message.payload;
 			bool printable = !text.empty() && text.size() <= 8192;
-			for (uint8_t ch : text) printable = printable && ch >= 0x20 && ch < 0x7f;
-			if (printable && !sOnline->rulesSeen) {
-				sOnline->rules.assign(text.begin(), text.end());
+			for (uint8_t ch : text) printable = printable && ((ch >= 0x20 && ch < 0x7f) || ch == '\n');
+			const std::string all(text.begin(), text.end());
+			const size_t newline = all.find('\n');
+			if (printable && !sOnline->rulesSeen && all.rfind("seed=", 0) == 0 && newline != std::string::npos) {
+				char* end            = nullptr;
+				const unsigned long seed = strtoul(all.c_str() + 5, &end, 10);
+				if (end != all.c_str() + newline || seed > 0xffffffffUL) continue;
+				// The day reseed reads the seed from the environment.
+				sCfg.seed = (uint32_t)seed;
+#ifdef _WIN32
+				_putenv_s("PIKMIN_NETPLAY_SEED", std::to_string(seed).c_str());
+#else
+				setenv("PIKMIN_NETPLAY_SEED", std::to_string(seed).c_str(), 1);
+#endif
+				sOnline->rules     = all.substr(newline + 1);
 				sOnline->rulesSeen = true;
 			}
 		} else if (message.header.type == nnet::MessageType::InputBundle) {
@@ -3442,11 +3553,7 @@ bool online_connect_pump()
 		sOnline->startMs  = now;
 		sOnline->nextTick = 0;
 		// The session plays by the host's rules (sim settings).
-		const char* rules = pc_settings_netplay_config_text();
-		online_send(nnet::MessageType::SessionRules, 0,
-		            std::vector<uint8_t>(rules, rules + std::strlen(rules)), nnet::Delivery::ReliableOrdered);
-		online_send(nnet::MessageType::SceneStart, 0, nnet::encodeSceneStart({ kOnlineSceneEpoch, 0 }),
-		            nnet::Delivery::ReliableOrdered);
+		online_host_send_welcome();
 		printf("[online] guest joined; host ticking\n");
 		fflush(stdout);
 		return true;
@@ -3485,6 +3592,75 @@ void online_host_set_spectator(bool on, uint64_t tick)
 	            nnet::Delivery::ReliableOrdered);
 	printf("[online] P2 %s at tick=%llu\n", on ? "is spectating" : "rejoined", (unsigned long long)tick);
 	fflush(stdout);
+}
+
+// Exact replica: what the host just simulated, with 8 ticks of redundancy
+// on the unreliable channel plus a reliable copy, so the guest never misses
+// a tick; and the state hash twice a second for desync detection.
+void online_send_applied(uint64_t tick, const PcNetplayInput& p0, const PcNetplayInput& p1)
+{
+	std::vector<uint8_t> blob(32);
+	pc_netplay_input_encode(p0, blob.data());
+	pc_netplay_input_encode(p1, blob.data() + 16);
+	sOnline->appliedSent.insert(sOnline->appliedSent.begin(), blob);
+	if (sOnline->appliedSent.size() > nnet::kMaxAppliedTicks) sOnline->appliedSent.pop_back();
+	online_send(nnet::MessageType::AppliedInputs, tick, nnet::encodeAppliedInputs(tick, sOnline->appliedSent),
+	            nnet::Delivery::Unreliable);
+	online_send(nnet::MessageType::AppliedInputs, tick, nnet::encodeAppliedInputs(tick, { blob }),
+	            nnet::Delivery::ReliableOrdered);
+	constexpr size_t kMaxLogTicks = 4u * 60u * 60u * 30u;
+	if (sOnline->appliedLog.size() == tick && sOnline->appliedLog.size() < kMaxLogTicks) {
+		std::array<uint8_t, 32> entry;
+		std::memcpy(entry.data(), blob.data(), 32);
+		sOnline->appliedLog.push_back(entry);
+	} else if (!sOnline->appliedLogFull && sOnline->appliedLog.size() >= kMaxLogTicks) {
+		sOnline->appliedLogFull = true;
+		printf("[online] session longer than four hours: a guest can no longer join late\n");
+		fflush(stdout);
+	}
+}
+
+// A guest that joined after tick 0 gets the session so far, a slice per turn
+// so neither GNS's send buffer nor the frame time explodes.
+void online_host_backfill()
+{
+	if (sOnline->backfillNext >= sOnline->backfillEnd) return;
+	const uint64_t stop = std::min<uint64_t>(sOnline->backfillEnd, sOnline->backfillNext + 2000);
+	while (sOnline->backfillNext < stop) {
+		const uint64_t first = sOnline->backfillNext;
+		const uint64_t last  = std::min<uint64_t>(stop, first + nnet::kMaxAppliedTicks) - 1;
+		std::vector<std::vector<uint8_t>> blobs;
+		for (uint64_t t = last + 1; t-- > first;)
+			blobs.emplace_back(sOnline->appliedLog[t].begin(), sOnline->appliedLog[t].end());
+		online_send(nnet::MessageType::AppliedInputs, last, nnet::encodeAppliedInputs(last, blobs),
+		            nnet::Delivery::ReliableOrdered);
+		sOnline->backfillNext = last + 1;
+	}
+	if (sOnline->backfillNext >= sOnline->backfillEnd) {
+		printf("[online] late guest: session history sent (%llu ticks)\n", (unsigned long long)sOnline->backfillEnd);
+		fflush(stdout);
+	}
+}
+
+void online_host_send_welcome()
+{
+	// "seed=<n>" line (the day reseed) and then the sim settings text.
+	const std::string rules = "seed=" + std::to_string(sCfg.seed) + "\n" + pc_settings_netplay_config_text();
+	online_send(nnet::MessageType::SessionRules, 0, std::vector<uint8_t>(rules.begin(), rules.end()),
+	            nnet::Delivery::ReliableOrdered);
+	online_send(nnet::MessageType::SceneStart, 0, nnet::encodeSceneStart({ kOnlineSceneEpoch, 0 }),
+	            nnet::Delivery::ReliableOrdered);
+}
+
+void online_send_hash(uint64_t tick)
+{
+	uint64_t total = 0, hashTick = 0;
+	if (tick % 15 == 14 && pc_state_hash_current(&total, nullptr, &hashTick) && hashTick > 0) {
+		nnet::StateHashPayload hash;
+		hash.tick = hashTick;
+		hash.hash = total;
+		online_send(nnet::MessageType::StateHash, tick, nnet::encodeStateHash(hash), nnet::Delivery::ReliableOrdered);
+	}
 }
 
 void online_trace_pause(uint64_t tick)
@@ -3530,6 +3706,148 @@ bool online_advance(System* sys, BaseApp* app, uint64_t tick, const PcNetplayInp
 	return run_advance(sys, app, (int)tick, inputs, false);
 }
 
+
+// Compares every host hash the guest can match; a mismatch means the replica
+// diverged, which cannot be repaired yet (option B): stop with a report.
+void online_check_hashes()
+{
+	for (auto it = sOnline->hostHashes.begin(); it != sOnline->hostHashes.end();) {
+		const auto own = sOnline->ownHashes.find(it->first);
+		if (own == sOnline->ownHashes.end()) {
+			if (!sOnline->ownHashes.empty() && it->first < sOnline->ownHashes.begin()->first) {
+				it = sOnline->hostHashes.erase(it); // too old to compare
+				continue;
+			}
+			++it;
+			continue;
+		}
+		++sOnline->hashesChecked;
+		if (own->second != it->second && !sOnline->desync) {
+			sOnline->desync = true;
+			printf("[online] desync: host and guest differ at hash tick=%llu (host %016llx, guest %016llx)\n",
+			       (unsigned long long)it->first, (unsigned long long)it->second, (unsigned long long)own->second);
+			fflush(stdout);
+		}
+		it = sOnline->hostHashes.erase(it);
+	}
+	while (sOnline->ownHashes.size() > 600) sOnline->ownHashes.erase(sOnline->ownHashes.begin());
+}
+
+// Guest input for the exact replica: sampled on the wall clock (not on the
+// replay), tagged with the host tick it should land on.
+void online_guest_send_input(double now)
+{
+	if (sOnline->nextInputMs == 0) sOnline->nextInputMs = now;
+	int sampled = 0;
+	while (now >= sOnline->nextInputMs && sampled < 4) {
+		sOnline->nextInputMs += kOnlineSlotMs;
+		++sampled;
+		PcNetplayInput p1 = build_local_input();
+		if (sOnline->catchingUp) p1 = pc_netplay_input_neutral(); // not on screen yet: do not play blind
+		uint64_t tick     = sOnline->clock.hostTickAt((std::uint64_t)now) + sOnline->lead;
+		if (tick <= sOnline->lastInputTick) tick = sOnline->lastInputTick + 1;
+		// Test triggers fire once, like a real request.
+		const bool testLeave = sOnline->testLeaveAt != 0 && sOnline->nextTick >= sOnline->testLeaveAt;
+		if ((sOnline->leaveRequested || testLeave) && !sOnline->spectator && !sOnline->leaveSent) {
+			online_send(nnet::MessageType::LeaveCoopRequest, tick, {}, nnet::Delivery::ReliableOrdered);
+			sOnline->leaveSent      = true;
+			sOnline->leaveRequested = false;
+			if (testLeave) sOnline->testLeaveAt = 0;
+		}
+		if (sOnline->spectator) {
+			const bool startDown  = (p1.buttons & PAD_BUTTON_START) != 0;
+			const bool testRejoin = sOnline->testRejoinAt != 0 && sOnline->nextTick >= sOnline->testRejoinAt;
+			if (testRejoin) sOnline->testRejoinAt = 0;
+			if (((startDown && !sOnline->startWasDown) || testRejoin) && !sOnline->rejoinSent) {
+				online_send(nnet::MessageType::RejoinRequest, tick, {}, nnet::Delivery::ReliableOrdered);
+				sOnline->rejoinSent = true;
+			}
+			sOnline->startWasDown = startDown;
+			p1                    = pc_netplay_input_neutral();
+		}
+		if (!sOnline->sent.empty() && sOnline->sent.front().tick + 1 != tick) sOnline->sent.clear();
+		sOnline->sent.insert(sOnline->sent.begin(), to_net_input(p1, tick));
+		if (sOnline->sent.size() > nnet::kMaxInputFrames) sOnline->sent.pop_back();
+		online_send(nnet::MessageType::InputBundle, tick, nnet::encodeInputBundle(sOnline->sent),
+		            nnet::Delivery::Unreliable);
+		sOnline->lastInputTick = tick;
+	}
+	if (now - sOnline->nextInputMs > 500) sOnline->nextInputMs = now; // after a long load
+}
+
+// Exact replica turn: replays the host's ticks at 30 Hz, faster while behind.
+int online_guest_replica_ticks(System* sys, BaseApp* app, double now)
+{
+	int advances = 0;
+	if (sOnline->nextSlotMs == 0) sOnline->nextSlotMs = now;
+	for (;;) {
+		auto it = sOnline->applied.find(sOnline->nextTick);
+		if (it == sOnline->applied.end()) {
+			// The host's tick is late: counted once per tick, not per turn.
+			if (now >= sOnline->nextSlotMs + kOnlineSlotMs && sOnline->stalledTick != sOnline->nextTick) {
+				++sOnline->stalls;
+				sOnline->stalledTick = sOnline->nextTick;
+			}
+			break;
+		}
+		// Count the ticks already here: far behind (joining, a hitch) means catch up.
+		uint64_t ready = 0;
+		for (auto r = it; r != sOnline->applied.end() && r->first == sOnline->nextTick + ready && ready <= 91; ++r)
+			++ready; // only "how far behind" matters, never the whole history
+		// Keep only the buffer the measured jitter needs (1-4 ticks): every
+		// extra tick held back is input delay for the guest's own captain.
+		const uint64_t keep = std::min<uint64_t>(4, 1 + (2 * sOnline->clock.jitterMs()) / 33);
+		const bool behind   = ready > keep;
+		// Far behind (joined late): many ticks per turn until close. Every
+		// tick is still drawn: skipping the presentation pass is NOT neutral
+		// for the sim (item state diverged from tick 12 in the rejoin test).
+		const bool fastCatchUp = ready > 90;
+		if (fastCatchUp != sOnline->catchingUp) {
+			sOnline->catchingUp = fastCatchUp;
+			if (fastCatchUp) {
+				sOnline->catchUpStartMs   = now;
+				sOnline->catchUpStartTick = sOnline->nextTick;
+				printf("[online] catching up at tick=%llu\n", (unsigned long long)sOnline->nextTick);
+			} else {
+				const double seconds = (now - sOnline->catchUpStartMs) / 1000.0;
+				const double ticks   = (double)(sOnline->nextTick - sOnline->catchUpStartTick);
+				printf("[online] caught up at tick=%llu: %.0f ticks in %.1f s (%.0f ticks/s)\n",
+				       (unsigned long long)sOnline->nextTick, ticks, seconds, seconds > 0 ? ticks / seconds : 0.0);
+			}
+			fflush(stdout);
+		}
+		if (!behind && now < sOnline->nextSlotMs) break;
+		if (advances >= (fastCatchUp ? 120 : behind ? 8 : 2)) break;
+		PcNetplayInput p0, p1;
+		pc_netplay_input_decode(it->second.data(), 16, p0);
+		pc_netplay_input_decode(it->second.data() + 16, 16, p1);
+		const uint64_t tick = sOnline->nextTick;
+		sOnline->applied.erase(it);
+		if (!online_advance(sys, app, tick, p0, p1)) return -1;
+		uint64_t total = 0, hashTick = 0;
+		if (pc_state_hash_current(&total, nullptr, &hashTick) && hashTick > 0) sOnline->ownHashes[hashTick] = total;
+		online_trace_pause(tick);
+		sOnline->nextTick = tick + 1;
+		sOnline->nextSlotMs += kOnlineSlotMs;
+		if (now - sOnline->nextSlotMs > 200) sOnline->nextSlotMs = now;
+		++advances;
+		if (tick % 150 == 149) {
+			// Press-to-screen for the guest: the lead to the host, the trip
+			// back and the replay buffer.
+			const double latencyMs = (double)(sOnline->lead + sOnline->applied.size()) * kOnlineSlotMs
+			                       + sOnline->clock.rttMs() / 2.0;
+			printf("[online] tick=%llu replica backlog=%zu stalls=%llu rtt=%u lead=%u input-latency~%.0fms "
+			       "hashes-checked=%llu%s\n",
+			       (unsigned long long)(tick + 1), sOnline->applied.size(), (unsigned long long)sOnline->stalls,
+			       sOnline->clock.rttMs(), sOnline->lead, latencyMs, (unsigned long long)sOnline->hashesChecked,
+			       sOnline->desync ? " DESYNC" : "");
+			fflush(stdout);
+		}
+	}
+	online_check_hashes();
+	return advances;
+}
+
 bool online_turn(System* sys, BaseApp* app)
 {
 	sys->mControllerMgr.update();
@@ -3538,6 +3856,7 @@ bool online_turn(System* sys, BaseApp* app)
 	int advances     = 0;
 	if (sCfg.isHost) {
 		online_host_events();
+		online_host_backfill();
 		const uint64_t due = (uint64_t)((now - sOnline->startMs) / kOnlineSlotMs);
 		while (sOnline->nextTick <= due && advances < 2) {
 			const uint64_t tick = sOnline->nextTick;
@@ -3552,7 +3871,12 @@ bool online_turn(System* sys, BaseApp* app)
 			if (health == nnet::InputHealth::Live) ++sOnline->live;
 			else if (health == nnet::InputHealth::Repeated) ++sOnline->repeated;
 			else ++sOnline->neutral;
-			if (!online_advance(sys, app, tick, p0, from_net_input(remote))) return true;
+			const PcNetplayInput p1 = from_net_input(remote);
+			// Sent before simulating: the inputs are final, and the last tick
+			// of a session must reach the guest even if the session ends in it.
+			online_send_applied(tick, p0, p1);
+			if (!online_advance(sys, app, tick, p0, p1)) return true;
+			online_send_hash(tick);
 			online_send_captains(tick);
 			if (!sOnline->hostSent.empty() && sOnline->hostSent.front().tick + 1 != tick) sOnline->hostSent.clear();
 			sOnline->hostSent.insert(sOnline->hostSent.begin(), to_net_input(p0, tick));
@@ -3568,7 +3892,8 @@ bool online_turn(System* sys, BaseApp* app)
 		if (due > sOnline->nextTick + 5) sOnline->startMs = now - (double)sOnline->nextTick * kOnlineSlotMs;
 	} else {
 		online_guest_events();
-		if (sOnline->peerGone) {
+		// After the host leaves, an exact replica still replays what it holds.
+		if (sOnline->peerGone && (sCfg.onlinePredictive || sOnline->applied.empty())) {
 			pc_state_hash_flush();
 			stop_session();
 			sPhase = kDone;
@@ -3581,7 +3906,19 @@ bool online_turn(System* sys, BaseApp* app)
 			online_send(nnet::MessageType::Ping, sOnline->nextTick, nnet::encodePing(ping), nnet::Delivery::Unreliable);
 			sOnline->nextPingMs = now + 250;
 		}
-		sOnline->lead       = nnet::inputLeadTicks(sOnline->clock.rttMs(), sOnline->clock.jitterMs());
+		sOnline->lead = nnet::inputLeadTicks(sOnline->clock.rttMs(), sOnline->clock.jitterMs());
+		if (!sCfg.onlinePredictive) {
+			online_guest_send_input(now);
+			const int done = online_guest_replica_ticks(sys, app, now);
+			if (done < 0) return true;
+			if (sOnline->desync && env_is_one("PIKMIN_ONLINE_EXIT_ON_DESYNC")) {
+				pc_state_hash_flush();
+				stop_session();
+				std::exit(npx::kDesync);
+			}
+			if (done == 0) sleep_hires_ms(1.0, 0.0);
+			return true;
+		}
 		uint32_t phaseMs    = 0;
 		const uint64_t host = sOnline->clock.hostTickAt((std::uint64_t)now, &phaseMs);
 		const uint64_t target = host + sOnline->lead;
@@ -3972,6 +4309,19 @@ const char* pc_netplay_session_online_rules(void)
 	const double deadline = now_ms() + 30000.0;
 	while (!sOnline->rulesSeen) {
 		online_guest_events();
+		// Coming back after a crash, the host may still hold the old
+		// connection until it times out: keep knocking for a while.
+		if (sOnline->peerGone && sOnline->join->failure() == nnet::JoinFailure::RoomFull && now_ms() < deadline) {
+			printf("[online] the room is still full; retrying\n");
+			fflush(stdout);
+			std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+			sOnline->peerGone = false;
+			if (sOnline->join->start(sCfg.onlineCode, online_compat(), kOnlineProtocolMajor, (std::uint64_t)time(nullptr),
+			                         (std::uint64_t)now_ms())
+			    != nnet::JoinFailure::None)
+				std::exit(npx::kRefused);
+			continue;
+		}
 		if (sOnline->peerGone) std::exit(npx::kRefused);
 		if (now_ms() > deadline) {
 			printf("[online] the host sent no rules within 30 s\n");

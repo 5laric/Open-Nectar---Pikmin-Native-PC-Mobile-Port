@@ -1,7 +1,9 @@
 # Plan de implementación del cooperativo online de Open Nectar
 
-Estado: implementación en curso; PR #89–#92 integrados en `main` y nueva capa
-`nectar_net` en el árbol de trabajo, todavía sin commit ni conexión al launcher
+Estado (15-10-2026): implementación en curso. `nectar_net` completo en `main`
+(transporte, seguridad, apertura de puertos, sala de un código, protocolo v1);
+Pikmin 1 tiene una vertical host-autoritativa de capitanes funcionando en
+Linux. Pendiente: launcher, pruebas en Windows/Android reales, Fase 5 y Pikmin 2
 Alcance: Pikmin 1 y Pikmin 2; Windows, Linux y Android
 Modelo elegido: host autoritativo, cliente predictivo, UDP cifrado directo, conexión mediante código autocontenido
 Objetivo de calidad: conexión sencilla, ausencia de desincronizaciones silenciosas, recuperación ante pérdidas y compatibilidad cruzada entre plataformas
@@ -30,54 +32,71 @@ Adaptaciones obligatorias sobre la contribución:
 - [x] compilar juego y launcher Linux y ejecutar las pruebas UDP/ICE/determinismo;
 - [x] sustituir la identidad SHA-256 del ejecutable por un manifiesto de build
   independiente del sistema operativo;
-- [x] definir un código autocontenido `NECTAR1` acotado, versionado, con
-  endpoints IPv4/IPv6, caducidad, nonce, secreto y fingerprint;
+- [x] definir un código autocontenido `NECTAR1` acotado y versionado, con
+  endpoints IPv4/IPv6, caducidad, nonce y secreto (congelado; el campo de
+  fingerprint se retiró por ADR-0002);
 - [x] implementar y probar en Linux un adaptador `GnsTransport` cifrado con
   mensajes fiables/no fiables y un único invitado;
-- [ ] sustituir en el launcher el intercambio obligatorio NPIX2/NPIX1 por un
-  único código del host y respuesta automática dentro del protocolo;
-- [ ] validar el `join_secret` de `NECTAR1` en cuarentena antes de aceptar
+- [x] un único código del host con respuesta automática dentro del protocolo
+  (`HostRoom`/`GuestJoin`, modo `--online-host`/`--online-join` de Pikmin 1);
+- [ ] sustituir en el launcher el intercambio NPIX2/NPIX1 por ese código
+  (bloqueado mientras el launcher tenga cambios locales ajenos sin commit);
+- [x] validar el `join_secret` de `NECTAR1` en cuarentena antes de aceptar
   gameplay (ADR-0002; MITM activo en ruta aceptado como riesgo residual);
-- [ ] activar el nuevo transporte en Android ARM64; el lockstep determinista
-  Android sólo se conservará si resulta útil como modo diagnóstico;
-- [ ] evolucionar de lockstep estricto a autoridad/snapshots para producción.
+- [ ] activar el nuevo transporte en Android ARM64 real: compila y pasa sus
+  pruebas bajo `qemu-aarch64`; falta dispositivo y la capa Java del gateway;
+- [x] primera vertical de autoridad (capitanes) sobre `nectar_net`; el resto
+  del mundo (snapshots) en la Fase 5.
 
-### 1.2 Estado técnico verificable al 14 de octubre de 2026
+### 1.2 Estado técnico verificable al 15 de octubre de 2026
 
 Hay tres capas distintas y no deben confundirse:
 
-1. **Online comunitario ya fusionado:** Pikmin 1 de escritorio funciona en
-   lockstep con GekkoNet, UDP o ICE, dos códigos `NPIX2/NPIX1`, adopción de
-   reglas del host, VS y herramientas de desync. Es una base experimental
-   aprovechable, no el cross-play final.
-2. **Infraestructura nueva en desarrollo:** `nectar_net` contiene byte I/O y
-   protocolo acotados, código `NECTAR1`, CSPRNG de sistema y `GnsTransport`.
-   Compila y conecta dos peers Linux en loopback, pero todavía no lo consume el
-   juego ni el launcher y sus dependencias aún proceden del spike en `/tmp`.
-3. **Arquitectura objetivo:** host autoritativo, snapshots, predicción limitada,
-   reconciliación, save exclusivo del host y adaptadores para Pikmin 1 y 2.
+1. **Online comunitario (lockstep):** Pikmin 1 de escritorio con GekkoNet, UDP
+   o ICE, dos códigos `NPIX2/NPIX1`, reglas del host, VS y forensics. Se
+   conserva intacto como herramienta y diagnóstico; las pruebas de 3.000
+   ticks siguen dando exactamente los mismos hashes tras todos los cambios.
+2. **`nectar_net` (en `main`, común a ambos juegos):** `GnsTransport` cifrado
+   con cuarentena del secreto, veto por origen y comprobación de
+   compatibilidad (`GatedTransport`); código `NECTAR1` congelado; apertura de
+   puerto PCP/NAT-PMP/UPnP/IPv6 (`PortPublisher`); sala de un código
+   (`HostRoom`/`GuestJoin`); protocolo v1 de juego (input con redundancia,
+   reloj, entidades, escena, replay) y replicación de capitanes
+   (predicción, corrección, interpolación). Dependencias fijadas y con huella
+   en `scripts/netplay-deps.sh`.
+3. **Pikmin 1 online host-autoritativo (vertical de capitanes):** modo
+   `--online-host`/`--online-join` con un código; host a 30 Hz sin esperar;
+   reglas del host adoptadas; input del host reenviado; pausa replicada;
+   espectador y reincorporación; cámara/HUD por jugador.
 
-Validaciones ya ejecutadas:
+Validaciones ya ejecutadas (Linux salvo indicación):
 
-- juego y launcher de Pikmin 1 compilados en Linux con netplay;
-- pruebas de transferencia, determinismo, launcher y `nectar_net` correctas;
-- `GnsTransport` conectado por UDP cifrado en `127.0.0.1`, con tráfico fiable
-  invitado→host, no fiable host→invitado y cierre limpio;
-- protección de identidad de build: el handshake usa manifiesto de fuente y
-  ABI, y un árbol fuente sucio exige un ID de desarrollo explícito;
-- el sandbox bloquea sockets UDP, por lo que las pruebas de loopback se
-  ejecutan fuera de él; el mismo bloqueo afecta al transporte UDP heredado.
+- `nectar_net`: 18 pruebas con GNS, también ASan+UBSan+LSan; TSan sin
+  carreras de datos; fuzzing de todos los parsers; las mismas pruebas como
+  binarios Android ARM64 bajo `qemu-aarch64` y cruce Linux↔Android en dos
+  procesos; build MinGW cuyos `.exe` sólo importan DLL del sistema;
+- Pikmin 1 con dos procesos reales (`tools/netplay/run_online_pair.py`,
+  `SDL_VIDEODRIVER=offscreen`): 30 minutos reales a RTT ~182 ms, jitter
+  30 ms y 5 % de pérdida con 99,89 % de input en vivo y sin deriva; con las
+  reglas y el input del host reenviados, error medio del capitán del
+  invitado de 0,06 unidades bajo esas condiciones;
+- pausa, modo espectador y cámaras comprobados en logs y volcado de
+  fotogramas.
 
 Limitaciones actuales que la UI no debe ocultar:
 
-- Android y Windows/MinGW todavía no han compilado ni conectado con GNS;
-- GNS, protobuf y el backend criptográfico no están vendorizados;
-- el cifrado GNS sin identidad autenticada impide escucha casual, pero no
-  demuestra por sí solo quién está al otro lado;
-- `NECTAR1` aún no está conectado a un handshake y su campo de identidad de
-  host es provisional hasta elegir el mecanismo criptográfico definitivo;
-- no existen todavía port mapping, respuesta automática, snapshots
-  autoritativos ni integración de Pikmin 2.
+- nada probado todavía en un Windows real, un Android real ni un router
+  real (`nectar_net_publish_probe` preparado para ello);
+- en Android, `/proc/net/route` está vetado: falta pasar el gateway desde Java
+  (UPnP funciona sin él);
+- sólo se replican los capitanes: Pikmin, objetos, enemigos, cinemáticas,
+  menús y transiciones del día siguen siendo locales en el invitado (una
+  cinemática disparada a destiempo provocó correcciones bruscas que se
+  recuperaron solas);
+- el launcher aún no tiene las pantallas Crear/Unirse; el host necesita
+  `--online-code-out`;
+- MITM activo en la ruta durante el handshake: riesgo aceptado (ADR-0002);
+- Pikmin 2 todavía no usa `nectar_net`.
 
 Open Nectar ya tiene casi toda la capa de juego necesaria para dos participantes locales:
 
@@ -1258,7 +1277,7 @@ Entregables:
 
 Puerta: no empezar integración de transporte hasta que estén definidos límites, roles y propiedad del save.
 
-### Fase 1 — Spike de transporte multiplataforma — **EN CURSO**
+### Fase 1 — Spike de transporte multiplataforma — **EN CURSO (hecho en Linux y emulación; faltan Windows/Android reales)**
 
 Progreso verificable: [`docs/netplay/TRANSPORT_SPIKE.md`](docs/netplay/TRANSPORT_SPIKE.md).
 
@@ -1300,7 +1319,7 @@ Entregables:
 
 Puerta: conexión directa Linux↔Windows, Linux↔Android y Windows↔Android en una red controlada, sin fugas ni bloqueo del hilo de juego.
 
-### Fase 2 — Publicación del host, códigos y seguridad base — **EN CURSO**
+### Fase 2 — Publicación del host, códigos y seguridad base — **EN CURSO (falta router real, gateway en Android e interfaz del launcher)**
 
 Progreso verificable: `libs/nectar_net/include/nectar_net/connection_code.h` y
 `libs/nectar_net/tests/connection_code_test.cpp`.
@@ -1388,7 +1407,7 @@ Entregables:
 
 Puerta: pruebas contra gateways simulados y routers reales; códigos corruptos, payloads grandes, replay, flood preautenticado, expiración y revocación no comprometen el proceso.
 
-### Fase 3 — Protocolo, fake transport y replay — **EN CURSO**
+### Fase 3 — Protocolo, fake transport y replay — **EN CURSO (base hecha; faltan mensajes de contenido y selección de nivel)**
 
 Progreso verificado en Linux (2026-10-14), formatos en
 [`PROTOCOL.md`](docs/netplay/PROTOCOL.md#mensajes-de-juego-v1-implementados-en-nectar_net):
@@ -1425,7 +1444,7 @@ Entregables:
 
 Puerta: cobertura de todos los tipos y corpus sin fallos bajo sanitizers.
 
-### Fase 4 — Pikmin 1: capitanes — **EN CURSO**
+### Fase 4 — Pikmin 1: capitanes — **EN CURSO (casi completa: falta botón de interfaz y prueba de juego del mantenedor)**
 
 Primera vertical funcionando (14-10-2026, Linux, dos procesos reales con
 `tools/netplay/run_online_pair.py` y degradación de GNS):
@@ -1482,7 +1501,70 @@ Entregables:
 
 Puerta: 30 minutos de movimiento con RTT 150 ms, jitter 30 ms y 5 % de pérdida sin divergencia acumulada ni cola creciente.
 
-### Fase 5 — Pikmin 1: mundo completo
+### Fase 5 — Pikmin 1: mundo completo — **EN CURSO**
+
+**Decisión del mantenedor (15-10-2026): primero la opción A, "réplica
+exacta"; después se intentará la opción B.**
+
+- Medición previa con sólo capitanes replicados (3.000 ticks): mundo y
+  Pikmin iguales, pero RNG distinto desde el tick 692 y enemigos/objetos
+  desde el 2.533. Replicar sólo capitanes no basta.
+- **A — réplica exacta (en curso):** el host envía cada tick los inputs que
+  ha simulado (P1 y P2 tal como los aplicó); el invitado reproduce
+  exactamente esos ticks. El modo determinista ya está hecho para dar
+  resultados idénticos entre máquinas (libm por software, sin FMA,
+  `fp_gate`), así que todo el mundo coincide: cinemáticas, menús, Pikmin,
+  enemigos, objetos y días; el guardado queda en el host. El host nunca
+  espera. Coste: el capitán del invitado responde con ~RTT + 60 ms. Los
+  hashes de estado del host se comparan con los del invitado para detectar
+  desincronizaciones (aún sin reparación).
+- **B — replicación por familias (después):** estado autoritativo por
+  familia de entidad con predicción del invitado, para quitar el retraso de
+  su capitán y poder reparar desincronizaciones (también la base para
+  arquitecturas que no sean bit-exactas). El modo predictivo de la Fase 4 se
+  conserva (`--online-predictive`) como punto de partida.
+
+Progreso de la opción A (Linux, dos procesos reales del juego):
+
+- [x] `AppliedInputs` (8 ticks de redundancia no fiable + copia fiable,
+  enviados antes de simular) y `StateHash` del host 2 veces por segundo;
+- [x] el invitado reproduce a 30 Hz, acelera si se retrasa, colchón de 1–4
+  ticks según el jitter; su input viaja adelantado y se muestrea por reloj;
+- [x] **mundo completo idéntico**: 3.000/3.000 ticks con hash de estado
+  idéntico (capitanes, Pikmin, enemigos, objetos, mundo, RNG y modo) en red
+  local y con RTT ~185 ms, jitter 30 ms y 5 % de pérdida, sin atascos;
+- [x] menús y pausa idénticos tick a tick; espectador y reincorporación
+  deterministas; semilla del host adoptada (`seed=` en `SessionRules`);
+- [x] retraso del capitán del invitado: ~104 ms en red local y ~294 ms con
+  RTT ~185 ms (medido en el log, `input-latency`);
+- [x] partida guardada privada por sesión (`online-sessions/<rol>-<fecha>`):
+  ningún jugador escribe en sus partidas reales; la del host conserva la
+  sesión;
+- [x] **reconexión / entrar con la partida empezada**: el host guarda todos
+  los inputs aplicados (hasta 4 h) y se los envía al invitado nuevo, que los
+  reproduce a ~365 ticks/s (≈12× tiempo real) con input neutro hasta
+  alcanzar al host; probado con caída en el tick 1.200 y 6.000: 9.000/9.000
+  ticks idénticos, también con red degradada; si la sala sigue "llena" tras
+  un cuelgue, el invitado reintenta 30 s;
+- [x] hallazgo: saltarse la pasada de presentación
+  (`pc_netplay_present_set_skip_presentation`) **no es neutral** para la
+  simulación (estado de objetos distinto desde el tick 12), así que la puesta
+  al día dibuja todos los ticks;
+- [x] prueba de 20.400 ticks (11 min de juego) con red degradada sin ninguna
+  desincronización en 1.359 comprobaciones (detenida por falta de CPU al
+  compartir la máquina con compilaciones);
+- [x] **30 minutos reales** con RTT ~183 ms, jitter 30 ms y 5 % de pérdida:
+  54.000/54.000 ticks con hash idéntico, 3.589 comprobaciones sin
+  desincronización, 0 atascos, input del invitado en vivo en el 99,94 %;
+- [ ] campaña completa y matriz de objetos/enemigos (necesita una partida
+  jugada, no input aleatorio);
+- [ ] cross-play real entre arquitecturas (x86-64 ↔ ARM64): la réplica exige
+  determinismo bit a bit, que la libm por software y `-ffp-contract=off`
+  persiguen pero que sólo se demuestra en dispositivos reales;
+- [ ] partidas guardadas continuadas: hoy cada sesión empieza con la tarjeta
+  vacía del arranque directo; elegir y transferir la partida del host
+  (12.3) queda pendiente.
+
 
 Entregables:
 
@@ -1613,45 +1695,43 @@ launcher de un código. Las demás no bloquean el transporte multiplataforma.
 
 ## 20. Siguiente secuencia de trabajo
 
-Los antiguos “primer” y “segundo PR” ya han sido superados parcialmente. El
-orden actualizado, evitando conectar gameplay sobre una base insegura, es:
+Estado al 15-10-2026 (commits en `main` hasta `7c8ad4eb`). El orden evita
+conectar gameplay sobre una base insegura:
 
-1. **Checkpoint revisable:** terminar pruebas y documentación de los cambios
-   locales actuales; commit/push sólo cuando lo solicite el mantenedor.
-2. **ADR de autenticación — HECHO, implementación EN CURSO** ([ADR-0002](docs/netplay/ADR-0002-SESSION-AUTHENTICATION.md),
-   propuesto; checkpoint 2026-10-14: `nectar_net` 3/3 pruebas incluida GNS
-   loopback, `pc_netplay_transfer_test` correcto)**:** construir dos spikes mínimos —certificado GNS
-   fijado y Noise PSK mediante biblioteca auditada— y elegir por seguridad,
-   tamaño, licencia y soporte Windows/Linux/Android.
-3. **Dependencias reproducibles:** vendorizar commits fijados de GNS,
-   protobuf y backend criptográfico; registrar checksums/licencias y eliminar
-   dependencia de `/tmp` o paquetes globales.
-4. **Cross-build temprano:** compilar y ejecutar handshake/transporte en Linux,
-   MinGW x86-64 y Android NDK 28 arm64 antes de ampliar el protocolo.
-5. **Endurecer transporte — HECHO en Linux:** métricas RTT/pérdida, límites,
-   segundo invitado, cierre/reconexión, saturación, veto por origen y
-   ASan/TSan; falta repetirlo en Windows y Android reales.
-6. **Handshake Nectar — cuarentena y compatibilidad HECHAS; faltan
-   `SessionRules` y reanudación:** vincular `join_secret`, nonces, identidad del host,
-   transcript, versión y capabilities; añadir cookie antiamplificación,
-   anti-replay, rotación y borrado seguro.
-7. **Congelar `NECTAR1` — HECHO:** actualizar el campo de identidad si hace falta,
-   publicar golden vectors y conservar compatibilidad sólo cuando sea segura.
-8. **Publicación directa — implementada con gateways simulados; falta probar
-   routers reales y el gateway en Android:** interfaz `PortMapper`, gateways
-   simulados, después PCP, NAT-PMP, UPnP, IPv6 global y fallback manual;
-   nunca STUN/TURN.
-9. **Launcher de un código — lógica hecha (`room.h`); falta la interfaz, a la
-   espera de los cambios locales del launcher:** crear sala, mostrar/copiar/QR, pegar/escanear,
-   respuesta automática, mensajes CGNAT/firewall y cancelación que limpie
-   secretos/mappings. El flujo NPIX queda sólo como herramienta heredada.
-10. **Protocolo/fake transport — base hecha (input, reloj, entidades,
-    escena, red simulada, replay); faltan mensajes de reglas/contenido:** completar mensajes v1, clocks, replay,
-    fuzzing y simulación de pérdida antes de adaptar gameplay.
-11. **Migración de Pikmin 1:** reutilizar reglas, UI, carga, VS y forensics de
-    los PR; incorporar Authority/Replica por familias de entidad.
-12. **Pikmin 2:** reutilizar `nectar_net`, implementar adaptador de superficie
-    y después cuevas, sin duplicar transporte, handshake ni UI de conexión.
+1. **Checkpoint revisable — HECHO.**
+2. **Autenticación — HECHO** ([ADR-0002](docs/netplay/ADR-0002-SESSION-AUTHENTICATION.md),
+   aceptada): cuarentena del `join_secret` sobre el cifrado de GNS; Noise
+   queda como mejora futura.
+3. **Dependencias reproducibles — HECHO:** `scripts/netplay-deps.sh` con
+   versiones fijadas y SHA-256 (GNS, protobuf, OpenSSL/BCrypt, miniupnpc).
+4. **Cross-build — HECHO en compilación:** Linux, MinGW x86-64 y Android NDK 28
+   arm64; ejecución en Linux y Android emulado. **Falta** Windows y Android
+   reales.
+5. **Endurecer transporte — HECHO en Linux:** métricas, saturación,
+   reconexión, veto por origen, ASan/TSan. **Falta** repetirlo en Windows y
+   Android reales.
+6. **Handshake Nectar — HECHO salvo reanudación:** cuarentena, compatibilidad
+   y `SessionRules`. **Falta** `resume_secret` para reconectar sin código nuevo.
+7. **Congelar `NECTAR1` — HECHO**, con vectores de referencia.
+8. **Publicación directa — HECHA con gateways simulados.** **Falta** router
+   real (`nectar_net_publish_probe`) y el gateway en Android desde Java.
+9. **Launcher de un código — lógica hecha (`room.h`).** **Falta** la interfaz
+   Crear/Unirse (copiar/pegar/QR, mensajes de CGNAT/firewall, "Dejar
+   cooperativo"), bloqueada por cambios locales ajenos en el launcher.
+10. **Protocolo/fake transport — base HECHA** (input, reloj, entidades,
+    escena, red simulada, replay, fuzzing). **Falta** selección de nivel y
+    manifiesto/transferencia de contenido.
+11. **Migración de Pikmin 1 — vertical de capitanes HECHA** (Fase 4).
+    **Siguiente:** Fase 5, empezando por escenas, cinemáticas, menús y
+    transiciones del día autoritativas; después Pikmin, objetos y enemigos
+    por familias, y guardado sólo en el host.
+12. **Pikmin 2:** reutilizar `nectar_net` (incluida `replication.h`),
+    adaptador de superficie y después cuevas, sin duplicar transporte,
+    handshake ni UI de conexión.
+
+Pruebas que dependen del mantenedor, a agrupar en una sesión: router real,
+Windows real, Android real y una partida jugada a mano para valorar la
+respuesta del capitán y las correcciones.
 
 No se marcará una fase como completada por compilar en una sola plataforma. La
 puerta de cada fase exige sus pruebas de seguridad, cross-play y ciclo de vida.

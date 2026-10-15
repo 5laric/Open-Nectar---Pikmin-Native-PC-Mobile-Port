@@ -217,8 +217,15 @@ nectar --online-host 0 --online-code-out code.txt
 nectar --online-join @code.txt
 ```
 
-The guest plays by the host's sim settings (sent when it joins), sees its own
-captain, and the host's Start pauses both games. A guest can leave co-op and
+By default the guest's game is an exact replica: the host sends the inputs it
+simulated every tick and the guest replays them, so the whole world matches
+(checked with state hashes twice a second). The guest's own captain responds
+after about its ping plus 60 ms. A guest can join a running session or come
+back after a drop: it replays the session so far at about 12 times real time.
+`--online-predictive` keeps the older captain-only mode with instant response.
+
+The guest plays by the host's sim settings and seed (sent when it joins),
+sees its own captain, and the host's Start pauses both games. A guest can leave co-op and
 watch the host's captain while keeping its slot; Start asks to rejoin, which
 the host grants outside menus and cutscenes.
 

@@ -75,6 +75,41 @@ bool decodeInputBundle(const std::uint8_t* data, std::size_t size, const InputLi
     return true;
 }
 
+std::vector<std::uint8_t> encodeAppliedInputs(std::uint64_t newestTick,
+                                              const std::vector<std::vector<std::uint8_t>>& newestFirst)
+{
+    if (newestFirst.empty() || newestFirst.size() > kMaxAppliedTicks || newestTick + 1 < newestFirst.size()) return {};
+    const std::size_t blob = newestFirst[0].size();
+    if (blob == 0 || blob > kMaxAppliedBlobBytes) return {};
+    for (const auto& b : newestFirst)
+        if (b.size() != blob) return {};
+    ByteWriter writer(10 + newestFirst.size() * blob);
+    writer.writeU64(newestTick);
+    writer.writeU8(static_cast<std::uint8_t>(newestFirst.size()));
+    writer.writeU8(static_cast<std::uint8_t>(blob));
+    for (const auto& b : newestFirst) writer.writeBytes(b.data(), b.size());
+    return writer.ok() ? writer.bytes() : std::vector<std::uint8_t>{};
+}
+
+bool decodeAppliedInputs(const std::uint8_t* data, std::size_t size, std::size_t expectedBlobBytes,
+                         std::uint64_t& newestTick, std::vector<std::vector<std::uint8_t>>& newestFirst)
+{
+    if (data == nullptr || size < 10) return false;
+    ByteReader reader(data, size);
+    std::uint64_t tick = 0;
+    std::uint8_t count = 0, blob = 0;
+    if (!reader.readU64(tick) || !reader.readU8(count) || !reader.readU8(blob)) return false;
+    if (count == 0 || count > kMaxAppliedTicks || blob != expectedBlobBytes || blob == 0
+        || blob > kMaxAppliedBlobBytes || tick + 1 < count || reader.remaining() != static_cast<std::size_t>(count) * blob)
+        return false;
+    std::vector<std::vector<std::uint8_t>> blobs(count, std::vector<std::uint8_t>(blob));
+    for (auto& b : blobs)
+        if (!reader.readBytes(b.data(), blob)) return false;
+    newestTick = tick;
+    newestFirst = std::move(blobs);
+    return true;
+}
+
 InputReceiver::InputReceiver(InputPolicy policy)
     : mPolicy(policy), mSlots(policy.historyTicks), mFilled(policy.historyTicks, false)
 {

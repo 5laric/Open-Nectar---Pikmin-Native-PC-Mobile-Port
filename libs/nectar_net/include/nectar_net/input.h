@@ -48,6 +48,16 @@ std::vector<std::uint8_t> encodeInputBundle(const std::vector<NetInputFrame>& ne
 bool decodeInputBundle(const std::uint8_t* data, std::size_t size, const InputLimits& limits,
                        std::vector<NetInputFrame>& newestFirst);
 
+// AppliedInputs (exact replica): what the host simulated, per tick, as an
+// opaque fixed-size blob (Pikmin 1: P1 and P2, 16 bytes each).
+//   newest tick u64 | count u8 (1..8) | blob size u8 (1..64) | count blobs, newest first
+constexpr std::size_t kMaxAppliedTicks = 8;
+constexpr std::size_t kMaxAppliedBlobBytes = 64;
+std::vector<std::uint8_t> encodeAppliedInputs(std::uint64_t newestTick,
+                                              const std::vector<std::vector<std::uint8_t>>& newestFirst);
+bool decodeAppliedInputs(const std::uint8_t* data, std::size_t size, std::size_t expectedBlobBytes,
+                         std::uint64_t& newestTick, std::vector<std::vector<std::uint8_t>>& newestFirst);
+
 struct InputPolicy {
     std::uint32_t maxFutureTicks = 30; // ahead of the host: up to 1 s of clock error
     std::uint32_t holdTicks = 6;       // repeat the last state this long across a gap (200 ms)
@@ -78,6 +88,7 @@ public:
     NetInputFrame consume(std::uint64_t tick, InputHealth& health);
 
     std::uint64_t ignoredFrames() const { return mIgnored; }
+    const InputPolicy& policy() const { return mPolicy; }
 
 private:
     InputPolicy mPolicy;

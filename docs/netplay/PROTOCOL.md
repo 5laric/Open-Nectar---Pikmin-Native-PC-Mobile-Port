@@ -100,6 +100,8 @@ memoria. Tick canónico: 30 Hz.
 | `Pong` | id u32, eco u64, tick del host u64, fase del tick u32 < 34 ms (24 bytes) | no fiable |
 | `WorldDelta`/`WorldSnapshot` | flags u8 (bit0 keyframe), nº registros u16, registros: id u64, esquema u8 (≠0), longitud u16, datos | no fiable / bulk |
 | `StateHash` | tick u64, hash u64, nº entidades u32 (20 bytes) | control |
+| `AppliedInputs` | tick más nuevo u64, nº ticks u8 (1–8), tamaño u8 (1–64), bloques del más nuevo al más viejo (Pikmin 1: P1+P2, 32 bytes) | no fiable con 8 de redundancia + copia fiable |
+| `SessionRules` | `seed=<u32>\n` + texto `clave=valor;` de los ajustes de simulación del host (≤ 8 KiB, imprimible) | control |
 | `ScenePrepare` | época u32 (≠0), escena u32, semilla u64 | control |
 | `SceneReady` | época u32, escena u32 | control |
 | `SceneStart` | época u32, tick de inicio u64 | control |
@@ -117,6 +119,11 @@ Reglas:
   rechaza entero; los datagramas no fiables se empaquetan autocontenidos en
   ≤ 1.100 bytes.
 - Escena: las épocas sólo crecen; mensajes de una escena anterior se ignoran.
+- Réplica exacta (Pikmin 1, Fase 5 opción A): el host envía antes de
+  simular cada tick los inputs que aplicará; el invitado reproduce
+  exactamente esos ticks a 30 Hz (acelera si se retrasa, colchón de 1–4
+  ticks según el jitter) y compara el `StateHash` del host dos veces por
+  segundo. Su propio input viaja en `InputBundle` adelantado `lead` ticks.
 - Grabaciones (`NNRC` v1): sólo tráfico posterior al handshake, tope de
   tamaño, parser estricto y reproducción determinista con `ReplayTransport`.
 
