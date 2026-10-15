@@ -348,7 +348,8 @@ if (ANDROID)
     list(APPEND PC_PORT_SOURCES
         pc_port/android/pc_android.cpp
         pc_port/android/pc_texpack_android.cpp
-        pc_port/android/pc_save_android.cpp)
+        pc_port/android/pc_save_android.cpp
+        pc_port/android/pc_net_gateway_android.cpp)
 endif()
 if (PIKMIN_TOUCH)
     list(APPEND PC_PORT_SOURCES pc_port/touch/pc_touch.cpp)
@@ -676,10 +677,15 @@ set(PC_NETPLAY_LIBM_NO_BUILTIN_FLAGS
     -fno-builtin-asin -fno-builtin-acos -fno-builtin-atan -fno-builtin-atan2
     -fno-builtin-exp -fno-builtin-log -fno-builtin-log10 -fno-builtin-log2
     -fno-builtin-exp2 -fno-builtin-pow -fno-builtin-fmod -fno-builtin-hypot)
-if(PIKMIN_NETPLAY_BUILD AND NOT ANDROID)
-    add_library(pc_netplay_libm_obj OBJECT pc_port/netplay/pc_netplay_libm.c)
-    target_compile_options(pc_netplay_libm_obj PRIVATE
-        ${PC_NETPLAY_LIBM_NO_BUILTIN_FLAGS} -fno-lto -ffp-contract=off -ftrivial-auto-var-init=zero)
+# Android too: the online mode (NECTAR_ONLINE) replays the host's ticks, so
+# its simulation must match bit for bit on every platform.
+if(PIKMIN_NETPLAY_BUILD)
+    # Created once: the Android project adds this directory for USA and PAL.
+    if(NOT TARGET pc_netplay_libm_obj)
+        add_library(pc_netplay_libm_obj OBJECT pc_port/netplay/pc_netplay_libm.c)
+        target_compile_options(pc_netplay_libm_obj PRIVATE
+            ${PC_NETPLAY_LIBM_NO_BUILTIN_FLAGS} -fno-lto -ffp-contract=off -ftrivial-auto-var-init=zero)
+    endif()
     target_sources(${NECTAR_GAME} PRIVATE $<TARGET_OBJECTS:pc_netplay_libm_obj>)
 endif()
 
@@ -689,18 +695,20 @@ endif()
 # (-iquote): on case-insensitive file systems the game's include/Event.h would
 # otherwise shadow GekkoNet's private event.h. The game's session and UDP
 # transport compile as C++17 and include only gekkonet.h.
-if(PIKMIN_NETPLAY_BUILD AND NOT ANDROID)
-    set(GEKKONET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/gekkonet/GekkoLib")
-    file(GLOB GEKKONET_SOURCES "${GEKKONET_DIR}/src/*.cpp")
-    add_library(gekkonet STATIC ${GEKKONET_SOURCES})
-    target_include_directories(gekkonet PUBLIC ${GEKKONET_DIR}/include
-        PRIVATE ${GEKKONET_DIR}/include/private ${GEKKONET_DIR}/thirdparty)
-    target_compile_definitions(gekkonet PUBLIC GEKKONET_STATIC PRIVATE GEKKONET_NO_ASIO)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(gekkonet PRIVATE -std=gnu++20
-            "-iquote${GEKKONET_DIR}/include/private"
-            "-iquote${GEKKONET_DIR}/include"
-            "-iquote${GEKKONET_DIR}/thirdparty")
+if(PIKMIN_NETPLAY_BUILD)
+    if(NOT TARGET gekkonet)
+        set(GEKKONET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/gekkonet/GekkoLib")
+        file(GLOB GEKKONET_SOURCES "${GEKKONET_DIR}/src/*.cpp")
+        add_library(gekkonet STATIC ${GEKKONET_SOURCES})
+        target_include_directories(gekkonet PUBLIC ${GEKKONET_DIR}/include
+            PRIVATE ${GEKKONET_DIR}/include/private ${GEKKONET_DIR}/thirdparty)
+        target_compile_definitions(gekkonet PUBLIC GEKKONET_STATIC PRIVATE GEKKONET_NO_ASIO)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_compile_options(gekkonet PRIVATE -std=gnu++20
+                "-iquote${GEKKONET_DIR}/include/private"
+                "-iquote${GEKKONET_DIR}/include"
+                "-iquote${GEKKONET_DIR}/thirdparty")
+        endif()
     endif()
     target_sources(${NECTAR_GAME} PRIVATE
         pc_port/netplay/pc_netplay_session.cpp
@@ -714,19 +722,21 @@ endif()
 # Netplay ICE transport (connection codes, NAT traversal). libjuice is its own
 # static C11 library with JUICE_STATIC and USE_NETTLE=0; the game's C++
 # options (NATIVE_COMPILE_OPTIONS) are C++-only and not applied to it.
-if(PIKMIN_NETPLAY_BUILD AND NOT ANDROID)
-    file(GLOB LIBJUICE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libjuice/src/*.c")
-    add_library(juice STATIC ${LIBJUICE_SOURCES})
-    set_target_properties(juice PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
-    target_include_directories(juice PUBLIC third_party/libjuice/include
-        PRIVATE third_party/libjuice/include/juice third_party/libjuice/src)
-    target_compile_definitions(juice PUBLIC JUICE_STATIC PRIVATE USE_NETTLE=0)
-    if(WIN32)
-        target_compile_definitions(juice PRIVATE WIN32_LEAN_AND_MEAN)
-        target_link_libraries(juice PUBLIC ws2_32 bcrypt)
+if(PIKMIN_NETPLAY_BUILD)
+    if(NOT TARGET juice)
+        file(GLOB LIBJUICE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libjuice/src/*.c")
+        add_library(juice STATIC ${LIBJUICE_SOURCES})
+        set_target_properties(juice PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+        target_include_directories(juice PUBLIC third_party/libjuice/include
+            PRIVATE third_party/libjuice/include/juice third_party/libjuice/src)
+        target_compile_definitions(juice PUBLIC JUICE_STATIC PRIVATE USE_NETTLE=0)
+        if(WIN32)
+            target_compile_definitions(juice PRIVATE WIN32_LEAN_AND_MEAN)
+            target_link_libraries(juice PUBLIC ws2_32 bcrypt)
+        endif()
+        find_package(Threads REQUIRED)
+        target_link_libraries(juice PRIVATE Threads::Threads)
     endif()
-    find_package(Threads REQUIRED)
-    target_link_libraries(juice PRIVATE Threads::Threads)
     target_sources(${NECTAR_GAME} PRIVATE
         pc_port/netplay/pc_netplay_ice.cpp
         pc_port/netplay/pc_netplay_launch.cpp

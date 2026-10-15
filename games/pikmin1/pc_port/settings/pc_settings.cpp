@@ -7489,6 +7489,7 @@ const GroupRow kDataRows[] = {
     { SRC_DATA, 0, "Open Save Folder", "Opens the folder with your saves (card0, card1). Copy it to back up your progress or move it to another computer." },
 #endif
     { SRC_DATA, 2, "Reset all settings to defaults", "Puts every setting back to its default. Saves are not touched." },
+    { SRC_DATA, 3, "Online co-op: leave / rejoin", "As an online guest: stop playing and watch the host's captain while keeping your place. Choose it again, or press Start, to ask to rejoin; the host lets you back in outside menus and cutscenes." },
 };
 
 template <size_t N> constexpr int countOf(const GroupRow (&)[N]) { return (int)N; }
@@ -7627,6 +7628,17 @@ bool hardLocked(const GroupRow& r) {
 }
 
 // Motivo por el que una fila no se puede cambiar ahora, o nullptr si se puede.
+// Online co-op lives in the netplay session (netplay builds only): weak
+// references, so builds without it link and simply never enable the row.
+}
+__attribute__((weak)) bool pc_netplay_online_is_guest(void);
+__attribute__((weak)) bool pc_netplay_online_spectating(void);
+__attribute__((weak)) void pc_netplay_online_request_leave(void);
+__attribute__((weak)) void pc_netplay_online_request_rejoin(void);
+namespace {
+bool online_guest() { return pc_netplay_online_is_guest != nullptr && pc_netplay_online_is_guest(); }
+bool online_spectating() { return pc_netplay_online_spectating != nullptr && pc_netplay_online_spectating(); }
+
 const char* disabledReason(const GroupRow& r) {
     if (hardLocked(r)) return "Locked by Hard mode for this save file.";
     switch (r.src) {
@@ -7648,6 +7660,9 @@ const char* disabledReason(const GroupRow& r) {
         break;
     case SRC_MODS:
         if (r.idx == 16 && !sPending.lockOn) return "Turn on Lock-On first.";
+        break;
+    case SRC_DATA:
+        if (r.idx == 3 && !online_guest()) return "Only while you are the guest of an online co-op session.";
         break;
     default:
         break;
@@ -7820,7 +7835,8 @@ void pc_settings_row_value(int group, int row, char* out, unsigned long n) {
 #else
             if (r->idx < 2) snprintf(out, n, "A: open");
 #endif
-            else snprintf(out, n, "A: reset");
+            else if (r->idx == 2) snprintf(out, n, "A: reset");
+            else snprintf(out, n, "%s", online_guest() ? (online_spectating() ? "A: rejoin" : "A: leave") : "-");
             break;
         case SRC_ACH: snprintf(out, n, "%d pts", pc_achievement_info(r->idx).points); break;
         case SRC_KEYS:
@@ -7892,7 +7908,11 @@ void pc_settings_row_change(int group, int row, int dir, bool ok) {
         case SRC_DATA:
             if (!ok) return;
             if (r->idx < 2) saveDataRowAction(r->idx);
-            else resetToDefaults();
+            else if (r->idx == 2) resetToDefaults();
+            else if (online_guest()) {
+                if (online_spectating()) pc_netplay_online_request_rejoin();
+                else pc_netplay_online_request_leave();
+            }
             break;
         default: break; // selectores
         }

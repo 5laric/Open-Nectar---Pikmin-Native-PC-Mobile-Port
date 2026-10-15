@@ -142,6 +142,9 @@ int sDirect = 0; // 0 no, 1 requested, 2 on the way to the run, 3 started
 } // namespace
 
 void pc_coop_direct_request(void) { sDirect = 1; }
+static int sDirectSlot = 0;
+void pc_coop_direct_set_slot(int slot) { sDirectSlot = (slot >= 1 && slot <= 3) ? slot : 0; }
+int pc_coop_direct_slot(void) { return sDirectSlot; }
 bool pc_coop_direct_requested(void) { return sDirect == 1; }
 
 bool pc_coop_direct_take_title(void)

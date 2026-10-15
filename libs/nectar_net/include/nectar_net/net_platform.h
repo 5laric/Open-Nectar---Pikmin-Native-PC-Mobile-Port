@@ -16,6 +16,10 @@ namespace nectar::net {
 // supply the gateway (ConnectivityManager/LinkProperties).
 bool findDefaultGateway(Ipv4Address& gateway);
 
+// Android: the app's Java side reads the default route from
+// ConnectivityManager and hands it over here; findDefaultGateway prefers it.
+void setGatewayHint(const Ipv4Address& gateway);
+
 struct LocalAddresses {
     std::vector<Ipv4Address> ipv4;
     std::vector<Ipv6Address> ipv6;

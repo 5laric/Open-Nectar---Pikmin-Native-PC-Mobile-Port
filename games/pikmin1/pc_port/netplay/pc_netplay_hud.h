@@ -30,6 +30,11 @@ struct PcNetplayHudInfo {
 	int inputKind = 0;          // pc_netplay_input_sel::Kind of this peer
 	uint64_t frame = 0;         // last frame both games agreed on
 	pc_netplay_hud::Numbers numbers;
+	// Online mode: a fourth line with the session state (waiting, catching
+	// up, watching, desync...). tone 0 neutral, 1 warning, 2 error.
+	bool online = false;
+	char status[64] = {};
+	int statusTone  = 0;
 	// End banner (the session is over; presented before the process exits).
 	bool banner = false;
 	bool bannerError = false;   // red title (desync / lost) vs neutral

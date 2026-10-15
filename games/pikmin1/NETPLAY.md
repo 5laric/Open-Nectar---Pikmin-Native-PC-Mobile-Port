@@ -224,6 +224,14 @@ after about its ping plus 60 ms. A guest can join a running session or come
 back after a drop: it replays the session so far at about 12 times real time.
 `--online-predictive` keeps the older captain-only mode with instant response.
 
+To continue a file instead of a new run, the host adds `--online-save 1`
+(or 2, 3): it plays on its own memory card, the only one that records
+progress, and sends a copy to the guest when it joins.
+
+In the game, the online box under the day badge (F4 toggles it) shows the
+link, the delay the guest feels and the session state. A guest can leave
+co-op from F1 > Data > "Online co-op: leave / rejoin".
+
 The guest plays by the host's sim settings and seed (sent when it joins),
 sees its own captain, and the host's Start pauses both games. A guest can leave co-op and
 watch the host's captain while keeping its slot; Start asks to rejoin, which

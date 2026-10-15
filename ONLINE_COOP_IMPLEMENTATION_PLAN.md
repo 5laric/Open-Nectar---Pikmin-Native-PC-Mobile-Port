@@ -1561,9 +1561,37 @@ Progreso de la opción A (Linux, dos procesos reales del juego):
 - [ ] cross-play real entre arquitecturas (x86-64 ↔ ARM64): la réplica exige
   determinismo bit a bit, que la libm por software y `-ffp-contract=off`
   persiguen pero que sólo se demuestra en dispositivos reales;
-- [ ] partidas guardadas continuadas: hoy cada sesión empieza con la tarjeta
-  vacía del arranque directo; elegir y transferir la partida del host
-  (12.3) queda pendiente.
+- [x] **continuar una partida guardada** (`--online-save <1-3>` en el host):
+  el host juega sobre su tarjeta real (sólo él escribe progreso) y envía una
+  copia al invitado (`ContentChunk`/`ContentManifest`: nombres sin rutas,
+  ≤ 128 archivos, ≤ 4 MiB, SHA-256 del conjunto) que se escribe en su
+  carpeta privada antes de que el juego abra la tarjeta; el arranque
+  directo carga ese archivo en los dos. Probado con una partida del día 13:
+  3.000/3.000 ticks idénticos (también con red degradada) y, con un
+  invitado que se cae y vuelve, 4.000/4.000: el host envía siempre la foto
+  de la tarjeta del inicio de la sesión, no la de ese momento. En niveles
+  avanzados la puesta al día baja a ~88 ticks/s (≈3× tiempo real);
+- [x] HUD del modo online (calidad, ping, jitter, retraso real que nota el
+  invitado, atascos de 10 s y una línea de estado: esperando invitado,
+  poniéndose al día, viendo al host, el invitado se fue, el host se fue,
+  desincronización), comprobado con volcado de fotogramas;
+- [x] fila "Online co-op: leave / rejoin" en F1 (Data), activa sólo para el
+  invitado online; compilada, falta probarla a mano;
+- [x] **Windows (MinGW) y Android (NDK 28 arm64) compilan el modo online**:
+  el `.exe` sólo importa DLL del sistema; la `.so` sólo librerías del
+  sistema y SDL2. En Android se habilitan sesión, GekkoNet, libjuice y la
+  libm determinista (raíz cuadrada con `fsqrt`, idéntica bit a bit a
+  `sqrtsd`); la capa Java (`NetGateway`) pasa la puerta de enlace al nativo
+  (`ACCESS_NETWORK_STATE`). En la `.so` ARM no hay FMA fuera de GNS y de la
+  corrección predictiva;
+- [ ] **riesgo Windows**: la puerta FP (`fp_gate.py`) del `.exe` MinGW
+  encuentra dos `fsqrt` x87 en `pumpAudio` (mezcla de audio, sqrt de MinGW
+  integrada por LTO). No ocurre en Linux. Antes del cross-play con Windows
+  hay que confirmar que el audio no alimenta la simulación o eliminarlas;
+- [ ] `iphlpapi.dll` aún no está en la lista blanca de
+  `scripts/release-windows.sh` (necesaria al publicar el online);
+- [ ] APK completo con Gradle y prueba en dispositivo (necesita al
+  mantenedor).
 
 
 Entregables:

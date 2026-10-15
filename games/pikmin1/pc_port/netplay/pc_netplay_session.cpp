@@ -85,6 +85,7 @@
 #if PIKI_NECTAR_ONLINE && defined(NECTAR_NET_HAS_GNS)
 #define PC_ONLINE 1
 #include "netplay/pc_online_navi.h"
+#include "dolphin_stubs/pc_card_paths.h"
 #include "nectar_net/clock.h"
 #include "nectar_net/input.h"
 #include "nectar_net/limits.h"
@@ -176,6 +177,7 @@ struct Config {
 	std::string onlineCode;      // --online-join <code | @file>
 	std::string onlineCodeOut;   // --online-code-out <file>: the host writes its code there
 	bool onlinePredictive  = false; // --online-predictive: Phase 4 captain prediction instead of the exact replica
+	int onlineSaveSlot     = 0;     // --online-save <1-3>: the host continues that file of its own card
 };
 
 int sArgc     = 0;
@@ -1491,10 +1493,16 @@ void parse_config()
 	}
 	if (replayVal != nullptr && (hostVal != nullptr || joinVal != nullptr || launch.active))
 		usage_exit("--netplay-replay-log runs alone, without a host or join switch%s", "");
-	if (onlineHost != nullptr || onlineJoin != nullptr) {
-		// Like the lockstep launcher: an online session never writes this
-		// player's own saves. Both peers start from the same fresh card, which
-		// the exact replica needs; the host's folder keeps the session's save.
+	int onlineSave = 0;
+	if (const char* slot = argv_value(sArgc, sArgv, "--online-save")) {
+		if (onlineHost == nullptr) usage_exit("--online-save is for the host; the guest gets the host's file%s", "");
+		if (std::strlen(slot) != 1 || slot[0] < '1' || slot[0] > '3') usage_exit("bad --online-save %s (want 1, 2 or 3)", slot);
+		onlineSave = slot[0] - '0';
+	}
+	// Continuing a file: the host plays on its own card (only the host writes
+	// progress) and sends a copy to the guest. Otherwise both peers start a
+	// fresh run in a private folder, like the lockstep launcher.
+	if ((onlineHost != nullptr && onlineSave == 0) || onlineJoin != nullptr) {
 		if (getenv_nonempty("NECTAR_SAVE_DIR") == nullptr) {
 			char stamp[32];
 			const time_t now = time(nullptr);
@@ -1516,10 +1524,11 @@ void parse_config()
 		char* end    = nullptr;
 		const long p = strtol(onlineHost, &end, 10);
 		if (end == onlineHost || *end != '\0' || p < 0 || p > 65535) usage_exit("bad --online-host port %s", onlineHost);
-		sCfg.isHost     = true;
-		sCfg.active     = true;
-		sCfg.online     = true;
-		sCfg.onlinePort = (uint16_t)p;
+		sCfg.isHost         = true;
+		sCfg.active         = true;
+		sCfg.online         = true;
+		sCfg.onlinePort     = (uint16_t)p;
+		sCfg.onlineSaveSlot = onlineSave;
 		// The code is a secret and never goes to the log; until the launcher
 		// shows it, the host must name a file for it.
 		const char* out = argv_value(sArgc, sArgv, "--online-code-out");
@@ -1684,6 +1693,7 @@ void parse_config()
 	} else {
 		pc_coop_direct_request();
 	}
+	if (sCfg.online && sCfg.isHost) pc_coop_direct_set_slot(sCfg.onlineSaveSlot);
 	sPhase = kHandshake;
 }
 
@@ -3176,6 +3186,17 @@ struct OnlineState {
 	uint64_t backfillNext = 0, backfillEnd = 0; // host: ticks still to send to a late guest
 	bool catchingUp      = false;               // guest: replaying a backlog fast
 	double catchUpStartMs = 0;
+	// Guest: the host's card, received before the rules (continuing a file).
+	std::map<std::string, std::vector<uint8_t>> cardFiles;
+	std::map<std::string, uint64_t> cardReceived;
+	uint64_t cardBytes = 0;
+	bool cardReady     = false;
+	bool cardFailed    = false;
+	// Host: the card as it was when the session started. A guest joining
+	// later replays from tick 0, so it must get this, not today's card.
+	std::map<std::string, std::vector<uint8_t>> cardSnapshot;
+	bool cardSnapshotTaken = false;
+	bool cardUnshareable   = false;
 	uint64_t catchUpStartTick = 0;
 	// Spectator: P2 leaves co-op, keeps its slot and watches the host's
 	// captain; Start asks to rejoin, which the host grants at a safe tick.
@@ -3185,6 +3206,8 @@ struct OnlineState {
 	bool rejoinSent      = false; // guest
 	bool startWasDown    = false; // guest: Start edge while spectating
 	bool leaveRequested  = false; // guest: asked by the UI (pc_netplay_online_request_leave)
+	bool rejoinRequested = false; // guest: asked by the UI (pc_netplay_online_request_rejoin)
+	std::vector<double> stallTimes; // guest: when ticks were late, for the HUD's last 10 s
 	uint64_t testLeaveAt = 0, testRejoinAt = 0; // TEST ONLY, guest ticks
 };
 OnlineState* sOnline = nullptr;
@@ -3387,6 +3410,8 @@ bool online_decode(const nnet::TransportEvent& event, nnet::Message& message)
 
 void online_host_set_spectator(bool on, uint64_t tick);
 void online_host_send_welcome();
+void online_guest_card_chunk(const std::vector<uint8_t>& p);
+void online_guest_card_manifest(const std::vector<uint8_t>& p);
 
 void online_host_events()
 {
@@ -3481,6 +3506,10 @@ void online_guest_events()
 			nnet::StateHashPayload hash;
 			if (nnet::decodeStateHash(message.payload.data(), message.payload.size(), hash) && sOnline->hostHashes.size() < 4096)
 				sOnline->hostHashes[hash.tick] = hash.hash;
+		} else if (message.header.type == nnet::MessageType::ContentChunk) {
+			online_guest_card_chunk(message.payload);
+		} else if (message.header.type == nnet::MessageType::ContentManifest) {
+			online_guest_card_manifest(message.payload);
 		} else if (message.header.type == nnet::MessageType::PlayerControlChanged) {
 			if (message.payload.size() != 10 || message.payload[0] != 1 || message.payload[1] > 1) continue;
 			const bool on      = message.payload[1] == 1;
@@ -3498,10 +3527,21 @@ void online_guest_events()
 			for (uint8_t ch : text) printable = printable && ((ch >= 0x20 && ch < 0x7f) || ch == '\n');
 			const std::string all(text.begin(), text.end());
 			const size_t newline = all.find('\n');
-			if (printable && !sOnline->rulesSeen && all.rfind("seed=", 0) == 0 && newline != std::string::npos) {
+			const size_t newline2 = newline == std::string::npos ? std::string::npos : all.find('\n', newline + 1);
+			if (printable && !sOnline->rulesSeen && all.rfind("seed=", 0) == 0 && newline2 != std::string::npos
+			    && all.compare(newline + 1, 5, "save=") == 0) {
 				char* end            = nullptr;
 				const unsigned long seed = strtoul(all.c_str() + 5, &end, 10);
 				if (end != all.c_str() + newline || seed > 0xffffffffUL) continue;
+				const unsigned long slot = strtoul(all.c_str() + newline + 6, &end, 10);
+				if (end != all.c_str() + newline2 || slot > 3) continue;
+				// A continued file needs the whole card first.
+				if (slot != 0 && !sOnline->cardReady) {
+					printf("[online] the host continues file %lu but its card did not arrive intact\n", slot);
+					fflush(stdout);
+					std::exit(npx::kRefused);
+				}
+				pc_coop_direct_set_slot((int)slot);
 				// The day reseed reads the seed from the environment.
 				sCfg.seed = (uint32_t)seed;
 #ifdef _WIN32
@@ -3509,7 +3549,7 @@ void online_guest_events()
 #else
 				setenv("PIKMIN_NETPLAY_SEED", std::to_string(seed).c_str(), 1);
 #endif
-				sOnline->rules     = all.substr(newline + 1);
+				sOnline->rules     = all.substr(newline2 + 1);
 				sOnline->rulesSeen = true;
 			}
 		} else if (message.header.type == nnet::MessageType::InputBundle) {
@@ -3620,6 +3660,175 @@ void online_send_applied(uint64_t tick, const PcNetplayInput& p0, const PcNetpla
 	}
 }
 
+
+// ---- the host's memory card, copied to the guest (continuing a file) ----
+//
+// ContentChunk:    kind u8 (1 = card file) | name length u8 | name | file size u32 | offset u32 | bytes
+// ContentManifest: kind u8 (1) | file count u16 | total bytes u32 | SHA-256 of every (name, size, bytes)
+constexpr uint8_t kCardKind        = 1;
+constexpr size_t kCardMaxFiles     = 128;
+constexpr size_t kCardMaxFileBytes = 1u << 20;
+constexpr size_t kCardMaxTotal     = 4u << 20;
+constexpr size_t kCardChunkBytes   = 32u * 1024u;
+
+bool card_name_ok(const std::string& name)
+{
+	if (name.empty() || name.size() > 64 || name == "." || name == "..") return false;
+	for (unsigned char ch : name)
+		if (ch < 0x20 || ch > 0x7e || ch == '/' || ch == '\\' || ch == ':') return false;
+	return true;
+}
+
+void card_digest_add(std::vector<uint8_t>& acc, const std::string& name, const std::vector<uint8_t>& data)
+{
+	acc.push_back((uint8_t)name.size());
+	acc.insert(acc.end(), name.begin(), name.end());
+	for (int i = 3; i >= 0; --i) acc.push_back((uint8_t)(data.size() >> (8 * i)));
+	acc.insert(acc.end(), data.begin(), data.end());
+}
+
+void put_u32(std::vector<uint8_t>& out, uint32_t v)
+{
+	for (int i = 3; i >= 0; --i) out.push_back((uint8_t)(v >> (8 * i)));
+}
+
+uint32_t get_u32(const uint8_t* p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
+
+// Host: every regular file of card 0, in name order, as it was when the
+// session started (read once, then reused for every guest).
+bool online_host_send_card()
+{
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	const fs::path dir = pc_card_channel_dir(0);
+	std::map<std::string, std::vector<uint8_t>>& files = sOnline->cardSnapshot;
+	size_t total = 0;
+	for (const auto& [name, data] : files) total += data.size();
+	if (sOnline->cardUnshareable) return false;
+	if (!sOnline->cardSnapshotTaken && fs::is_directory(dir, ec)) {
+		sOnline->cardSnapshotTaken = true;
+		auto refuse = [&]() {
+			files.clear();
+			sOnline->cardUnshareable = true;
+			return false;
+		};
+		for (const auto& entry : fs::directory_iterator(dir, ec)) {
+			if (!entry.is_regular_file(ec)) continue;
+			const std::string name = entry.path().filename().string();
+			const uint64_t size    = entry.file_size(ec);
+			if (!card_name_ok(name) || size > kCardMaxFileBytes || files.size() >= kCardMaxFiles) return refuse();
+			std::vector<uint8_t> data((size_t)size);
+			FILE* f = fopen(entry.path().string().c_str(), "rb");
+			const bool ok = f != nullptr && fread(data.data(), 1, data.size(), f) == data.size();
+			if (f != nullptr) fclose(f);
+			if (!ok) return refuse();
+			total += data.size();
+			if (total > kCardMaxTotal) return refuse();
+			files.emplace(name, std::move(data));
+		}
+	}
+	std::vector<uint8_t> digestInput;
+	for (const auto& [name, data] : files) {
+		size_t offset = 0;
+		do {
+			const size_t n = std::min(kCardChunkBytes, data.size() - offset);
+			std::vector<uint8_t> chunk = { kCardKind, (uint8_t)name.size() };
+			chunk.insert(chunk.end(), name.begin(), name.end());
+			put_u32(chunk, (uint32_t)data.size());
+			put_u32(chunk, (uint32_t)offset);
+			chunk.insert(chunk.end(), data.begin() + (ptrdiff_t)offset, data.begin() + (ptrdiff_t)(offset + n));
+			online_send(nnet::MessageType::ContentChunk, 0, chunk, nnet::Delivery::ReliableOrdered);
+			offset += n;
+		} while (offset < data.size());
+		card_digest_add(digestInput, name, data);
+	}
+	uint8_t digest[32];
+	pc_netplay_sha::sha256(digestInput.data(), digestInput.size(), digest);
+	std::vector<uint8_t> manifest = { kCardKind, (uint8_t)(files.size() >> 8), (uint8_t)files.size() };
+	put_u32(manifest, (uint32_t)total);
+	manifest.insert(manifest.end(), digest, digest + 32);
+	online_send(nnet::MessageType::ContentManifest, 0, manifest, nnet::Delivery::ReliableOrdered);
+	printf("[online] sent the host's card to the guest (%zu file(s), %zu bytes)\n", files.size(), total);
+	fflush(stdout);
+	return true;
+}
+
+// Guest: one chunk; anything out of bounds fails the whole transfer.
+void online_guest_card_chunk(const std::vector<uint8_t>& p)
+{
+	if (sOnline->cardFailed || sOnline->cardReady) return;
+	auto fail = [](const char* why) {
+		sOnline->cardFailed = true;
+		printf("[online] refused the host's card: %s\n", why);
+		fflush(stdout);
+	};
+	if (p.size() < 2 || p[0] != kCardKind) return fail("bad chunk");
+	const size_t nameLen = p[1];
+	if (p.size() < 2 + nameLen + 8) return fail("short chunk");
+	const std::string name(p.begin() + 2, p.begin() + 2 + (ptrdiff_t)nameLen);
+	const uint32_t size   = get_u32(p.data() + 2 + nameLen);
+	const uint32_t offset = get_u32(p.data() + 6 + nameLen);
+	const size_t n        = p.size() - (10 + nameLen);
+	if (!card_name_ok(name)) return fail("bad file name");
+	if (size > kCardMaxFileBytes || offset > size || n > size - offset) return fail("chunk out of bounds");
+	auto it = sOnline->cardFiles.find(name);
+	if (it == sOnline->cardFiles.end()) {
+		if (sOnline->cardFiles.size() >= kCardMaxFiles || sOnline->cardBytes + size > kCardMaxTotal)
+			return fail("card too large");
+		it = sOnline->cardFiles.emplace(name, std::vector<uint8_t>(size)).first;
+		sOnline->cardBytes += size;
+	} else if (it->second.size() != size) {
+		return fail("file size changed");
+	}
+	std::memcpy(it->second.data() + offset, p.data() + 10 + nameLen, n);
+	sOnline->cardReceived[name] += n;
+}
+
+// Guest: the manifest closes the transfer; verified, then written to this
+// session's private card folder before the game opens the card.
+void online_guest_card_manifest(const std::vector<uint8_t>& p)
+{
+	if (sOnline->cardFailed || sOnline->cardReady) return;
+	if (p.size() != 1 + 2 + 4 + 32 || p[0] != kCardKind) {
+		sOnline->cardFailed = true;
+		return;
+	}
+	const size_t count = ((size_t)p[1] << 8) | p[2];
+	const uint32_t total = get_u32(p.data() + 3);
+	std::vector<uint8_t> digestInput;
+	bool complete = count == sOnline->cardFiles.size() && total == sOnline->cardBytes;
+	for (const auto& [name, data] : sOnline->cardFiles) {
+		complete = complete && sOnline->cardReceived[name] == data.size();
+		card_digest_add(digestInput, name, data);
+	}
+	uint8_t digest[32];
+	pc_netplay_sha::sha256(digestInput.data(), digestInput.size(), digest);
+	if (!complete || std::memcmp(digest, p.data() + 7, 32) != 0) {
+		sOnline->cardFailed = true;
+		printf("[online] refused the host's card: incomplete or corrupted\n");
+		fflush(stdout);
+		return;
+	}
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	const fs::path dir = pc_card_channel_dir(0);
+	fs::create_directories(dir, ec);
+	for (const auto& [name, data] : sOnline->cardFiles) {
+		FILE* f = fopen((dir / name).string().c_str(), "wb");
+		const bool ok = f != nullptr && fwrite(data.data(), 1, data.size(), f) == data.size();
+		if (f != nullptr) fclose(f);
+		if (!ok) {
+			sOnline->cardFailed = true;
+			printf("[online] could not write the host's card\n");
+			fflush(stdout);
+			return;
+		}
+	}
+	sOnline->cardReady = true;
+	printf("[online] received the host's card (%zu file(s), %llu bytes)\n", count, (unsigned long long)total);
+	fflush(stdout);
+}
+
 // A guest that joined after tick 0 gets the session so far, a slice per turn
 // so neither GNS's send buffer nor the frame time explodes.
 void online_host_backfill()
@@ -3644,8 +3853,17 @@ void online_host_backfill()
 
 void online_host_send_welcome()
 {
-	// "seed=<n>" line (the day reseed) and then the sim settings text.
-	const std::string rules = "seed=" + std::to_string(sCfg.seed) + "\n" + pc_settings_netplay_config_text();
+	// Continuing a file: the card goes first, so the rules (reliable and
+	// ordered) can only arrive once the guest has all of it.
+	if (sCfg.onlineSaveSlot != 0 && !online_host_send_card()) {
+		printf("[online] the host's card cannot be shared (too large or unreadable); the guest is dropped\n");
+		fflush(stdout);
+		sOnline->link->disconnectPeer(false);
+		return;
+	}
+	// "seed=<n>" and "save=<slot>" lines, then the sim settings text.
+	const std::string rules = "seed=" + std::to_string(sCfg.seed) + "\nsave=" + std::to_string(sCfg.onlineSaveSlot)
+	                        + "\n" + pc_settings_netplay_config_text();
 	online_send(nnet::MessageType::SessionRules, 0, std::vector<uint8_t>(rules.begin(), rules.end()),
 	            nnet::Delivery::ReliableOrdered);
 	online_send(nnet::MessageType::SceneStart, 0, nnet::encodeSceneStart({ kOnlineSceneEpoch, 0 }),
@@ -3756,8 +3974,12 @@ void online_guest_send_input(double now)
 		}
 		if (sOnline->spectator) {
 			const bool startDown  = (p1.buttons & PAD_BUTTON_START) != 0;
-			const bool testRejoin = sOnline->testRejoinAt != 0 && sOnline->nextTick >= sOnline->testRejoinAt;
-			if (testRejoin) sOnline->testRejoinAt = 0;
+			const bool testRejoin = (sOnline->testRejoinAt != 0 && sOnline->nextTick >= sOnline->testRejoinAt)
+			                     || sOnline->rejoinRequested;
+			if (testRejoin) {
+				sOnline->testRejoinAt    = 0;
+				sOnline->rejoinRequested = false;
+			}
 			if (((startDown && !sOnline->startWasDown) || testRejoin) && !sOnline->rejoinSent) {
 				online_send(nnet::MessageType::RejoinRequest, tick, {}, nnet::Delivery::ReliableOrdered);
 				sOnline->rejoinSent = true;
@@ -3787,6 +4009,9 @@ int online_guest_replica_ticks(System* sys, BaseApp* app, double now)
 			if (now >= sOnline->nextSlotMs + kOnlineSlotMs && sOnline->stalledTick != sOnline->nextTick) {
 				++sOnline->stalls;
 				sOnline->stalledTick = sOnline->nextTick;
+				sOnline->stallTimes.push_back(now);
+				while (!sOnline->stallTimes.empty() && sOnline->stallTimes.front() < now - 10000.0)
+					sOnline->stallTimes.erase(sOnline->stallTimes.begin());
 			}
 			break;
 		}
@@ -4063,6 +4288,50 @@ bool pc_netplay_hud_info(PcNetplayHudInfo* out)
 	out->isHost    = sCfg.isHost;
 	out->inputKind = sCfg.inputKind;
 	out->frame     = sLastAdvanceFrame;
+#if PC_ONLINE
+	if (sCfg.online) {
+		if (sOnline == nullptr) return true;
+		const double now = now_ms();
+		out->running = true;
+		out->online  = true;
+		nnet::TransportStats stats;
+		nnet::GatedTransport* link = online_link();
+		const bool linked = link != nullptr && link->state() == nnet::TransportState::Connected;
+		if (!sCfg.isHost && sOnline->clock.ready()) {
+			out->numbers.havePing = true;
+			out->numbers.pingMs   = (float)sOnline->clock.rttMs();
+			out->numbers.jitterMs = (float)sOnline->clock.jitterMs();
+			// What the player feels: the lead to the host, the replay buffer
+			// and the trip back, in ticks (the HUD shows ticks and ms).
+			const double feltMs = (double)(sOnline->lead + sOnline->applied.size()) * kOnlineSlotMs
+			                    + sOnline->clock.rttMs() / 2.0;
+			out->numbers.delay = (unsigned)((feltMs + kOnlineSlotMs / 2) / kOnlineSlotMs);
+		} else if (linked && link->stats(stats) && stats.rttMs >= 0) {
+			out->numbers.havePing = true;
+			out->numbers.pingMs   = (float)stats.rttMs;
+		}
+		unsigned recent = 0;
+		for (double t : sOnline->stallTimes)
+			if (t >= now - 10000.0) ++recent;
+		out->numbers.stalls10s = recent;
+		auto status = [&](int tone, const char* text) {
+			out->statusTone = tone;
+			snprintf(out->status, sizeof(out->status), "%s", text);
+		};
+		if (sCfg.isHost) {
+			if (sOnline->startMs == 0) status(0, "waiting for the guest");
+			else if (!linked) status(1, "guest left - P2 idle");
+			else if (sOnline->backfillNext < sOnline->backfillEnd) status(0, "guest is catching up");
+			else if (sOnline->spectator) status(0, "guest is watching");
+		} else {
+			if (sOnline->desync) status(2, "desync: the games differ");
+			else if (sOnline->peerGone) status(2, "the host left");
+			else if (sOnline->catchingUp) status(0, "catching up with the host");
+			else if (sOnline->spectator) status(0, "watching - Start to rejoin");
+		}
+		return true;
+	}
+#endif
 	PcNetplayLiveStats st;
 	if (sGekkoStarted && sAdvances > 0 && pc_netplay_live_stats(&st)) {
 		out->running             = true;
@@ -4353,5 +4622,21 @@ bool pc_netplay_online_spectating(void)
 	return sOnline != nullptr && sOnline->spectator;
 #else
 	return false;
+#endif
+}
+
+bool pc_netplay_online_is_guest(void)
+{
+#if PC_ONLINE
+	return sInitialised && sCfg.online && !sCfg.isHost && sOnline != nullptr;
+#else
+	return false;
+#endif
+}
+
+void pc_netplay_online_request_rejoin(void)
+{
+#if PC_ONLINE
+	if (sOnline != nullptr && !sCfg.isHost) sOnline->rejoinRequested = true;
 #endif
 }

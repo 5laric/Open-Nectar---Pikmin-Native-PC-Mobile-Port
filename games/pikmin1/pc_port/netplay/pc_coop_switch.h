@@ -48,5 +48,10 @@ bool pc_coop_direct_requested(void);  ///< requested and the title not reached y
 bool pc_coop_direct_take_title(void); ///< on the title: true once, to leave for the run
 bool pc_coop_direct_take_setup(void); ///< in CardSelect: true once, to skip its menus
 bool pc_coop_direct_active(void);     ///< the run started through the direct boot
+/// Direct boot into an existing file instead of a new one: slot 1..3 of the
+/// card (0, the default, keeps the fresh run). Online sessions set it so both
+/// peers continue the host's save.
+void pc_coop_direct_set_slot(int slot);
+int pc_coop_direct_slot(void);
 
 #endif // PC_COOP_SWITCH_H

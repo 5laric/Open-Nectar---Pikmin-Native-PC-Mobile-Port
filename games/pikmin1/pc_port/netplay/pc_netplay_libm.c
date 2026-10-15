@@ -81,7 +81,9 @@
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
+#if !defined(__aarch64__)
 #include <emmintrin.h>
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Bit helpers (__builtin_memcpy: no aliasing UB, folds to a move even */
@@ -91,6 +93,24 @@
 /* the mingw x87 fsqrt path this file exists to avoid. */
 /* ------------------------------------------------------------------ */
 
+#if defined(__aarch64__)
+/* ARM64 (Android): fsqrt is the IEEE-754 correctly rounded square root, so
+   it gives the same bits as SSE sqrtsd/sqrtss; written as asm so no libm
+   call or errno path can appear. */
+static double pc_sqrt(double x)
+{
+	double r;
+	__asm__("fsqrt %d0, %d1" : "=w"(r) : "w"(x));
+	return r;
+}
+
+static float pc_sqrtf(float x)
+{
+	float r;
+	__asm__("fsqrt %s0, %s1" : "=w"(r) : "w"(x));
+	return r;
+}
+#else
 static double pc_sqrt(double x)
 {
 	__m128d v = _mm_set_sd(x);
@@ -104,6 +124,7 @@ static float pc_sqrtf(float x)
 	v = _mm_sqrt_ss(v);
 	return _mm_cvtss_f32(v);
 }
+#endif
 
 static uint32_t f32_bits(float x)
 {

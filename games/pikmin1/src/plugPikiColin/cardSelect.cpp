@@ -131,6 +131,25 @@ struct CardSelectSetupSection : public Node {
 			pc_randomizer_set_menu_pending(false);
 			pc_tutorial_skip_set_pending(false);
 			gameflow.mGamePrefs.mHasSaveGame = false;
+			// An online session can continue a file instead (the host's card,
+			// copied to the guest): commit that slot like picking it here.
+			if (const int slot = pc_coop_direct_slot()) {
+				MemoryCard& memcard = gameflow.mMemoryCard;
+				memcard.getMemoryCardState(false);
+				if (memcard.mSaveFileIndex < 0) {
+					memcard.makeDefaultFile();
+					CardUtilIdleWhileBusy();
+					memcard.hasCardFinished();
+				}
+				if (memcard.getMemoryCardState(true) == 0 && memcard.mSaveFileIndex >= 0) {
+					CardQuickInfo infos[4];
+					memcard.getQuickInfos(infos);
+					commitSelectedFile(infos[slot - 1], slot - 1);
+					printf("[coop] direct boot: continuing file %d (day %d)\n", slot, (int)infos[slot - 1].mCurrentDay);
+				} else {
+					printf("[coop] direct boot: the card is not usable; starting a new run\n");
+				}
+			}
 			mNextSectionsFlag                = 0; // no destination: the exit starts the new run
 			mState                           = Exit;
 			gsys->setFade(0.0f);

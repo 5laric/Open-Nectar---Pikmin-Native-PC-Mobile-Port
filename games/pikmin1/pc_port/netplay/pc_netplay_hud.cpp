@@ -233,8 +233,15 @@ void draw_box(const PcNetplayHudInfo& info, int W, int H)
 	int tw = pc_settings_p2d_text_width(l1, 10);
 	tw     = std::max(tw, pc_settings_p2d_text_width(l2, fw));
 	tw     = std::max(tw, pc_settings_p2d_text_width(l3, fw));
+	const bool hasStatus = info.status[0] != '\0';
+	if (hasStatus) tw = std::max(tw, pc_settings_p2d_text_width(info.status, fw));
+	if (info.online) {
+		snprintf(l1, sizeof l1, "ONLINE  %s",
+		         pc_netplay_hud::quality_name(pc_netplay_hud::classify(info.numbers.havePing, info.numbers.pingMs,
+		                                                               info.numbers.jitterMs, info.numbers.stalls10s)));
+	}
 	const int bw = tw + 2 * pad + 10;
-	const int bh = 3 * lh + 24;
+	const int bh = (hasStatus ? 4 : 3) * lh + 24;
 	const int x  = W - bw - 6;
 	// Right edge, just below the game's "day N" badge in the top-right corner
 	// (which ends about a fifth of the way down), clear of the sun meter.
@@ -244,6 +251,12 @@ void draw_box(const PcNetplayHudInfo& info, int W, int H)
 	const Colour body(235, 235, 235, 255);
 	pc_settings_p2d_text(x + pad + 2, y + 10 + lh, l2, body, fw, fh);
 	pc_settings_p2d_text(x + pad + 2, y + 10 + 2 * lh, l3, body, fw, fh);
+	if (hasStatus) {
+		const Colour tone = info.statusTone == 2 ? Colour(255, 90, 80, 255)
+		                  : info.statusTone == 1 ? Colour(255, 210, 90, 255)
+		                                         : Colour(170, 220, 255, 255);
+		pc_settings_p2d_text(x + pad + 2, y + 10 + 3 * lh, info.status, tone, fw, fh);
+	}
 }
 
 void draw_banner(const PcNetplayHudInfo& info, int W, int H)

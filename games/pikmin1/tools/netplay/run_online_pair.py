@@ -72,6 +72,9 @@ def main(argv=None):
     p.add_argument("--guest-drop-at", type=int, default=0,
                    help="the first guest leaves after this many ticks; a second guest then joins with the same "
                         "code and must rebuild the running session (judged on the second guest)")
+    p.add_argument("--host-card", type=Path, default=None,
+                   help="a card0 folder copied into the host's save before it starts (continuing a file)")
+    p.add_argument("--host-save", type=int, default=0, help="--online-save slot for the host (1-3)")
     p.add_argument("--predictive", action="store_true",
                    help="Phase 4 predictive guest (--online-predictive) instead of the exact replica")
     p.add_argument("--max-error", type=float, default=25.0,
@@ -94,6 +97,9 @@ def main(argv=None):
     if a.lag or a.jitter or a.loss:
         impair = {"NECTAR_NET_TEST_IMPAIR": "1", "NECTAR_NET_TEST_LAG_MS": str(a.lag),
                   "NECTAR_NET_TEST_JITTER_MS": str(a.jitter), "NECTAR_NET_TEST_LOSS_PCT": str(a.loss)}
+    if a.host_card:
+        import shutil
+        shutil.copytree(a.host_card, host_run / "save" / "card0", dirs_exist_ok=True)
     code_file = host_run / "code.txt"
     if a.frames:
         for run in (host_run, join_run):
@@ -104,8 +110,10 @@ def main(argv=None):
         host_env["PIKMIN_NETPLAY_SEED"] = str(a.host_seed)
     if a.host_start_at:
         host_env.update(PIKMIN_NETPLAY_TEST_KNOBS="1", PIKMIN_ONLINE_TEST_START_AT=a.host_start_at)
-    hproc, hout = run_pair.launch(a.exe, host_run, ["--online-host", str(a.port), "--online-code-out", str(code_file),
-                                                    "--netplay-input", str(host_pkni)], host_env, False, a.ticks)
+    host_args = ["--online-host", str(a.port), "--online-code-out", str(code_file), "--netplay-input", str(host_pkni)]
+    if a.host_save:
+        host_args += ["--online-save", str(a.host_save)]
+    hproc, hout = run_pair.launch(a.exe, host_run, host_args, host_env, False, a.ticks)
     deadline = time.time() + 60
     while not code_file.exists() and time.time() < deadline and hproc.poll() is None:
         time.sleep(0.1)
@@ -142,7 +150,8 @@ def main(argv=None):
             if line.startswith("[online]") and any(w in line for w in ("room", "joined", "ended", "left", "rules",
                                                                          "pause", "test:", "spectat", "rejoin",
                                                                          "back in", "catching", "caught",
-                                                                         "running session", "history")):
+                                                                         "running session", "history", "card",
+                                                                         "continuing")):
                 print(f"run_online_pair: {name}:   {line}")
         stats = STATS_RE.findall(log)
         if stats:

@@ -71,6 +71,8 @@ public class NectarActivity extends SDLActivity {
         // reiniciar la app; necesita la actividad. Se registra aquí, después
         // de super.onCreate(): SDK libnectar*.so ya está cargada.
         TexturePack.nativeRegisterActivity(this);
+        // Online co-op: the router to ask for a forwarded port.
+        NetGateway.publish(this);
         // Dibujar también bajo el recorte de la cámara (notch) en vez de dejar
         // una franja negra.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {

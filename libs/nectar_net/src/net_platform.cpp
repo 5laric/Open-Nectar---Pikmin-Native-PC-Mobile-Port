@@ -1,5 +1,6 @@
 #include "nectar_net/net_platform.h"
 
+#include <atomic>
 #include <cstring>
 
 #ifdef _WIN32
@@ -28,6 +29,17 @@ namespace nectar::net {
 namespace {
 
 constexpr std::size_t kMaxDatagramBytes = 1500;
+
+std::atomic<std::uint32_t> sGatewayHint{0};
+
+bool takeGatewayHint(Ipv4Address& gateway)
+{
+    const std::uint32_t v = sGatewayHint.load();
+    if (v == 0) return false;
+    gateway = {static_cast<std::uint8_t>(v >> 24), static_cast<std::uint8_t>(v >> 16),
+               static_cast<std::uint8_t>(v >> 8), static_cast<std::uint8_t>(v)};
+    return true;
+}
 
 #ifdef _WIN32
 struct WinsockUser {
@@ -104,6 +116,7 @@ private:
 
 bool findDefaultGateway(Ipv4Address& gateway)
 {
+    if (takeGatewayHint(gateway)) return true;
     ULONG size = 0;
     if (GetIpForwardTable(nullptr, &size, FALSE) != ERROR_INSUFFICIENT_BUFFER || size == 0) return false;
     std::vector<std::uint8_t> buffer(size);
@@ -158,6 +171,7 @@ LocalAddresses localAddresses()
 
 bool findDefaultGateway(Ipv4Address& gateway)
 {
+    if (takeGatewayHint(gateway)) return true;
     std::FILE* routes = std::fopen("/proc/net/route", "r");
     if (routes == nullptr) return false;
     char line[256];
@@ -212,6 +226,12 @@ LocalAddresses localAddresses()
 }
 
 #endif
+
+void setGatewayHint(const Ipv4Address& gateway)
+{
+    sGatewayHint.store((static_cast<std::uint32_t>(gateway[0]) << 24) | (static_cast<std::uint32_t>(gateway[1]) << 16)
+                       | (static_cast<std::uint32_t>(gateway[2]) << 8) | gateway[3]);
+}
 
 std::unique_ptr<IDatagramChannel> openGatewayChannel(const Ipv4Address& gateway, std::uint16_t port)
 {

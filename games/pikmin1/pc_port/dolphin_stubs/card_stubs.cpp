@@ -1,5 +1,6 @@
 /** Native filesystem implementation of the GameCube memory-card API. */
 #include "Dolphin/card.h"
+#include "dolphin_stubs/pc_card_paths.h"
 #include "Dolphin/dvd.h"
 #include "pc_speedrun.h"
 #include "randomizer/pc_randomizer.h"
@@ -623,3 +624,5 @@ u16 __CARDGetFontEncode() { return CARD_ENCODE_ANSI; }
 s32 __CARDSync(s32 channel) { return CARDGetResultCode(channel); }
 
 } // extern "C"
+
+std::string pc_card_channel_dir(int channel) { return root(channel == 1 ? 1 : 0).string(); }
