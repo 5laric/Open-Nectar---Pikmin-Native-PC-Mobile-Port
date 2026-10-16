@@ -103,6 +103,7 @@ struct ObjectGameActor : public ObjectActor {
 	virtual void pcHoldPose();
 	virtual void pcDrawMarker(Graphics&);
 	mutable int mPcLastNodeId = -1; // articulacion pedida por un actor emparentado
+	bool mPcX03OnyonBirthSeen;
 #endif
 	virtual int JSGFindNodeID(const char*) const;          // _34
 	virtual bool JSGGetNodeTransformation(u32, Mtx) const; // _38

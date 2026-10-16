@@ -1177,6 +1177,10 @@ void MoviePlayer::drawLoading(Graphics& gfx)
 void MoviePlayer::skip()
 {
 #ifdef PIKI_PC_PORT
+	// The result screen must run its save UI before this movie can finish.
+	if (mCurrentConfig && mCurrentConfig->is("s02_dayend_result")) {
+		return;
+	}
 	if (pcMovieGameplayTransitionPending(this)) {
 		sPcDeferredGameplaySkip = true;
 		return;
