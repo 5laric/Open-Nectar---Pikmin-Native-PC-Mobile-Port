@@ -16,6 +16,7 @@ extern "C" int pc_speedrun_active(void);
 #include "Game/BaseGameSection.h"
 #include "Game/Navi.h"
 #include "Game/pelletMgr.h"
+#include "Game/Entities/ItemGate.h"
 #endif
 #include "Screen/Game2DMgr.h"
 #include "Game/GameSystem.h"
@@ -130,10 +131,9 @@ static bool pcIsDrakeTextDemo(Game::MovieConfig* config)
 
 // La demo en curso se salta sola (no se dibuja su texto ni se aclara la pantalla).
 static bool sPcAutoSkipDemo = false;
-// movieDone() kills the displayed pellet. The collection movie begins before
-// the pellet finishes entering the ship/pod, so an early skip must wait for
-// PelletGoalState to perform the physical delivery callback.
-static bool sPcDeferredPelletSkip = false;
+// Collection and gate movies can start before their gameplay callbacks finish.
+// A skip must let those callbacks run before the movie pauses or ends.
+static bool sPcDeferredGameplaySkip = false;
 
 static bool pcMoviePelletDeliveryPending()
 {
@@ -142,6 +142,20 @@ static bool pcMoviePelletDeliveryPending()
 	auto* creature = Game::gameSystem->mSection->mDraw2DCreature;
 	return creature && creature->isPellet()
 	    && static_cast<Game::Pellet*>(creature)->getStateID() == Game::PELSTATE_Goal;
+}
+
+static bool pcMovieGateBreakPending(const Game::MoviePlayer* player)
+{
+	if (!player->mCurrentConfig || !player->mCurrentConfig->is("g18_find_gate") || !player->mTargetObject
+	    || player->mTargetObject->getObjType() != OBJTYPE_Gate)
+		return false;
+	auto* gate = static_cast<Game::ItemGate*>(player->mTargetObject);
+	return gate->getStateID() == GATESTATE_Down && gate->mSegmentsDown < gate->mMaxSegments;
+}
+
+static bool pcMovieGameplayTransitionPending(const Game::MoviePlayer* player)
+{
+	return pcMoviePelletDeliveryPending() || pcMovieGateBreakPending(player);
 }
 #endif
 
@@ -295,7 +309,7 @@ int MoviePlayer::play(MovieConfig* config, MoviePlayArg& arg, bool flag)
 		config->dump();
 		mCurrentConfig = config;
 #ifdef PIKI_PC_PORT
-		sPcDeferredPelletSkip = false;
+		sPcDeferredGameplaySkip = false;
 #endif
 		mNaviID        = arg.mNaviID;
 		P2ASSERTLINE(594, config);
@@ -877,10 +891,10 @@ bool MoviePlayer::update(Controller* input1, Controller* input2)
 			}
 		}
 #ifdef PIKI_PC_PORT
-		// Honor the queued request once the real collection callback has run.
+		// Honor the queued request once the real gameplay callback has run.
 		// This is outside the text-suspend gate: the earlier button press already
 		// requested a skip, and appraisal text may be suspended at that instant.
-		if (sPcDeferredPelletSkip && mDemoState == DEMOSTATE_Playing && mStudioControl && !pcMoviePelletDeliveryPending()) {
+		if (sPcDeferredGameplaySkip && mDemoState == DEMOSTATE_Playing && mStudioControl && !pcMovieGameplayTransitionPending(this)) {
 			skip();
 		}
 #endif
@@ -926,7 +940,7 @@ bool MoviePlayer::stop()
 {
 	if (isFlag(MVP_IsActive)) {
 #ifdef PIKI_PC_PORT
-		sPcDeferredPelletSkip = false;
+		sPcDeferredGameplaySkip = false;
 #endif
 		clearPauseAndDraw();
 		resetFlag(MVP_IsActive);
@@ -1163,11 +1177,11 @@ void MoviePlayer::drawLoading(Graphics& gfx)
 void MoviePlayer::skip()
 {
 #ifdef PIKI_PC_PORT
-	if (pcMoviePelletDeliveryPending()) {
-		sPcDeferredPelletSkip = true;
+	if (pcMovieGameplayTransitionPending(this)) {
+		sPcDeferredGameplaySkip = true;
 		return;
 	}
-	sPcDeferredPelletSkip = false;
+	sPcDeferredGameplaySkip = false;
 #endif
 	setFlag(MVP_IsFinished);
 	mDemoState = DEMOSTATE_Finishing;
