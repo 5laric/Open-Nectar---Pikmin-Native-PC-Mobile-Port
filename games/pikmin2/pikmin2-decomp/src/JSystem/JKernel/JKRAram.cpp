@@ -413,11 +413,14 @@ static int decompSZS_subroutine(u8* src, u8* dest)
 		return -1;
 	}
 
-	SYaz0Header* header = (SYaz0Header*)src;
-	endPtr              = dest + (header->mLength - fileOffset);
-	if (endPtr > dest + maxDest) {
-		endPtr = dest + maxDest;
-	}
+	const u32 decodedSize = JKRDecompExpandSize(src);
+	if (fileOffset > decodedSize)
+		return -1;
+	const u32 available = decodedSize - fileOffset;
+	const u32 outputSize = available < maxDest ? available : maxDest;
+	if (!outputSize)
+		return 0;
+	endPtr = dest + outputSize;
 
 	src += 0x10;
 	do {

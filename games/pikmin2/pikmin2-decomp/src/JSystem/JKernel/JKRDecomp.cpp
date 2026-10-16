@@ -204,16 +204,15 @@ void JKRDecomp::decodeSZP(u8* src, u8* dst, u32 srcLength, u32 dstLength)
 void JKRDecomp::decodeSZS(u8* src_buffer, u8* dst_buffer, u32 srcSize, u32 dstSize)
 {
 
-	u8* decompEnd = dst_buffer + *(int*)(src_buffer + 4) - dstSize;
+	// Yaz0 lengths are big-endian on disc, including on the little-endian host.
+	const u32 decodedSize = JKRDecompExpandSize(src_buffer);
+	if (srcSize == 0 || dstSize >= decodedSize)
+		return;
+	u8* decompEnd = dst_buffer + (decodedSize - dstSize);
 	u8* copyStart;
 	s32 copyByteCount;
 	s32 chunkBitsLeft = 0;
 	s32 chunkBits;
-
-	if (srcSize == 0)
-		return;
-	if (dstSize > *(u32*)src_buffer)
-		return;
 
 	u8* curSrcPos = src_buffer + 0x10;
 	do {

@@ -298,6 +298,7 @@ message(STATUS "  GD+THP  : ${GD_SOURCES} ${THP_SOURCES}")
 if(PIKMIN2_ENABLE_PORT_LAYER)
     set(PC_PORT_SOURCES
         ${PC_PORT_DIR}/pc_main.cpp
+        ${PC_PORT_DIR}/pc_p2_yaz0_test.cpp
         ${PC_PORT_DIR}/pc_gpu_preference.cpp
         ${PC_PORT_DIR}/pc_window.cpp
         ${PC_PORT_DIR}/pc_discord.cpp
@@ -544,6 +545,9 @@ if(PIKMIN2_ENABLE_PORT_LAYER)
             ${PC_PORT_DIR}/timing/pc_visual_snapshot.cpp
             ${PC_PORT_DIR}/timing/pc_render_phase.cpp
         )
+
+        add_test(NAME p2_yaz0_test COMMAND ${P2_GAME} --yaz0-self-test)
+        set_tests_properties(p2_yaz0_test PROPERTIES TIMEOUT 30)
 
         add_test(NAME p2_jaudio_integration_test COMMAND ${P2_GAME} --audio-self-test)
         set_tests_properties(p2_jaudio_integration_test PROPERTIES

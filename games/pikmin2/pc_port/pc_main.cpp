@@ -17,6 +17,7 @@
 
 #include <SDL.h>
 #include "pc_discord.h"
+#include "pc_p2_yaz0_test.h"
 
 #ifdef _WIN32
 extern "C" {
@@ -194,6 +195,9 @@ int main(int argc, char* argv[])
 	pc_install_crash_handler();
 	setvbuf(stdout, NULL, _IONBF, 0);
 	SDL_SetMainReady();
+
+	if (argc == 2 && std::strcmp(argv[1], "--yaz0-self-test") == 0)
+		return pc_p2_yaz0_self_test();
 
 	// El launcher Fusion consulta y modifica los ajustes sin crear la ventana
 	// del juego. El backend ya implementaba este protocolo, pero el entry point
